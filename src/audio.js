@@ -1,6 +1,5 @@
-import { menuMusicTracks, musicPreset, soundAssets, soundPresets } from "./core/audio.js";
+import { menuMusicTracks, musicPreset, soundPresets } from "./core/audio.js";
 
-const EFFECT_VOLUME = 0.82;
 const MUSIC_VOLUME = 0.32;
 
 export function createAudioController() {
@@ -32,14 +31,6 @@ export function createAudioController() {
     if (!enabled) {
       return;
     }
-    if (soundAssets[name] && (await playMp3(soundAssets[name], EFFECT_VOLUME))) {
-      return;
-    }
-
-    await playSynthetic(name);
-  };
-
-  const playSynthetic = async (name) => {
     const preset = soundPresets[name];
     const audioContext = await ensureRunning();
     if (!preset || !audioContext) {
@@ -100,23 +91,6 @@ export function createAudioController() {
     startMusic,
     stopMusic,
   };
-
-  async function playMp3(source, volume) {
-    if (typeof Audio === "undefined") {
-      return false;
-    }
-
-    const sound = new Audio(resolveAudioUrl(source));
-    sound.preload = "auto";
-    sound.volume = volume;
-
-    try {
-      await sound.play();
-      return true;
-    } catch {
-      return false;
-    }
-  }
 
   async function startMp3Music(source) {
     if (typeof Audio === "undefined") {
