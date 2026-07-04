@@ -17,3 +17,21 @@ test("i18n translates primary mode labels in every language", () => {
     assert.notEqual(t(language.code, "mode.online"), "mode.online");
   }
 });
+
+test("i18n translates result modal, theme, and history labels in every language", () => {
+  const keys = [
+    "result.title",
+    "result.totalShots",
+    "result.accuracy",
+    "theme.label",
+    "theme.dark",
+    "history.title",
+    "history.body",
+  ];
+
+  for (const language of languages) {
+    for (const key of keys) {
+      assert.notEqual(t(language.code, key), key);
+    }
+  }
+});

@@ -9,6 +9,7 @@ import {
   publicBoardView,
   randomlyPlaceFleet,
 } from "./core/game.js";
+import { summarizeBattleLog } from "./core/stats.js";
 import { getInitialLanguage, languages, t } from "./i18n.js";
 import { RemoteClient } from "./remote.js";
 
@@ -17,6 +18,7 @@ const fleet = defaultFleet();
 
 const state = {
   language: getInitialLanguage(),
+  theme: getInitialTheme(),
   screen: "menu",
   mode: null,
   setupPlayerId: "p1",
@@ -25,6 +27,7 @@ const state = {
   game: null,
   agentDifficulty: "normal",
   passPlayerId: null,
+  resultModalDismissed: null,
   online: {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     roomCodeInput: "",
@@ -35,6 +38,14 @@ const state = {
     client: null,
   },
 };
+
+function getInitialTheme() {
+  const saved = localStorage.getItem("salvo.theme");
+  if (saved === "light" || saved === "dark") {
+    return saved;
+  }
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
 
 function translate(key, params) {
   return t(state.language, key, params);
@@ -52,6 +63,7 @@ function playerName(playerId) {
 
 function render() {
   document.documentElement.lang = state.language;
+  document.documentElement.dataset.theme = state.theme;
   root.innerHTML = `
     <main class="shell">
       <header class="topbar">
@@ -62,17 +74,31 @@ function render() {
             <p>${translate("app.subtitle")}</p>
           </div>
         </div>
-        <label class="language-control">
-          <span>${translate("nav.language")}</span>
-          <select data-action="language">
-            ${languages
-              .map(
-                (language) =>
-                  `<option value="${language.code}" ${language.code === state.language ? "selected" : ""}>${language.label}</option>`,
-              )
-              .join("")}
-          </select>
-        </label>
+        <div class="topbar-controls">
+          <div class="theme-control">
+            <span>${translate("theme.label")}</span>
+            <button
+              class="theme-toggle ${state.theme === "dark" ? "is-dark" : ""}"
+              data-action="theme-toggle"
+              aria-pressed="${state.theme === "dark"}"
+              aria-label="${translate("theme.label")}: ${translate(state.theme === "dark" ? "theme.dark" : "theme.light")}"
+            >
+              <span class="theme-toggle-track" aria-hidden="true"><span></span></span>
+              <strong>${translate(state.theme === "dark" ? "theme.dark" : "theme.light")}</strong>
+            </button>
+          </div>
+          <label class="language-control">
+            <span>${translate("nav.language")}</span>
+            <select data-action="language">
+              ${languages
+                .map(
+                  (language) =>
+                    `<option value="${language.code}" ${language.code === state.language ? "selected" : ""}>${language.label}</option>`,
+                )
+                .join("")}
+            </select>
+          </label>
+        </div>
       </header>
       ${renderScreen()}
     </main>
@@ -117,6 +143,11 @@ function renderMenu() {
             <strong>${translate("mode.online")}</strong>
           </button>
         </div>
+        <section class="history-panel">
+          <span>${translate("history.kicker")}</span>
+          <h3>${translate("history.title")}</h3>
+          <p>${translate("history.body")}</p>
+        </section>
       </div>
       <div class="fleet-visual" aria-hidden="true">
         <div class="sea-grid">
@@ -200,16 +231,17 @@ function renderGame() {
           <h2>${status}</h2>
         </div>
         <button class="primary-button" data-action="new-game">${translate("game.restart")}</button>
-        ${renderLog(state.game.log)}
       </aside>
-      <section class="board-stage two-boards">
-        ${renderBoard(ownBoard, { kind: "own", title: translate("game.yourFleet") })}
-        ${renderBoard(targetBoard, {
-          kind: "target",
-          title: translate("game.target"),
-          disabled: state.game.phase === "finished",
+      <section class="board-stage">
+        ${renderBattlefield({
+          ownBoard,
+          targetBoard,
+          targetKind: "target",
+          targetDisabled: state.game.phase === "finished",
+          log: state.game.log,
         })}
       </section>
+      ${renderLocalResultModal()}
     </section>
   `;
 }
@@ -235,11 +267,11 @@ function renderOnline() {
         ${state.online.session ? `<p class="room-code">${state.online.session.roomCode}</p>` : ""}
         ${renderOnlineStatus(snapshot)}
         ${state.online.error ? `<p class="error-line">${translate("online.error", { message: state.online.error })}</p>` : ""}
-        ${snapshot?.log?.length ? renderLog(snapshot.log) : ""}
       </aside>
       <section class="board-stage">
         ${snapshot ? renderOnlineSnapshot(snapshot) : renderBoard(state.setupBoard, { kind: "own", title: translate("game.yourFleet") })}
       </section>
+      ${renderOnlineResultModal(snapshot)}
     </section>
   `;
 }
@@ -251,14 +283,93 @@ function renderOnlineSnapshot(snapshot) {
     ships: [],
     shots: snapshot.opponentShots ?? [],
   };
+  return renderBattlefield({
+    ownBoard: own,
+    targetBoard: target,
+    targetKind: "online-target",
+    targetDisabled: snapshot.phase !== "playing" || !snapshot.isYourTurn,
+    log: snapshot.log ?? [],
+  });
+}
+
+function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, log }) {
   return `
-    <div class="two-boards">
-      ${renderBoard(own, { kind: "own", title: translate("game.yourFleet") })}
-      ${renderBoard(target, {
-        kind: "online-target",
-        title: translate("game.target"),
-        disabled: snapshot.phase !== "playing" || !snapshot.isYourTurn,
-      })}
+    <div class="two-boards battlefield">
+      <div class="board-stack">
+        ${renderBoard(ownBoard, { kind: "own", title: translate("game.yourFleet") })}
+      </div>
+      <div class="target-stack">
+        ${renderBoard(targetBoard, {
+          kind: targetKind,
+          title: translate("game.target"),
+          disabled: targetDisabled,
+        })}
+        ${renderLog(log)}
+      </div>
+    </div>
+  `;
+}
+
+function renderLocalResultModal() {
+  if (!state.game || state.game.phase !== "finished") {
+    return "";
+  }
+  const resultKey = localResultKey(state.game);
+  if (state.resultModalDismissed === resultKey) {
+    return "";
+  }
+  return renderResultModal({
+    winnerId: state.game.winnerId,
+    log: state.game.log,
+    newGameAction: "new-game",
+  });
+}
+
+function renderOnlineResultModal(snapshot) {
+  if (!snapshot || snapshot.phase !== "finished") {
+    return "";
+  }
+  const resultKey = onlineResultKey(snapshot);
+  if (state.resultModalDismissed === resultKey) {
+    return "";
+  }
+  return renderResultModal({
+    winnerId: snapshot.winnerId,
+    log: snapshot.log ?? [],
+    newGameAction: "online-new-game",
+  });
+}
+
+function renderResultModal({ winnerId, log, newGameAction }) {
+  const summary = summarizeBattleLog(log, winnerId);
+  const stats = summary.winner;
+  return `
+    <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="result-title">
+      <section class="result-modal">
+        <span>${translate("result.title")}</span>
+        <h2 id="result-title">${translate("game.winner", { player: playerName(winnerId) })}</h2>
+        <div class="result-stats">
+          ${renderResultStat("result.totalShots", summary.totalShots)}
+          ${renderResultStat("result.shots", stats.shots)}
+          ${renderResultStat("result.hits", stats.hits)}
+          ${renderResultStat("result.misses", stats.misses)}
+          ${renderResultStat("result.sunk", stats.sunk)}
+          ${renderResultStat("result.accuracy", `${stats.accuracy}%`)}
+        </div>
+        <div class="button-row">
+          <button data-action="close-result">${translate("result.inspect")}</button>
+          <button class="primary-button" data-action="${newGameAction}">${translate("game.restart")}</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderResultStat(key, value) {
+  return `
+    <div>
+      <span>${translate(key)}</span>
+      <strong>${value}</strong>
     </div>
   `;
 }
@@ -360,8 +471,11 @@ root.addEventListener("click", async (event) => {
   if (action === "start-hotseat") startSetup("hotseat");
   if (action === "start-agent") startSetup("agent");
   if (action === "show-online") showOnline();
+  if (action === "theme-toggle") toggleTheme();
   if (action === "menu") goToMenu();
   if (action === "new-game") startSetup(state.mode);
+  if (action === "online-new-game") showOnline();
+  if (action === "close-result") closeResultModal();
   if (action === "randomize") randomizeSetup();
   if (action === "reset") resetSetup();
   if (action === "ready") readySetup();
@@ -380,13 +494,19 @@ function startSetup(mode) {
   state.setupBoard = randomlyPlaceFleet(fleet);
   state.boards = { p1: null, p2: null };
   state.game = null;
+  state.resultModalDismissed = null;
   render();
 }
 
 function showOnline() {
+  closeRemote();
   state.mode = "online";
   state.screen = "online";
   state.setupBoard = randomlyPlaceFleet(fleet);
+  state.online.roomCodeInput = "";
+  state.online.error = "";
+  state.online.status = "";
+  state.resultModalDismissed = null;
   render();
 }
 
@@ -397,6 +517,21 @@ function goToMenu() {
   state.game = null;
   state.online.error = "";
   state.online.status = "";
+  state.resultModalDismissed = null;
+  render();
+}
+
+function toggleTheme() {
+  state.theme = state.theme === "dark" ? "light" : "dark";
+  localStorage.setItem("salvo.theme", state.theme);
+  render();
+}
+
+function closeResultModal() {
+  const resultKey = currentResultKey();
+  if (resultKey) {
+    state.resultModalDismissed = resultKey;
+  }
   render();
 }
 
@@ -623,6 +758,24 @@ function renderOnlineStatus(snapshot) {
   }
 
   return lines.map((line) => `<p class="status-line">${line}</p>`).join("");
+}
+
+function currentResultKey() {
+  if (state.screen === "playing" && state.game?.phase === "finished") {
+    return localResultKey(state.game);
+  }
+  if (state.screen === "online" && state.online.snapshot?.phase === "finished") {
+    return onlineResultKey(state.online.snapshot);
+  }
+  return "";
+}
+
+function localResultKey(game) {
+  return `local:${state.mode}:${game.winnerId}:${game.log.length}`;
+}
+
+function onlineResultKey(snapshot) {
+  return `online:${snapshot.roomCode}:${snapshot.winnerId}:${snapshot.log?.length ?? 0}`;
 }
 
 function sunkEdgeClasses(board, coordinate, kind) {
