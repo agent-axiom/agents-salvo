@@ -1,8 +1,8 @@
 export class RemoteClient {
   constructor({ workerUrl, onMessage, onStatus, onError }) {
-    this.workerUrl = workerUrl.replace(/\/$/, "");
+    this.workerUrl = (workerUrl || "").replace(/\/$/, "");
     if (!this.workerUrl) {
-      throw new Error("Worker URL is required");
+      throw new Error("Online service is not configured");
     }
     this.onMessage = onMessage;
     this.onStatus = onStatus;
