@@ -25,8 +25,13 @@ test("i18n translates result modal, theme, and history labels in every language"
     "result.accuracy",
     "theme.label",
     "theme.dark",
+    "audio.label",
+    "audio.on",
+    "audio.off",
     "history.title",
     "history.body",
+    "history.body2",
+    "history.source",
   ];
 
   for (const language of languages) {

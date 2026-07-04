@@ -1,4 +1,5 @@
 import { chooseAgentShot } from "./core/ai.js";
+import { createAudioController } from "./audio.js";
 import {
   createBoard,
   createGameFromBoards,
@@ -15,10 +16,13 @@ import { RemoteClient } from "./remote.js";
 
 const root = document.querySelector("#app");
 const fleet = defaultFleet();
+const audio = createAudioController();
 
 const state = {
   language: getInitialLanguage(),
   theme: getInitialTheme(),
+  audioEnabled: getInitialAudioEnabled(),
+  audioUnlocked: false,
   screen: "menu",
   mode: null,
   setupPlayerId: "p1",
@@ -45,6 +49,10 @@ function getInitialTheme() {
     return saved;
   }
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function getInitialAudioEnabled() {
+  return localStorage.getItem("salvo.audio") !== "off";
 }
 
 function translate(key, params) {
@@ -75,6 +83,18 @@ function render() {
           </div>
         </div>
         <div class="topbar-controls">
+          <div class="audio-control">
+            <span>${translate("audio.label")}</span>
+            <button
+              class="audio-toggle ${state.audioEnabled ? "is-on" : ""}"
+              data-action="audio-toggle"
+              aria-pressed="${state.audioEnabled}"
+              aria-label="${translate("audio.label")}: ${translate(state.audioEnabled ? "audio.on" : "audio.off")}"
+            >
+              <span class="audio-toggle-icon" aria-hidden="true"></span>
+              <strong>${translate(state.audioEnabled ? "audio.on" : "audio.off")}</strong>
+            </button>
+          </div>
           <div class="theme-control">
             <span>${translate("theme.label")}</span>
             <button
@@ -103,6 +123,7 @@ function render() {
       ${renderScreen()}
     </main>
   `;
+  syncMenuMusic();
 }
 
 function renderScreen() {
@@ -147,6 +168,8 @@ function renderMenu() {
           <span>${translate("history.kicker")}</span>
           <h3>${translate("history.title")}</h3>
           <p>${translate("history.body")}</p>
+          <p>${translate("history.body2")}</p>
+          <a href="https://ru.wikipedia.org/wiki/%D0%9C%D0%BE%D1%80%D1%81%D0%BA%D0%BE%D0%B9_%D0%B1%D0%BE%D0%B9_(%D0%B8%D0%B3%D1%80%D0%B0)" target="_blank" rel="noreferrer">${translate("history.source")}</a>
         </section>
       </div>
       <div class="fleet-visual" aria-hidden="true">
@@ -468,9 +491,14 @@ root.addEventListener("click", async (event) => {
   }
 
   const action = button.dataset.action;
+  void unlockAudio();
+  if (action !== "shot" && action !== "online-shot" && action !== "audio-toggle") {
+    playSound("ui");
+  }
   if (action === "start-hotseat") startSetup("hotseat");
   if (action === "start-agent") startSetup("agent");
   if (action === "show-online") showOnline();
+  if (action === "audio-toggle") toggleAudio();
   if (action === "theme-toggle") toggleTheme();
   if (action === "menu") goToMenu();
   if (action === "new-game") startSetup(state.mode);
@@ -524,6 +552,17 @@ function goToMenu() {
 function toggleTheme() {
   state.theme = state.theme === "dark" ? "light" : "dark";
   localStorage.setItem("salvo.theme", state.theme);
+  render();
+}
+
+function toggleAudio() {
+  state.audioEnabled = !state.audioEnabled;
+  localStorage.setItem("salvo.audio", state.audioEnabled ? "on" : "off");
+  if (state.audioEnabled) {
+    playSound("ui");
+  } else {
+    audio.stopMusic();
+  }
   render();
 }
 
@@ -586,17 +625,24 @@ function handleLocalShot(coordinate) {
     return;
   }
 
+  playSound("shot");
   const playerId = state.game.currentPlayerId;
   const result = fireAt(state.game, playerId, coordinate);
   state.game = result.game;
+  playShotOutcome(result.outcome.type);
 
   if (state.mode === "agent" && state.game.phase === "playing" && state.game.currentPlayerId === "p2") {
+    playSound("turn");
     state.game = runAgentTurns(state.game);
   }
 
   if (state.mode === "hotseat" && state.game.phase === "playing" && result.outcome.type === "miss") {
     state.passPlayerId = state.game.currentPlayerId;
     state.screen = "pass";
+  }
+
+  if (state.game.phase === "finished") {
+    playFinalSound(state.game.winnerId, playerId);
   }
 
   render();
@@ -642,6 +688,7 @@ async function onlineJoin() {
 }
 
 function handleOnlineShot(coordinate) {
+  playSound("shot");
   withOnlineError(async () => {
     await state.online.client.send("fire", { coordinate });
   });
@@ -660,6 +707,7 @@ function remoteHandlers() {
     },
     onMessage(message) {
       if (message.type === "snapshot") {
+        playOnlineSnapshotSounds(state.online.snapshot, message.snapshot);
         state.online.snapshot = message.snapshot;
       }
       if (message.type === "error") {
@@ -668,6 +716,64 @@ function remoteHandlers() {
       render();
     },
   };
+}
+
+async function unlockAudio() {
+  state.audioUnlocked = true;
+  if (state.screen === "menu" && state.audioEnabled) {
+    await audio.startMusic(true);
+  }
+}
+
+function playSound(name) {
+  void audio.play(name, state.audioEnabled && state.audioUnlocked);
+}
+
+function playShotOutcome(result) {
+  if (result === "miss") {
+    playSound("miss");
+  }
+  if (result === "hit") {
+    playSound("hit");
+  }
+  if (result === "sunk") {
+    playSound("sunk");
+  }
+}
+
+function playFinalSound(winnerId, lastShooterId) {
+  if (state.mode === "agent") {
+    playSound(winnerId === "p1" ? "victory" : "defeat");
+    return;
+  }
+  playSound(winnerId === lastShooterId ? "victory" : "defeat");
+}
+
+function playOnlineSnapshotSounds(previousSnapshot, nextSnapshot) {
+  if (!previousSnapshot && nextSnapshot?.opponentJoined) {
+    playSound("roomReady");
+  }
+  const previousLogLength = previousSnapshot?.log?.length ?? 0;
+  const nextLog = nextSnapshot?.log ?? [];
+  for (const entry of nextLog.slice(previousLogLength)) {
+    if (entry.playerId === nextSnapshot.playerId) {
+      playShotOutcome(entry.result);
+    } else {
+      playSound("shot");
+      playShotOutcome(entry.result);
+    }
+  }
+  if (previousSnapshot?.phase !== "finished" && nextSnapshot?.phase === "finished") {
+    playSound(nextSnapshot.winnerId === nextSnapshot.playerId ? "victory" : "defeat");
+  }
+}
+
+function syncMenuMusic() {
+  if (state.screen === "menu" && state.audioEnabled && state.audioUnlocked) {
+    void audio.startMusic(true);
+    return;
+  }
+  audio.stopMusic();
 }
 
 async function withOnlineError(action) {

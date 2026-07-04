@@ -1,18 +1,26 @@
 # Salvo
 
-Морской бой для GitHub Pages: три локализации, локальный PvP на одном устройстве, игра против агента и online PvP через Cloudflare Workers + Durable Objects.
+English | [Русский](README.ru.md) | [中文](README.zh-CN.md)
 
-## Что уже есть
+Salvo is a browser Battleship game for GitHub Pages with three localizations, same-device PvP, online PvP, and play against an agent.
 
-- Static frontend без фреймворка: `src/index.html`, `src/app.js`, `src/styles.css`.
-- Чистое ядро правил: `src/core/game.js`.
-- Аутентичный набор флота: 1x4, 2x3, 3x2, 4x1; корабли не соприкасаются сторонами и углами.
-- Агент easy/normal: `src/core/ai.js`.
-- Локализации: English, Русский, 中文.
-- Cloudflare Worker backend: `worker/index.js`.
-- GitHub Pages workflow: `.github/workflows/pages.yml`.
+Live build: https://agent-axiom.github.io/agents-salvo/
 
-## Локально
+## Features
+
+- Static frontend without a framework: `src/index.html`, `src/app.js`, `src/styles.css`.
+- Rule engine in `src/core/game.js`.
+- Classic Russian fleet: 1x4, 2x3, 3x2, 4x1.
+- Ships cannot touch by sides or corners.
+- Sunk ships are outlined and surrounding cells are marked as water.
+- Same-device PvP, online PvP, and agent mode.
+- English, Russian, and Chinese localizations.
+- Light and dark themes.
+- Synthetic Web Audio sound effects and menu music; no MP3 assets are required yet.
+- Cloudflare Worker backend with Durable Objects for online rooms.
+- GitHub Pages workflow in `.github/workflows/pages.yml`.
+
+## Local Development
 
 ```bash
 npm test
@@ -20,33 +28,33 @@ npm run build
 npm start
 ```
 
-После `npm start` открыть `http://localhost:5173`.
+After `npm start`, open `http://localhost:5173`.
 
 ## GitHub Pages
 
-1. Запушить репозиторий в GitHub.
-2. В Settings -> Pages выбрать GitHub Actions.
-3. Запустить workflow `Deploy GitHub Pages` или сделать push в `main`.
+1. Push the repository to GitHub.
+2. In Settings -> Pages, select GitHub Actions.
+3. Run the `Deploy GitHub Pages` workflow or push to `main`.
 
-Workflow прогоняет `npm test`, собирает `dist` и публикует его как Pages artifact.
+The workflow runs `npm test`, builds `dist`, and publishes it as a Pages artifact.
 
-## Cloudflare backend
+## Online Backend
 
-Backend нужен только для режима “Online room”.
+The backend is only required for the “Online room” mode.
 
 ```bash
 npx wrangler deploy
 ```
 
-Текущий Worker URL уже прописан в frontend:
+The current Worker URL is configured in the frontend:
 
 ```text
 https://agents-salvo-room.if-ab6.workers.dev
 ```
 
-Для пользователей он не отображается. При смене backend обновить `window.SALVO_CONFIG.workerUrl` в `src/index.html` и заново задеплоить Pages.
+Players do not see this URL. To change the backend, update `window.SALVO_CONFIG.workerUrl` in `src/index.html` and redeploy Pages.
 
-`wrangler.toml` использует Durable Objects с SQLite storage:
+`wrangler.toml` uses Durable Objects with SQLite storage:
 
 ```toml
 [[durable_objects.bindings]]
@@ -58,10 +66,33 @@ tag = "v1"
 new_sqlite_classes = ["BattleRoom"]
 ```
 
-## Online протокол
+## Online Protocol
 
-- `POST /rooms` создает комнату и возвращает `roomCode`, `playerId`, `playerToken`.
-- `POST /rooms/:roomCode/join` подключает второго игрока.
-- `GET /rooms/:roomCode/socket?playerId=...&token=...` открывает WebSocket.
-- Клиент отправляет `placeFleet` и `fire`.
-- Durable Object валидирует очередность ходов и не раскрывает корабли соперника в snapshot.
+- `POST /rooms` creates a room and returns `roomCode`, `playerId`, and `playerToken`.
+- `POST /rooms/:roomCode/join` connects the second player.
+- `GET /rooms/:roomCode/socket?playerId=...&token=...` opens a WebSocket.
+- The client sends `placeFleet` and `fire`.
+- The Durable Object validates turn order and never exposes opponent ships in snapshots.
+
+## Audio
+
+The current build uses synthetic Web Audio presets from `src/core/audio.js` and `src/audio.js`.
+
+Future MP3 replacements can use these file names:
+
+```text
+public/audio/menu-loop.mp3
+public/audio/shot.mp3
+public/audio/miss.mp3
+public/audio/hit.mp3
+public/audio/sunk.mp3
+public/audio/victory.mp3
+public/audio/defeat.mp3
+public/audio/ui-click.mp3
+public/audio/turn.mp3
+public/audio/room-ready.mp3
+```
+
+## Historical Note
+
+The main-screen historical text is based on the Russian Wikipedia article “Морской бой (игра)”: https://ru.wikipedia.org/wiki/Морской_бой_(игра)
