@@ -9,11 +9,13 @@
   --water: rgba(38, 103, 203, 0.045);
   --water-dark: rgba(28, 86, 184, 0.2);
   --ship: rgba(21, 63, 134, 0.72);
+  --ship-stroke: rgba(21, 63, 134, 0.22);
   --hit: #c7352d;
   --miss: #164d9c;
   --sunk: #98281f;
   --accent: #1c56b8;
   --accent-strong: #123f91;
+  --primary-ink: #ffffff;
   --warning: #e0ad2f;
   --glow: rgba(28, 86, 184, 0.22);
   --panel-light: rgba(255, 252, 236, 0.9);
@@ -25,24 +27,26 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --paper: #101827;
-  --ink: #d7e7ff;
-  --muted: #a5b4cf;
-  --surface: rgba(16, 24, 39, 0.94);
-  --surface-strong: rgba(28, 40, 63, 0.9);
-  --line: rgba(106, 158, 232, 0.42);
-  --water: rgba(106, 158, 232, 0.08);
-  --water-dark: rgba(106, 158, 232, 0.28);
-  --ship: rgba(179, 207, 255, 0.72);
-  --hit: #ff6f5e;
-  --miss: #9cc5ff;
-  --sunk: #ff4f40;
-  --accent: #6a9ee8;
-  --accent-strong: #b8d4ff;
+  --paper: #07111f;
+  --ink: #eef6ff;
+  --muted: #c2d1ea;
+  --surface: rgba(11, 21, 38, 0.96);
+  --surface-strong: rgba(24, 43, 70, 0.95);
+  --line: rgba(151, 201, 255, 0.68);
+  --water: rgba(96, 165, 250, 0.22);
+  --water-dark: rgba(147, 197, 253, 0.42);
+  --ship: rgba(224, 239, 255, 0.92);
+  --ship-stroke: rgba(224, 239, 255, 0.46);
+  --hit: #ff8a78;
+  --miss: #c4ddff;
+  --sunk: #ff6d5f;
+  --accent: #8fc2ff;
+  --accent-strong: #d4e8ff;
+  --primary-ink: #07111f;
   --warning: #f5c84c;
   --glow: rgba(106, 158, 232, 0.32);
-  --panel-light: rgba(16, 24, 39, 0.9);
-  --scan-light: rgba(184, 212, 255, 0.14);
+  --panel-light: rgba(11, 21, 38, 0.92);
+  --scan-light: rgba(184, 212, 255, 0.18);
   --shadow: 5px 6px 0 rgba(0, 0, 0, 0.22);
 }
 
@@ -564,7 +568,7 @@ input {
 }
 
 .sea-grid .preview-ship {
-  background: repeating-linear-gradient(-12deg, transparent 0 6px, rgba(21, 63, 134, 0.2) 7px 9px);
+  background: repeating-linear-gradient(-12deg, transparent 0 6px, var(--ship-stroke) 7px 9px);
 }
 
 .sea-grid .preview-hit {
@@ -617,7 +621,7 @@ input {
 }
 
 .primary-button {
-  color: #ffffff;
+  color: var(--primary-ink);
   background: var(--accent);
   border-color: var(--accent);
 }
@@ -870,7 +874,7 @@ input {
 
 .cell.has-ship {
   background:
-    repeating-linear-gradient(-10deg, transparent 0 6px, rgba(21, 63, 134, 0.2) 7px 9px),
+    repeating-linear-gradient(-10deg, transparent 0 6px, var(--ship-stroke) 7px 9px),
     var(--water);
   color: var(--ship);
 }
