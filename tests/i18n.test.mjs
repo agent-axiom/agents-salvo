@@ -18,6 +18,12 @@ test("i18n translates primary mode labels in every language", () => {
   }
 });
 
+test("i18n labels menu exit actions as main menu", () => {
+  assert.equal(t("en", "nav.mainMenu"), "Main menu");
+  assert.equal(t("ru", "nav.mainMenu"), "Главное меню");
+  assert.equal(t("zh-CN", "nav.mainMenu"), "主菜单");
+});
+
 test("i18n translates result modal, theme, and history labels in every language", () => {
   const keys = [
     "result.title",

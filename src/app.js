@@ -196,7 +196,7 @@ function renderSetup() {
   return `
     <section class="play-layout">
       <aside class="control-panel">
-        <button class="ghost-button" data-action="menu">${translate("mode.back")}</button>
+        <button class="ghost-button" data-action="menu">${translate("nav.mainMenu")}</button>
         <div class="section-heading">
           <span>${translate("setup.title")}</span>
           <h2>${title}</h2>
@@ -303,7 +303,7 @@ function renderGame() {
   return `
     <section class="play-layout">
       <aside class="control-panel">
-        <button class="ghost-button" data-action="menu">${translate("mode.back")}</button>
+        <button class="ghost-button" data-action="menu">${translate("nav.mainMenu")}</button>
         <div class="section-heading">
           <span>${translate("nav.mode")}</span>
           <h2>${status}</h2>
@@ -329,7 +329,7 @@ function renderOnline() {
   return `
     <section class="play-layout">
       <aside class="control-panel">
-        <button class="ghost-button" data-action="menu">${translate("mode.back")}</button>
+        <button class="ghost-button" data-action="menu">${translate("nav.mainMenu")}</button>
         <div class="section-heading">
           <span>${translate("mode.online")}</span>
           <h2>${translate("online.title")}</h2>
