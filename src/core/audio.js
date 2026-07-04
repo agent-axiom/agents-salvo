@@ -1,3 +1,21 @@
+export const soundAssets = {
+  ui: "./assets/audio/ui-click.mp3",
+  shot: "./assets/audio/shot.mp3",
+  miss: "./assets/audio/miss.mp3",
+  hit: "./assets/audio/hit.mp3",
+  sunk: "./assets/audio/sunk.mp3",
+  victory: "./assets/audio/victory.mp3",
+  defeat: "./assets/audio/defeat.mp3",
+  turn: "./assets/audio/turn.mp3",
+  roomReady: "./assets/audio/room-ready.mp3",
+  placeShip: "./assets/audio/place-ship.mp3",
+};
+
+export const menuMusicTracks = [
+  "./assets/audio/menu-loop.mp3",
+  "./assets/audio/menu-loop-v2.mp3",
+];
+
 export const soundPresets = {
   ui: {
     duration: 0.08,
@@ -72,6 +90,14 @@ export const soundPresets = {
       { type: "triangle", frequency: 440, duration: 0.14 },
       { type: "triangle", frequency: 660, duration: 0.14 },
       { type: "sine", frequency: 880, duration: 0.18 },
+    ],
+  },
+  placeShip: {
+    duration: 0.2,
+    gain: 0.07,
+    steps: [
+      { type: "triangle", frequency: 180, duration: 0.08 },
+      { type: "sine", frequency: 260, duration: 0.12 },
     ],
   },
 };

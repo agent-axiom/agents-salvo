@@ -1,8 +1,12 @@
-import { musicPreset, soundPresets } from "./core/audio.js";
+import { menuMusicTracks, musicPreset, soundAssets, soundPresets } from "./core/audio.js";
+
+const EFFECT_VOLUME = 0.82;
+const MUSIC_VOLUME = 0.32;
 
 export function createAudioController() {
   let context = null;
   let musicTimer = null;
+  let musicElement = null;
 
   const getContext = () => {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -28,6 +32,14 @@ export function createAudioController() {
     if (!enabled) {
       return;
     }
+    if (soundAssets[name] && (await playMp3(soundAssets[name], EFFECT_VOLUME))) {
+      return;
+    }
+
+    await playSynthetic(name);
+  };
+
+  const playSynthetic = async (name) => {
     const preset = soundPresets[name];
     const audioContext = await ensureRunning();
     if (!preset || !audioContext) {
@@ -42,9 +54,14 @@ export function createAudioController() {
   };
 
   const startMusic = async (enabled) => {
-    if (!enabled || musicTimer) {
+    if (!enabled || musicTimer || musicElement) {
       return;
     }
+    const track = chooseMenuTrack();
+    if (track && (await startMp3Music(track))) {
+      return;
+    }
+
     const audioContext = await ensureRunning();
     if (!audioContext) {
       return;
@@ -67,6 +84,11 @@ export function createAudioController() {
   };
 
   const stopMusic = () => {
+    if (musicElement) {
+      musicElement.pause();
+      musicElement.currentTime = 0;
+      musicElement = null;
+    }
     if (musicTimer) {
       window.clearTimeout(musicTimer);
       musicTimer = null;
@@ -78,6 +100,42 @@ export function createAudioController() {
     startMusic,
     stopMusic,
   };
+
+  async function playMp3(source, volume) {
+    if (typeof Audio === "undefined") {
+      return false;
+    }
+
+    const sound = new Audio(resolveAudioUrl(source));
+    sound.preload = "auto";
+    sound.volume = volume;
+
+    try {
+      await sound.play();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function startMp3Music(source) {
+    if (typeof Audio === "undefined") {
+      return false;
+    }
+
+    musicElement = new Audio(resolveAudioUrl(source));
+    musicElement.loop = true;
+    musicElement.preload = "auto";
+    musicElement.volume = MUSIC_VOLUME;
+
+    try {
+      await musicElement.play();
+      return true;
+    } catch {
+      musicElement = null;
+      return false;
+    }
+  }
 }
 
 function playTone(audioContext, step, gainValue, offset) {
@@ -95,4 +153,16 @@ function playTone(audioContext, step, gainValue, offset) {
   gain.connect(audioContext.destination);
   oscillator.start(start);
   oscillator.stop(start + step.duration + 0.02);
+}
+
+function chooseMenuTrack() {
+  if (menuMusicTracks.length === 0) {
+    return null;
+  }
+  const index = Math.floor(Math.random() * menuMusicTracks.length);
+  return menuMusicTracks[index];
+}
+
+function resolveAudioUrl(source) {
+  return new URL(source, import.meta.url).href;
 }

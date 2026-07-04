@@ -1,7 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { access } from "node:fs/promises";
+import { resolve } from "node:path";
 
-import { soundPresets, musicPreset, isKnownSound } from "../src/core/audio.js";
+import * as audioCore from "../src/core/audio.js";
+
+const { soundPresets, musicPreset, isKnownSound } = audioCore;
+
+const expectedSoundAssets = {
+  defeat: "./assets/audio/defeat.mp3",
+  hit: "./assets/audio/hit.mp3",
+  miss: "./assets/audio/miss.mp3",
+  placeShip: "./assets/audio/place-ship.mp3",
+  roomReady: "./assets/audio/room-ready.mp3",
+  shot: "./assets/audio/shot.mp3",
+  sunk: "./assets/audio/sunk.mp3",
+  turn: "./assets/audio/turn.mp3",
+  ui: "./assets/audio/ui-click.mp3",
+  victory: "./assets/audio/victory.mp3",
+};
 
 test("soundPresets include all gameplay and interface events", () => {
   assert.deepEqual(
@@ -10,6 +27,7 @@ test("soundPresets include all gameplay and interface events", () => {
       "defeat",
       "hit",
       "miss",
+      "placeShip",
       "roomReady",
       "shot",
       "sunk",
@@ -18,6 +36,27 @@ test("soundPresets include all gameplay and interface events", () => {
       "victory",
     ],
   );
+});
+
+test("soundAssets map every gameplay and interface event to an mp3 file", () => {
+  assert.deepEqual(audioCore.soundAssets, expectedSoundAssets);
+});
+
+test("menuMusicTracks include both mp3 menu loops", () => {
+  assert.deepEqual(audioCore.menuMusicTracks, [
+    "./assets/audio/menu-loop.mp3",
+    "./assets/audio/menu-loop-v2.mp3",
+  ]);
+});
+
+test("configured mp3 audio assets exist in source tree", async () => {
+  const sources = [...Object.values(audioCore.soundAssets ?? {}), ...(audioCore.menuMusicTracks ?? [])];
+
+  assert.equal(sources.length, 12);
+  for (const source of sources) {
+    assert.match(source, /^\.\/assets\/audio\/.+\.mp3$/);
+    await access(resolve("src", source.slice(2)));
+  }
 });
 
 test("each synthetic sound preset has playable oscillator steps", () => {

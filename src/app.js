@@ -17,6 +17,16 @@ import { RemoteClient } from "./remote.js";
 const root = document.querySelector("#app");
 const fleet = defaultFleet();
 const audio = createAudioController();
+const specificSoundActions = new Set([
+  "audio-toggle",
+  "continue-pass",
+  "online-create",
+  "online-join",
+  "online-shot",
+  "randomize",
+  "ready",
+  "shot",
+]);
 
 const state = {
   language: getInitialLanguage(),
@@ -492,7 +502,7 @@ root.addEventListener("click", async (event) => {
 
   const action = button.dataset.action;
   void unlockAudio();
-  if (action !== "shot" && action !== "online-shot" && action !== "audio-toggle") {
+  if (!specificSoundActions.has(action)) {
     playSound("ui");
   }
   if (action === "start-hotseat") startSetup("hotseat");
@@ -575,6 +585,7 @@ function closeResultModal() {
 }
 
 function randomizeSetup() {
+  playSound("placeShip");
   state.setupBoard = randomlyPlaceFleet(fleet);
   render();
 }
@@ -588,6 +599,8 @@ function readySetup() {
   if (!hasFullFleet(state.setupBoard)) {
     return;
   }
+
+  playSound("placeShip");
 
   if (state.mode === "agent") {
     state.boards.p1 = state.setupBoard;
@@ -616,6 +629,7 @@ function readySetup() {
 }
 
 function continueAfterPass() {
+  playSound("turn");
   state.screen = state.game ? "playing" : "setup";
   render();
 }
@@ -671,6 +685,7 @@ async function onlineCreate() {
     state.online.session = await state.online.client.createRoom();
     state.online.roomCodeInput = state.online.session.roomCode;
     await state.online.client.send("placeFleet", { board: state.setupBoard });
+    playSound("placeShip");
     render();
   });
 }
@@ -683,6 +698,7 @@ async function onlineJoin() {
     state.online.client = new RemoteClient(remoteHandlers());
     state.online.session = await state.online.client.joinRoom(state.online.roomCodeInput);
     await state.online.client.send("placeFleet", { board: state.setupBoard });
+    playSound("placeShip");
     render();
   });
 }
