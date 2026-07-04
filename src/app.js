@@ -3,21 +3,22 @@ import { createAudioController } from "./audio.js";
 import {
   createBoard,
   createGameFromBoards,
-  defaultFleet,
   fireAt,
   getCell,
-  hasCompleteFleet,
+  hasCompleteSetup,
+  placeMarker,
   placeShip,
   publicBoardView,
-  randomlyPlaceFleet,
+  randomlyPlaceSetup,
+  removeMarker,
   removeShip,
 } from "./core/game.js";
+import { gamePresets, getGamePreset } from "./core/presets.js";
 import { summarizeBattleLog } from "./core/stats.js";
 import { getInitialLanguage, languages, t } from "./i18n.js";
 import { RemoteClient } from "./remote.js";
 
 const root = document.querySelector("#app");
-const fleet = defaultFleet();
 const audio = createAudioController();
 
 const state = {
@@ -27,8 +28,9 @@ const state = {
   audioUnlocked: false,
   screen: "menu",
   mode: null,
+  presetId: "classic",
   setupPlayerId: "p1",
-  setupBoard: randomlyPlaceFleet(fleet),
+  setupBoard: randomlyPlaceSetup(getGamePreset("classic")),
   setupOrientation: "horizontal",
   setupSelectedShipId: "",
   setupError: "",
@@ -72,6 +74,19 @@ function playerName(playerId) {
     return translate("game.agent");
   }
   return translate("game.player2");
+}
+
+function gameStatusText(game) {
+  if (game.phase === "finished") {
+    return translate("game.winner", { player: playerName(game.winnerId) });
+  }
+  if (game.rules?.salvo) {
+    return translate("game.salvoTurn", {
+      player: playerName(game.currentPlayerId),
+      count: game.salvoRemaining,
+    });
+  }
+  return translate("game.turn", { player: playerName(game.currentPlayerId) });
 }
 
 function render() {
@@ -155,6 +170,7 @@ function renderMenu() {
           <span>${translate("nav.mode")}</span>
           <h2>${translate("mode.choose")}</h2>
         </div>
+        ${renderPresetSelector()}
         <div class="mode-grid">
           <button class="mode-button" data-action="start-hotseat">
             <span class="mode-icon ship-icon" aria-hidden="true"></span>
@@ -186,6 +202,35 @@ function renderMenu() {
   `;
 }
 
+function renderPresetSelector() {
+  return `
+    <section class="preset-selector">
+      <div>
+        <span>${translate("preset.title")}</span>
+        <strong>${translate(`preset.${state.presetId}.name`)}</strong>
+      </div>
+      <div class="preset-grid">
+        ${Object.values(gamePresets)
+          .map((preset) => {
+            const selected = preset.id === state.presetId ? "is-selected" : "";
+            return `
+              <button
+                class="preset-button ${selected}"
+                data-action="select-preset"
+                data-preset-id="${preset.id}"
+                aria-pressed="${preset.id === state.presetId}"
+              >
+                <strong>${translate(`preset.${preset.id}.name`)}</strong>
+                <span>${translate(`preset.${preset.id}.desc`)}</span>
+              </button>
+            `;
+          })
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderSetup() {
   const title =
     state.mode === "agent"
@@ -201,6 +246,7 @@ function renderSetup() {
           <span>${translate("setup.title")}</span>
           <h2>${title}</h2>
         </div>
+        <p class="status-line">${translate(`preset.${state.presetId}.name`)}</p>
         ${
           state.mode === "agent"
             ? `<label class="stacked-field">
@@ -229,8 +275,8 @@ function renderSetup() {
 }
 
 function renderSetupTools() {
-  const placedShipIds = new Set(state.setupBoard.ships.map((ship) => ship.id));
-  const remainingShips = fleet.filter((ship) => !placedShipIds.has(ship.id));
+  const preset = currentPreset();
+  const remainingPieces = setupPieces(preset).filter((piece) => !isPiecePlaced(state.setupBoard, piece.id));
   const orientationKey =
     state.setupOrientation === "horizontal" ? "setup.horizontal" : "setup.vertical";
 
@@ -249,9 +295,9 @@ function renderSetupTools() {
       </div>
       <div class="ship-picker" aria-label="${translate("setup.manual")}">
         ${
-          remainingShips.length === 0
+          remainingPieces.length === 0
             ? `<p>${translate("setup.allPlaced")}</p>`
-            : remainingShips.map((ship) => renderShipChoice(ship)).join("")
+            : remainingPieces.map((piece) => renderShipChoice(piece)).join("")
         }
       </div>
       ${state.setupError ? `<p class="error-line">${translate(state.setupError)}</p>` : ""}
@@ -259,20 +305,34 @@ function renderSetupTools() {
   `;
 }
 
-function renderShipChoice(ship) {
-  const selected = ship.id === state.setupSelectedShipId ? "is-selected" : "";
+function renderShipChoice(piece) {
+  const selected = piece.id === state.setupSelectedShipId ? "is-selected" : "";
+  if (piece.type) {
+    return `
+      <button
+        class="ship-choice marker-choice ${selected}"
+        data-action="select-setup-ship"
+        data-ship-id="${piece.id}"
+        aria-pressed="${piece.id === state.setupSelectedShipId}"
+        aria-label="${translate(`setup.${piece.type}`)}"
+      >
+        <span class="marker-choice-icon ${piece.type}" aria-hidden="true">${piece.type === "mine" ? "!" : "^"}</span>
+        <strong>${translate(`setup.${piece.type}`)}</strong>
+      </button>
+    `;
+  }
   return `
     <button
       class="ship-choice ${selected}"
       data-action="select-setup-ship"
-      data-ship-id="${ship.id}"
-      aria-pressed="${ship.id === state.setupSelectedShipId}"
-      aria-label="${translate("setup.selectShip", { length: ship.length })}"
+      data-ship-id="${piece.id}"
+      aria-pressed="${piece.id === state.setupSelectedShipId}"
+      aria-label="${translate("setup.selectShip", { length: piece.length })}"
     >
       <span class="ship-choice-cells" aria-hidden="true">
-        ${Array.from({ length: ship.length }, () => "<span></span>").join("")}
+        ${Array.from({ length: piece.length }, () => "<span></span>").join("")}
       </span>
-      <strong>${ship.length}</strong>
+      <strong>${piece.length}</strong>
     </button>
   `;
 }
@@ -295,10 +355,7 @@ function renderGame() {
   const opponentId = currentPlayerId === "p1" ? "p2" : "p1";
   const ownBoard = state.game.players[currentPlayerId].board;
   const targetBoard = state.game.players[opponentId].board;
-  const status =
-    state.game.phase === "finished"
-      ? translate("game.winner", { player: playerName(state.game.winnerId) })
-      : translate("game.turn", { player: playerName(currentPlayerId) });
+  const status = gameStatusText(state.game);
 
   return `
     <section class="play-layout">
@@ -334,6 +391,7 @@ function renderOnline() {
           <span>${translate("mode.online")}</span>
           <h2>${translate("online.title")}</h2>
         </div>
+        <p class="status-line">${translate(`preset.${state.presetId}.name`)}</p>
         ${snapshot ? "" : renderSetupTools()}
         ${
           snapshot
@@ -368,6 +426,7 @@ function renderOnlineSnapshot(snapshot) {
   const target = {
     size: snapshot.size ?? 10,
     ships: [],
+    markers: [],
     shots: snapshot.opponentShots ?? [],
   };
   return renderBattlefield({
@@ -472,13 +531,13 @@ function renderBoard(board, { kind, title, disabled = false }) {
       </div>
       <div class="coordinate-board">
         <span class="grid-corner" aria-hidden="true"></span>
-        <div class="column-headers" aria-hidden="true">
+        <div class="column-headers" style="--board-size: ${board.size}" aria-hidden="true">
           ${columnLabels.map((label) => `<span>${label}</span>`).join("")}
         </div>
-        <div class="row-headers" aria-hidden="true">
+        <div class="row-headers" style="--board-size: ${board.size}" aria-hidden="true">
           ${Array.from({ length: board.size }, (_, index) => `<span>${index + 1}</span>`).join("")}
         </div>
-        <div class="board-grid ${kind}" role="grid" aria-label="${title}">
+        <div class="board-grid ${kind}" style="--board-size: ${board.size}" role="grid" aria-label="${title}">
           ${Array.from({ length: board.size * board.size }, (_, index) => {
             const row = Math.floor(index / board.size);
             const col = index % board.size;
@@ -562,6 +621,7 @@ root.addEventListener("click", async (event) => {
   if (action === "start-hotseat") startSetup("hotseat");
   if (action === "start-agent") startSetup("agent");
   if (action === "show-online") showOnline();
+  if (action === "select-preset") selectPreset(button.dataset.presetId);
   if (action === "audio-toggle") toggleAudio();
   if (action === "theme-toggle") toggleTheme();
   if (action === "menu") goToMenu();
@@ -581,12 +641,22 @@ root.addEventListener("click", async (event) => {
   if (action === "online-join") await onlineJoin();
 });
 
+function selectPreset(presetId) {
+  if (!gamePresets[presetId]) {
+    return;
+  }
+  state.presetId = presetId;
+  state.setupBoard = randomlyPlaceSetup(currentPreset());
+  state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+  render();
+}
+
 function startSetup(mode) {
   closeRemote();
   state.mode = mode;
   state.screen = "setup";
   state.setupPlayerId = "p1";
-  state.setupBoard = randomlyPlaceFleet(fleet);
+  state.setupBoard = randomlyPlaceSetup(currentPreset());
   state.setupOrientation = "horizontal";
   state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
   state.setupError = "";
@@ -600,7 +670,7 @@ function showOnline() {
   closeRemote();
   state.mode = "online";
   state.screen = "online";
-  state.setupBoard = randomlyPlaceFleet(fleet);
+  state.setupBoard = randomlyPlaceSetup(currentPreset());
   state.setupOrientation = "horizontal";
   state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
   state.setupError = "";
@@ -648,7 +718,7 @@ function closeResultModal() {
 }
 
 function selectSetupShip(shipId) {
-  if (!shipId || isShipPlaced(state.setupBoard, shipId)) {
+  if (!shipId || isPiecePlaced(state.setupBoard, shipId)) {
     return;
   }
   state.setupSelectedShipId = shipId;
@@ -663,14 +733,14 @@ function rotateSetupOrientation() {
 }
 
 function randomizeSetup() {
-  state.setupBoard = randomlyPlaceFleet(fleet);
+  state.setupBoard = randomlyPlaceSetup(currentPreset());
   state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
   state.setupError = "";
   render();
 }
 
 function resetSetup() {
-  state.setupBoard = createBoard();
+  state.setupBoard = createBoard(currentPreset().size);
   state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
   state.setupError = "";
   render();
@@ -683,8 +753,8 @@ function readySetup() {
 
   if (state.mode === "agent") {
     state.boards.p1 = state.setupBoard;
-    state.boards.p2 = randomlyPlaceFleet(fleet);
-    state.game = createGameFromBoards(state.boards.p1, state.boards.p2, "p1");
+    state.boards.p2 = randomlyPlaceSetup(currentPreset());
+    state.game = createGameFromBoards(state.boards.p1, state.boards.p2, "p1", gameOptions());
     state.screen = "playing";
     render();
     return;
@@ -693,7 +763,7 @@ function readySetup() {
   if (state.setupPlayerId === "p1") {
     state.boards.p1 = state.setupBoard;
     state.setupPlayerId = "p2";
-    state.setupBoard = randomlyPlaceFleet(fleet);
+    state.setupBoard = randomlyPlaceSetup(currentPreset());
     state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
     state.setupError = "";
     state.passPlayerId = "p2";
@@ -703,7 +773,7 @@ function readySetup() {
   }
 
   state.boards.p2 = state.setupBoard;
-  state.game = createGameFromBoards(state.boards.p1, state.boards.p2, "p1");
+  state.game = createGameFromBoards(state.boards.p1, state.boards.p2, "p1", gameOptions());
   state.passPlayerId = "p1";
   state.screen = "pass";
   render();
@@ -723,9 +793,19 @@ function handleSetupCell(coordinate) {
     render();
     return;
   }
+  if (cell.markerId) {
+    state.setupBoard = removeMarker(state.setupBoard, cell.markerId);
+    state.setupSelectedShipId = cell.markerId;
+    state.setupError = "";
+    render();
+    return;
+  }
 
-  const ship = fleet.find((candidate) => candidate.id === state.setupSelectedShipId);
-  if (!ship || isShipPlaced(state.setupBoard, ship.id)) {
+  const preset = currentPreset();
+  const ship = preset.fleet.find((candidate) => candidate.id === state.setupSelectedShipId);
+  const marker = (preset.markers ?? []).find((candidate) => candidate.id === state.setupSelectedShipId);
+  const piece = ship ?? marker;
+  if (!piece || isPiecePlaced(state.setupBoard, piece.id)) {
     state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
     state.setupError = "";
     render();
@@ -733,7 +813,9 @@ function handleSetupCell(coordinate) {
   }
 
   try {
-    state.setupBoard = placeShip(state.setupBoard, ship, coordinate, state.setupOrientation);
+    state.setupBoard = ship
+      ? placeShip(state.setupBoard, ship, coordinate, state.setupOrientation)
+      : placeMarker(state.setupBoard, marker, coordinate);
     state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
     state.setupError = "";
   } catch {
@@ -758,7 +840,7 @@ function handleLocalShot(coordinate) {
     state.game = runAgentTurns(state.game);
   }
 
-  if (state.mode === "hotseat" && state.game.phase === "playing" && result.outcome.type === "miss") {
+  if (state.mode === "hotseat" && state.game.phase === "playing" && state.game.currentPlayerId !== playerId) {
     state.passPlayerId = state.game.currentPlayerId;
     state.screen = "pass";
   }
@@ -792,7 +874,7 @@ async function onlineCreate() {
     state.online.client = new RemoteClient(remoteHandlers());
     state.online.session = await state.online.client.createRoom();
     state.online.roomCodeInput = state.online.session.roomCode;
-    await state.online.client.send("placeFleet", { board: state.setupBoard });
+    await state.online.client.send("placeFleet", { board: state.setupBoard, presetId: state.presetId });
     render();
   });
 }
@@ -804,7 +886,12 @@ async function onlineJoin() {
     }
     state.online.client = new RemoteClient(remoteHandlers());
     state.online.session = await state.online.client.joinRoom(state.online.roomCodeInput);
-    await state.online.client.send("placeFleet", { board: state.setupBoard });
+    if (state.online.session.presetId && state.online.session.presetId !== state.presetId) {
+      state.presetId = state.online.session.presetId;
+      state.setupBoard = randomlyPlaceSetup(currentPreset());
+      state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+    }
+    await state.online.client.send("placeFleet", { board: state.setupBoard, presetId: state.presetId });
     render();
   });
 }
@@ -852,7 +939,7 @@ function playSound(name) {
 }
 
 function playShotOutcome(result) {
-  if (result === "miss") {
+  if (result === "miss" || result === "mine" || result === "sweeper") {
     playSound("miss");
   }
   if (result === "hit") {
@@ -915,22 +1002,43 @@ function closeRemote() {
   state.online.snapshot = null;
 }
 
+function currentPreset() {
+  return getGamePreset(state.presetId);
+}
+
+function setupPieces(preset = currentPreset()) {
+  return [...preset.fleet, ...(preset.markers ?? [])];
+}
+
+function gameOptions() {
+  const preset = currentPreset();
+  return {
+    presetId: preset.id,
+    rules: preset.rules,
+  };
+}
+
 function hasFullFleet(board) {
-  return hasCompleteFleet(board, fleet);
+  return hasCompleteSetup(board, currentPreset());
 }
 
 function firstUnplacedShipId(board) {
-  return fleet.find((ship) => !isShipPlaced(board, ship.id))?.id ?? "";
+  return setupPieces().find((piece) => !isPiecePlaced(board, piece.id))?.id ?? "";
 }
 
-function isShipPlaced(board, shipId) {
-  return board.ships.some((ship) => ship.id === shipId);
+function isPiecePlaced(board, pieceId) {
+  return (
+    board.ships.some((ship) => ship.id === pieceId) ||
+    (board.markers ?? []).some((marker) => marker.id === pieceId)
+  );
 }
 
 function getTargetCell(board, coordinate) {
   const shot = board.shots.find((entry) => entry.row === coordinate.row && entry.col === coordinate.col);
   return {
     shipId: null,
+    markerId: null,
+    markerType: null,
     shot: shot?.result ?? null,
   };
 }
@@ -938,6 +1046,7 @@ function getTargetCell(board, coordinate) {
 function cellClass(cell, kind, board, coordinate) {
   const classes = [];
   if ((kind === "own" || kind === "setup") && cell.shipId) classes.push("has-ship");
+  if ((kind === "own" || kind === "setup") && cell.markerType) classes.push(`has-${cell.markerType}`);
   if (cell.shot) classes.push(cell.shot);
   if (cell.shot === "sunk") classes.push(...sunkEdgeClasses(board, coordinate, kind));
   return classes.join(" ");
@@ -945,8 +1054,12 @@ function cellClass(cell, kind, board, coordinate) {
 
 function cellText(cell, kind) {
   if (cell.shot === "miss") return "•";
+  if (cell.shot === "mine") return "!";
+  if (cell.shot === "sweeper") return "^";
   if (cell.shot === "hit") return "×";
   if (cell.shot === "sunk") return "×";
+  if ((kind === "own" || kind === "setup") && cell.markerType === "mine") return "!";
+  if ((kind === "own" || kind === "setup") && cell.markerType === "sweeper") return "^";
   if ((kind === "own" || kind === "setup") && cell.shipId) return "";
   return "";
 }
@@ -987,6 +1100,9 @@ function renderOnlineStatus(snapshot) {
     if (snapshot.phase === "setup") lines.push(translate("online.setup"));
     if (snapshot.phase === "playing") {
       lines.push(snapshot.isYourTurn ? translate("online.yourTurn") : translate("online.theirTurn"));
+      if (snapshot.rules?.salvo) {
+        lines.push(translate("game.salvoShots", { count: snapshot.salvoRemaining ?? 1 }));
+      }
     }
     if (snapshot.phase === "finished") {
       lines.push(translate("game.winner", { player: playerName(snapshot.winnerId) }));

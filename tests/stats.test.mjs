@@ -12,17 +12,19 @@ test("summarizeBattleLog counts winner shots, hits, misses, sunk ships, and accu
       { playerId: "p1", result: "sunk" },
       { playerId: "p2", result: "miss" },
       { playerId: "p1", result: "sunk" },
+      { playerId: "p1", result: "mine" },
+      { playerId: "p2", result: "sweeper" },
     ],
     "p1",
   );
 
-  assert.equal(summary.totalShots, 6);
+  assert.equal(summary.totalShots, 8);
   assert.deepEqual(summary.winner, {
     playerId: "p1",
-    shots: 4,
+    shots: 5,
     hits: 3,
-    misses: 1,
+    misses: 2,
     sunk: 2,
-    accuracy: 75,
+    accuracy: 60,
   });
 });

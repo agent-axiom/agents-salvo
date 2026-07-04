@@ -45,6 +45,21 @@ test("i18n translates result modal, theme, and history labels in every language"
     "setup.invalidPlacement",
     "setup.allPlaced",
     "setup.selectShip",
+    "setup.mine",
+    "setup.sweeper",
+    "preset.title",
+    "preset.quick.name",
+    "preset.quick.desc",
+    "preset.classic.name",
+    "preset.classic.desc",
+    "preset.salvo.name",
+    "preset.salvo.desc",
+    "preset.perelman.name",
+    "preset.perelman.desc",
+    "game.salvoTurn",
+    "game.salvoShots",
+    "shot.mine",
+    "shot.sweeper",
   ];
 
   for (const language of languages) {

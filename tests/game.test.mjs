@@ -9,16 +9,22 @@ import {
   fireAt,
   getCell,
   placeShip,
+  placeMarker,
   randomlyPlaceFleet,
+  randomlyPlaceSetup,
   receiveShot,
+  removeMarker,
   removeShip,
+  hasCompleteSetup,
 } from "../src/core/game.js";
+import { gamePresets } from "../src/core/presets.js";
 
 test("createBoard creates a 10 by 10 empty board", () => {
   const board = createBoard();
 
   assert.equal(board.size, 10);
   assert.equal(board.ships.length, 0);
+  assert.equal(board.markers.length, 0);
   assert.equal(board.shots.length, 0);
   assert.equal(getCell(board, { row: 0, col: 0 }).shipId, null);
   assert.equal(getCell(board, { row: 9, col: 9 }).shot, null);
@@ -112,6 +118,34 @@ test("randomlyPlaceFleet places every default ship without overlap or touching",
   }
 });
 
+test("randomlyPlaceSetup supports quick and extended presets", () => {
+  const quick = randomlyPlaceSetup(gamePresets.quick, () => 0.33);
+  assert.equal(quick.size, 8);
+  assert.equal(quick.ships.length, gamePresets.quick.fleet.length);
+  assert.equal(hasCompleteSetup(quick, gamePresets.quick), true);
+
+  const extended = randomlyPlaceSetup(gamePresets.perelman, () => 0.48);
+  assert.equal(extended.size, 16);
+  assert.equal(extended.ships.length, gamePresets.perelman.fleet.length);
+  assert.equal(extended.markers.length, gamePresets.perelman.markers.length);
+  assert.equal(hasCompleteSetup(extended, gamePresets.perelman), true);
+});
+
+test("placeMarker places and removes mines and sweepers without touching ships", () => {
+  let board = createBoard(8);
+  board = placeShip(board, { id: "patrol", length: 2 }, { row: 0, col: 0 }, "horizontal");
+  board = placeMarker(board, { id: "mine-1", type: "mine" }, { row: 3, col: 3 });
+
+  assert.equal(getCell(board, { row: 3, col: 3 }).markerType, "mine");
+  assert.throws(
+    () => placeMarker(board, { id: "sweeper-1", type: "sweeper" }, { row: 1, col: 1 }),
+    /touch/i,
+  );
+
+  const updated = removeMarker(board, "mine-1");
+  assert.equal(getCell(updated, { row: 3, col: 3 }).markerType, null);
+});
+
 test("receiveShot records misses, hits, sunk ships, and rejects repeated shots", () => {
   let board = createBoard();
   board = placeShip(board, { id: "patrol", length: 2 }, { row: 0, col: 0 }, "horizontal");
@@ -130,6 +164,20 @@ test("receiveShot records misses, hits, sunk ships, and rejects repeated shots",
   assert.equal(allShipsSunk(result.board), true);
 
   assert.throws(() => receiveShot(result.board, { row: 0, col: 1 }), /already/i);
+});
+
+test("receiveShot records mines and sweepers as special water outcomes", () => {
+  let board = createBoard(8);
+  board = placeMarker(board, { id: "mine-1", type: "mine" }, { row: 2, col: 2 });
+  board = placeMarker(board, { id: "sweeper-1", type: "sweeper" }, { row: 5, col: 5 });
+
+  let result = receiveShot(board, { row: 2, col: 2 });
+  assert.equal(result.outcome.type, "mine");
+  assert.equal(getCell(result.board, { row: 2, col: 2 }).shot, "mine");
+
+  result = receiveShot(result.board, { row: 5, col: 5 });
+  assert.equal(result.outcome.type, "sweeper");
+  assert.equal(getCell(result.board, { row: 5, col: 5 }).shot, "sweeper");
 });
 
 test("receiveShot marks the sunk ship and surrounding cells as known water", () => {
@@ -168,6 +216,25 @@ test("fireAt switches turns after misses and keeps turn after hits", () => {
   result = fireAt(result.game, "p2", { row: 0, col: 0 });
   assert.equal(result.outcome.type, "hit");
   assert.equal(result.game.currentPlayerId, "p2");
+});
+
+test("fireAt in salvo mode spends one shot per living ship before switching turns", () => {
+  let p1Board = createBoard(8);
+  p1Board = placeShip(p1Board, { id: "p1-patrol", length: 2 }, { row: 0, col: 0 }, "horizontal");
+  p1Board = placeShip(p1Board, { id: "p1-scout", length: 1 }, { row: 3, col: 3 }, "horizontal");
+  const p2Board = placeShip(createBoard(8), { id: "p2-patrol", length: 2 }, { row: 2, col: 2 }, "horizontal");
+  let game = createGameFromBoards(p1Board, p2Board, "p1", { rules: { salvo: true } });
+
+  assert.equal(game.salvoRemaining, 2);
+  let result = fireAt(game, "p1", { row: 7, col: 7 });
+  assert.equal(result.outcome.type, "miss");
+  assert.equal(result.game.currentPlayerId, "p1");
+  assert.equal(result.game.salvoRemaining, 1);
+
+  result = fireAt(result.game, "p1", { row: 7, col: 6 });
+  assert.equal(result.outcome.type, "miss");
+  assert.equal(result.game.currentPlayerId, "p2");
+  assert.equal(result.game.salvoRemaining, 1);
 });
 
 test("fireAt finishes the game when the last ship is sunk", () => {

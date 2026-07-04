@@ -3,9 +3,10 @@ import {
   createBoard,
   createGameFromBoards,
   fireAt,
-  hasCompleteFleet,
+  hasCompleteSetup,
   publicBoardView,
 } from "../src/core/game.js";
+import { getGamePreset } from "../src/core/presets.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -76,6 +77,7 @@ export class BattleRoom {
         p1: { token: createToken(), board: null },
         p2: null,
       },
+      presetId: null,
       game: null,
     };
     await this.saveRoom(room);
@@ -101,6 +103,7 @@ export class BattleRoom {
       roomCode,
       playerId: "p2",
       playerToken: room.players.p2.token,
+      presetId: room.presetId,
     });
   }
 
@@ -146,7 +149,9 @@ export class BattleRoom {
       let room = await this.requireRoom();
 
       if (message.type === "placeFleet") {
-        room.players[session.playerId].board = sanitizeBoard(message.board);
+        const preset = roomPreset(room, message.presetId);
+        room.presetId = preset.id;
+        room.players[session.playerId].board = sanitizeBoard(message.board, preset);
         room = maybeStartGame(room);
         await this.saveRoom(room);
         await this.broadcast(room);
@@ -221,15 +226,19 @@ export function createPlayerSnapshot(room, playerId) {
   const opponentJoined = Boolean(room.players[opponentId]);
 
   if (!room.game) {
+    const preset = getGamePreset(room.presetId);
     return {
       roomCode: room.code,
       playerId,
       phase: opponentJoined ? "setup" : "lobby",
-      size: 10,
+      presetId: preset.id,
+      rules: preset.rules,
+      size: preset.size,
+      salvoRemaining: 1,
       isYourTurn: false,
       opponentJoined,
       winnerId: null,
-      you: { board: ownRoomPlayer?.board ? cloneBoard(ownRoomPlayer.board) : createBoard() },
+      you: { board: ownRoomPlayer?.board ? cloneBoard(ownRoomPlayer.board) : createBoard(preset.size) },
       opponentShots: [],
       log: [],
     };
@@ -242,7 +251,10 @@ export function createPlayerSnapshot(room, playerId) {
     roomCode: room.code,
     playerId,
     phase: room.game.phase,
+    presetId: room.game.presetId,
+    rules: room.game.rules,
     size: ownBoard.size,
+    salvoRemaining: room.game.salvoRemaining,
     isYourTurn: room.game.phase === "playing" && room.game.currentPlayerId === playerId,
     opponentJoined,
     winnerId: room.game.winnerId,
@@ -290,21 +302,33 @@ function maybeStartGame(room) {
   if (room.game || !room.players.p1?.board || !room.players.p2?.board) {
     return room;
   }
+  const preset = getGamePreset(room.presetId);
   return {
     ...room,
-    game: createGameFromBoards(room.players.p1.board, room.players.p2.board, "p1"),
+    game: createGameFromBoards(room.players.p1.board, room.players.p2.board, "p1", {
+      presetId: preset.id,
+      rules: preset.rules,
+    }),
   };
 }
 
-function sanitizeBoard(board) {
+function sanitizeBoard(board, preset) {
   const clean = cloneBoard(board);
-  if (clean.size !== 10) {
+  if (clean.size !== preset.size) {
     throw new Error("Invalid board size");
   }
-  if (!hasCompleteFleet(clean)) {
-    throw new Error("A complete legal fleet is required");
+  if (!hasCompleteSetup(clean, preset)) {
+    throw new Error("A complete legal setup is required");
   }
   return clean;
+}
+
+function roomPreset(room, presetId) {
+  const preset = getGamePreset(presetId);
+  if (room.presetId && room.presetId !== preset.id) {
+    throw new Error("Room uses a different battle format");
+  }
+  return preset;
 }
 
 function createRoomCode() {

@@ -4,7 +4,7 @@ export function summarizeBattleLog(log, winnerId) {
   for (const entry of log) {
     const stats = players.get(entry.playerId) ?? createPlayerStats(entry.playerId);
     stats.shots += 1;
-    if (entry.result === "miss") {
+    if (entry.result === "miss" || entry.result === "mine" || entry.result === "sweeper") {
       stats.misses += 1;
     }
     if (entry.result === "hit" || entry.result === "sunk") {
