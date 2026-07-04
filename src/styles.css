@@ -36,7 +36,7 @@
   --water: rgba(96, 165, 250, 0.22);
   --water-dark: rgba(147, 197, 253, 0.42);
   --ship: rgba(224, 239, 255, 0.92);
-  --ship-stroke: rgba(224, 239, 255, 0.46);
+  --ship-stroke: rgba(255, 255, 255, 0.88);
   --hit: #ff8a78;
   --miss: #c4ddff;
   --sunk: #ff6d5f;

@@ -23,8 +23,12 @@ test("dark theme keeps board grid and water readable against the board surface",
     `dark water contrast is ${contrast(water, surface).toFixed(2)}`,
   );
   assert.ok(
-    contrast(shipStroke, water) >= 2,
+    contrast(shipStroke, water) >= 7,
     `dark ship stroke contrast is ${contrast(shipStroke, water).toFixed(2)}`,
+  );
+  assert.ok(
+    relativeLuminance(shipStroke) >= 0.65,
+    `dark ship stroke luminance is ${relativeLuminance(shipStroke).toFixed(2)}`,
   );
   assert.ok(
     contrast(primaryInk, accent) >= 4.5,
