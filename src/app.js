@@ -237,11 +237,12 @@ function renderOnline() {
         </label>
         <button data-action="online-join">${translate("online.join")}</button>
         ${state.online.session ? `<p class="room-code">${state.online.session.roomCode}</p>` : ""}
-        ${state.online.status ? `<p class="status-line">${onlineStatusText(state.online.status)}</p>` : ""}
+        ${renderOnlineStatus(snapshot)}
         ${state.online.error ? `<p class="error-line">${translate("online.error", { message: state.online.error })}</p>` : ""}
+        ${snapshot?.log?.length ? renderLog(snapshot.log) : ""}
       </aside>
       <section class="board-stage">
-        ${snapshot ? renderOnlineSnapshot(snapshot) : renderBoard(state.setupBoard, { kind: "own", title: translate("setup.agent") })}
+        ${snapshot ? renderOnlineSnapshot(snapshot) : renderBoard(state.setupBoard, { kind: "own", title: translate("game.yourFleet") })}
       </section>
     </section>
   `;
@@ -267,28 +268,40 @@ function renderOnlineSnapshot(snapshot) {
 }
 
 function renderBoard(board, { kind, title, disabled = false }) {
+  const columnLabels = Array.from({ length: board.size }, (_, index) =>
+    String.fromCharCode(65 + index),
+  );
   return `
     <section class="board-panel">
       <div class="board-title">
         <h3>${title}</h3>
       </div>
-      <div class="board-grid ${kind}" role="grid" aria-label="${title}">
-        ${Array.from({ length: board.size * board.size }, (_, index) => {
-          const row = Math.floor(index / board.size);
-          const col = index % board.size;
-          const coordinate = { row, col };
-          const cell = kind === "own" ? getCell(board, coordinate) : getTargetCell(board, coordinate);
-          const label = `${translate("board.row", { row: row + 1 })}, ${translate("board.col", { col: col + 1 })}`;
-          const buttonDisabled = disabled || kind === "own" || cell.shot;
-          return `<button
-            class="cell ${cellClass(cell, kind)}"
-            data-action="${kind === "target" ? "shot" : kind === "online-target" ? "online-shot" : ""}"
-            data-row="${row}"
-            data-col="${col}"
-            aria-label="${label}"
-            ${buttonDisabled ? "disabled" : ""}
-          >${cellText(cell, kind)}</button>`;
-        }).join("")}
+      <div class="coordinate-board">
+        <span class="grid-corner" aria-hidden="true"></span>
+        <div class="column-headers" aria-hidden="true">
+          ${columnLabels.map((label) => `<span>${label}</span>`).join("")}
+        </div>
+        <div class="row-headers" aria-hidden="true">
+          ${Array.from({ length: board.size }, (_, index) => `<span>${index + 1}</span>`).join("")}
+        </div>
+        <div class="board-grid ${kind}" role="grid" aria-label="${title}">
+          ${Array.from({ length: board.size * board.size }, (_, index) => {
+            const row = Math.floor(index / board.size);
+            const col = index % board.size;
+            const coordinate = { row, col };
+            const cell = kind === "own" ? getCell(board, coordinate) : getTargetCell(board, coordinate);
+            const label = `${translate("board.row", { row: row + 1 })}, ${translate("board.col", { col: col + 1 })}`;
+            const buttonDisabled = disabled || kind === "own" || cell.shot;
+            return `<button
+              class="cell ${cellClass(cell, kind, board, coordinate)}"
+              data-action="${kind === "target" ? "shot" : kind === "online-target" ? "online-shot" : ""}"
+              data-row="${row}"
+              data-col="${col}"
+              aria-label="${label}"
+              ${buttonDisabled ? "disabled" : ""}
+            >${cellText(cell, kind)}</button>`;
+          }).join("")}
+        </div>
       </div>
     </section>
   `;
@@ -324,14 +337,26 @@ root.addEventListener("change", (event) => {
   if (action === "agent-difficulty") {
     state.agentDifficulty = event.target.value;
   }
+});
+
+root.addEventListener("input", (event) => {
+  updateOnlineInput(event.target);
+});
+
+root.addEventListener("change", (event) => {
+  updateOnlineInput(event.target);
+});
+
+function updateOnlineInput(target) {
+  const action = target.dataset.action;
   if (action === "worker-url") {
-    state.online.workerUrl = event.target.value.trim();
+    state.online.workerUrl = target.value.trim();
     localStorage.setItem("salvo.workerUrl", state.online.workerUrl);
   }
   if (action === "room-code") {
-    state.online.roomCodeInput = event.target.value.trim().toUpperCase();
+    state.online.roomCodeInput = target.value.trim().toUpperCase();
   }
-});
+}
 
 root.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-action]");
@@ -466,26 +491,32 @@ function runAgentTurns(game) {
 
 async function onlineCreate() {
   await withOnlineError(async () => {
+    if (!hasFullFleet(state.setupBoard)) {
+      throw new Error(translate("setup.needFleet"));
+    }
     state.online.client = new RemoteClient(remoteHandlers());
     state.online.session = await state.online.client.createRoom();
     state.online.roomCodeInput = state.online.session.roomCode;
-    state.online.client.send("placeFleet", { board: state.setupBoard });
+    await state.online.client.send("placeFleet", { board: state.setupBoard });
     render();
   });
 }
 
 async function onlineJoin() {
   await withOnlineError(async () => {
+    if (!hasFullFleet(state.setupBoard)) {
+      throw new Error(translate("setup.needFleet"));
+    }
     state.online.client = new RemoteClient(remoteHandlers());
     state.online.session = await state.online.client.joinRoom(state.online.roomCodeInput);
-    state.online.client.send("placeFleet", { board: state.setupBoard });
+    await state.online.client.send("placeFleet", { board: state.setupBoard });
     render();
   });
 }
 
 function handleOnlineShot(coordinate) {
   withOnlineError(async () => {
-    state.online.client.send("fire", { coordinate });
+    await state.online.client.send("fire", { coordinate });
   });
 }
 
@@ -541,10 +572,11 @@ function getTargetCell(board, coordinate) {
   };
 }
 
-function cellClass(cell, kind) {
+function cellClass(cell, kind, board, coordinate) {
   const classes = [];
   if (kind === "own" && cell.shipId) classes.push("has-ship");
   if (cell.shot) classes.push(cell.shot);
+  if (cell.shot === "sunk") classes.push(...sunkEdgeClasses(board, coordinate, kind));
   return classes.join(" ");
 }
 
@@ -575,9 +607,51 @@ function previewClass(index) {
 function onlineStatusText(status) {
   const keys = {
     connecting: "online.connecting",
+    connected: "online.connected",
     disconnected: "online.disconnected",
   };
   return translate(keys[status] ?? "online.waiting");
+}
+
+function renderOnlineStatus(snapshot) {
+  const lines = [];
+  if (state.online.status) {
+    lines.push(onlineStatusText(state.online.status));
+  }
+  if (snapshot) {
+    lines.push(translate("online.youAre", { player: playerName(snapshot.playerId) }));
+    if (snapshot.phase === "lobby") lines.push(translate("online.waiting"));
+    if (snapshot.phase === "setup") lines.push(translate("online.setup"));
+    if (snapshot.phase === "playing") {
+      lines.push(snapshot.isYourTurn ? translate("online.yourTurn") : translate("online.theirTurn"));
+    }
+    if (snapshot.phase === "finished") {
+      lines.push(translate("game.winner", { player: playerName(snapshot.winnerId) }));
+    }
+  }
+
+  return lines.map((line) => `<p class="status-line">${line}</p>`).join("");
+}
+
+function sunkEdgeClasses(board, coordinate, kind) {
+  const hasSunkNeighbor = (rowOffset, colOffset) => {
+    const target = {
+      row: coordinate.row + rowOffset,
+      col: coordinate.col + colOffset,
+    };
+    if (target.row < 0 || target.col < 0 || target.row >= board.size || target.col >= board.size) {
+      return false;
+    }
+    const cell = kind === "own" ? getCell(board, target) : getTargetCell(board, target);
+    return cell.shot === "sunk";
+  };
+
+  return [
+    hasSunkNeighbor(-1, 0) ? "" : "sunk-edge-top",
+    hasSunkNeighbor(1, 0) ? "" : "sunk-edge-bottom",
+    hasSunkNeighbor(0, -1) ? "" : "sunk-edge-left",
+    hasSunkNeighbor(0, 1) ? "" : "sunk-edge-right",
+  ].filter(Boolean);
 }
 
 function escapeHtml(value) {

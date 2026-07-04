@@ -118,6 +118,30 @@ test("receiveShot records misses, hits, sunk ships, and rejects repeated shots",
   assert.throws(() => receiveShot(result.board, { row: 0, col: 1 }), /already/i);
 });
 
+test("receiveShot marks the sunk ship and surrounding cells as known water", () => {
+  let board = createBoard();
+  board = placeShip(board, { id: "patrol", length: 2 }, { row: 4, col: 4 }, "horizontal");
+
+  let result = receiveShot(board, { row: 4, col: 4 });
+  assert.equal(result.outcome.type, "hit");
+
+  result = receiveShot(result.board, { row: 4, col: 5 });
+  assert.equal(result.outcome.type, "sunk");
+  assert.equal(getCell(result.board, { row: 4, col: 4 }).shot, "sunk");
+  assert.equal(getCell(result.board, { row: 4, col: 5 }).shot, "sunk");
+
+  for (let row = 3; row <= 5; row += 1) {
+    for (let col = 3; col <= 6; col += 1) {
+      if (row === 4 && (col === 4 || col === 5)) {
+        continue;
+      }
+      assert.equal(getCell(result.board, { row, col }).shot, "miss");
+    }
+  }
+
+  assert.throws(() => receiveShot(result.board, { row: 3, col: 3 }), /already/i);
+});
+
 test("fireAt switches turns after misses and keeps turn after hits", () => {
   const p1Board = placeShip(createBoard(), { id: "p1-patrol", length: 2 }, { row: 0, col: 0 }, "horizontal");
   const p2Board = placeShip(createBoard(), { id: "p2-patrol", length: 2 }, { row: 1, col: 1 }, "horizontal");

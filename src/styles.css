@@ -359,7 +359,50 @@ input {
   font-size: 16px;
 }
 
+.coordinate-board {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-rows: 24px minmax(0, 1fr);
+  gap: 4px;
+}
+
+.grid-corner {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.column-headers,
+.row-headers {
+  display: grid;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.column-headers {
+  grid-column: 2;
+  grid-row: 1;
+  grid-template-columns: repeat(10, minmax(20px, 1fr));
+  gap: 4px;
+}
+
+.row-headers {
+  grid-column: 1;
+  grid-row: 2;
+  grid-template-rows: repeat(10, minmax(20px, 1fr));
+  gap: 4px;
+}
+
+.column-headers span,
+.row-headers span {
+  display: grid;
+  place-items: center;
+}
+
 .board-grid {
+  grid-column: 2;
+  grid-row: 2;
   display: grid;
   grid-template-columns: repeat(10, minmax(20px, 1fr));
   gap: 4px;
@@ -401,6 +444,26 @@ input {
   color: #ffffff;
   background: var(--sunk);
   border-color: var(--sunk);
+}
+
+.cell.sunk-edge-top {
+  border-top-color: var(--ink);
+  border-top-width: 3px;
+}
+
+.cell.sunk-edge-bottom {
+  border-bottom-color: var(--ink);
+  border-bottom-width: 3px;
+}
+
+.cell.sunk-edge-left {
+  border-left-color: var(--ink);
+  border-left-width: 3px;
+}
+
+.cell.sunk-edge-right {
+  border-right-color: var(--ink);
+  border-right-width: 3px;
 }
 
 .target .cell:not(:disabled),

@@ -1,17 +1,21 @@
 export class RemoteClient {
   constructor({ workerUrl, onMessage, onStatus, onError }) {
     this.workerUrl = workerUrl.replace(/\/$/, "");
+    if (!this.workerUrl) {
+      throw new Error("Worker URL is required");
+    }
     this.onMessage = onMessage;
     this.onStatus = onStatus;
     this.onError = onError;
     this.socket = null;
     this.session = null;
+    this.ready = null;
   }
 
   async createRoom() {
     const response = await fetch(`${this.workerUrl}/rooms`, { method: "POST" });
     this.session = await readJson(response);
-    this.connect();
+    await this.connect();
     return this.session;
   }
 
@@ -20,7 +24,7 @@ export class RemoteClient {
       method: "POST",
     });
     this.session = await readJson(response);
-    this.connect();
+    await this.connect();
     return this.session;
   }
 
@@ -37,7 +41,32 @@ export class RemoteClient {
 
     this.socket = new WebSocket(url);
     this.onStatus?.("connecting");
-    this.socket.addEventListener("open", () => this.onStatus?.("connected"));
+    this.ready = new Promise((resolve, reject) => {
+      this.socket.addEventListener(
+        "open",
+        () => {
+          this.onStatus?.("connected");
+          resolve();
+        },
+        { once: true },
+      );
+      this.socket.addEventListener(
+        "error",
+        () => {
+          reject(new Error("WebSocket connection failed"));
+        },
+        { once: true },
+      );
+      this.socket.addEventListener(
+        "close",
+        () => {
+          if (this.socket?.readyState !== WebSocket.OPEN) {
+            reject(new Error("WebSocket connection closed"));
+          }
+        },
+        { once: true },
+      );
+    });
     this.socket.addEventListener("message", (event) => {
       this.onMessage?.(JSON.parse(event.data));
     });
@@ -45,9 +74,11 @@ export class RemoteClient {
     this.socket.addEventListener("error", () => {
       this.onError?.(new Error("WebSocket connection failed"));
     });
+    return this.ready;
   }
 
-  send(type, payload = {}) {
+  async send(type, payload = {}) {
+    await this.ready;
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       throw new Error("Socket is not connected");
     }

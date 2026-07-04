@@ -121,12 +121,16 @@ export function receiveShot(board, coordinate) {
   )
     ? "sunk"
     : "hit";
+  const shots =
+    type === "sunk"
+      ? markSunkShipShots(board, updatedShip)
+      : [...board.shots, { ...coordinate, result: type, shipId: targetShip.id }];
 
   return {
     board: {
       ...board,
       ships: updatedShips,
-      shots: [...board.shots, { ...coordinate, result: type, shipId: targetShip.id }],
+      shots,
     },
     outcome: { type, coordinate, shipId: targetShip.id },
   };
@@ -252,6 +256,48 @@ function findTouchingShipAt(board, coordinate) {
   );
 }
 
+function markSunkShipShots(board, ship) {
+  const shotsByCoordinate = new Map(
+    board.shots.map((shot) => [coordinateKey(shot), { ...shot }]),
+  );
+
+  for (const cell of ship.cells) {
+    shotsByCoordinate.set(coordinateKey(cell), {
+      ...cell,
+      result: "sunk",
+      shipId: ship.id,
+    });
+  }
+
+  for (const cell of surroundingCells(board, ship.cells)) {
+    const key = coordinateKey(cell);
+    if (!shotsByCoordinate.has(key)) {
+      shotsByCoordinate.set(key, { ...cell, result: "miss" });
+    }
+  }
+
+  return Array.from(shotsByCoordinate.values());
+}
+
+function surroundingCells(board, cells) {
+  const shipCells = new Set(cells.map(coordinateKey));
+  const surrounding = new Map();
+
+  for (const cell of cells) {
+    for (let row = cell.row - 1; row <= cell.row + 1; row += 1) {
+      for (let col = cell.col - 1; col <= cell.col + 1; col += 1) {
+        const candidate = { row, col };
+        const key = coordinateKey(candidate);
+        if (isInBounds(board, candidate) && !shipCells.has(key)) {
+          surrounding.set(key, candidate);
+        }
+      }
+    }
+  }
+
+  return Array.from(surrounding.values());
+}
+
 function validPlacements(board, ship) {
   const placements = [];
   for (const orientation of ["horizontal", "vertical"]) {
@@ -289,6 +335,10 @@ function isInBounds(board, coordinate) {
 
 function sameCoordinate(a, b) {
   return a.row === b.row && a.col === b.col;
+}
+
+function coordinateKey(coordinate) {
+  return `${coordinate.row}:${coordinate.col}`;
 }
 
 function cellsTouch(a, b) {

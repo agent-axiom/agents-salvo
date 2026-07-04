@@ -38,7 +38,13 @@ Backend нужен только для режима “Online room”.
 npx wrangler deploy
 ```
 
-После deploy вставить Worker URL в поле `Worker URL` в online-режиме. URL сохраняется в `localStorage`.
+Текущий Worker URL уже прописан в frontend:
+
+```text
+https://agents-salvo-room.if-ab6.workers.dev
+```
+
+Его можно переопределить в поле `Worker URL` в online-режиме. Значение сохраняется в `localStorage`.
 
 `wrangler.toml` использует Durable Objects с SQLite storage:
 
