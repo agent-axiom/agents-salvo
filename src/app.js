@@ -26,7 +26,7 @@ const state = {
   agentDifficulty: "normal",
   passPlayerId: null,
   online: {
-    workerUrl: localStorage.getItem("salvo.workerUrl") || window.SALVO_CONFIG?.workerUrl || "",
+    workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     roomCodeInput: "",
     status: "",
     error: "",
@@ -224,10 +224,6 @@ function renderOnline() {
           <span>${translate("mode.online")}</span>
           <h2>${translate("online.title")}</h2>
         </div>
-        <label class="stacked-field">
-          <span>${translate("online.workerUrl")}</span>
-          <input data-action="worker-url" value="${escapeHtml(state.online.workerUrl)}" placeholder="https://salvo.example.workers.dev" />
-        </label>
         <div class="button-row">
           <button class="primary-button" data-action="online-create">${translate("online.create")}</button>
         </div>
@@ -349,10 +345,6 @@ root.addEventListener("change", (event) => {
 
 function updateOnlineInput(target) {
   const action = target.dataset.action;
-  if (action === "worker-url") {
-    state.online.workerUrl = target.value.trim();
-    localStorage.setItem("salvo.workerUrl", state.online.workerUrl);
-  }
   if (action === "room-code") {
     state.online.roomCodeInput = target.value.trim().toUpperCase();
   }

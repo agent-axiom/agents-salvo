@@ -44,7 +44,7 @@ npx wrangler deploy
 https://agents-salvo-room.if-ab6.workers.dev
 ```
 
-Его можно переопределить в поле `Worker URL` в online-режиме. Значение сохраняется в `localStorage`.
+Для пользователей он не отображается. При смене backend обновить `window.SALVO_CONFIG.workerUrl` в `src/index.html` и заново задеплоить Pages.
 
 `wrangler.toml` использует Durable Objects с SQLite storage:
 
