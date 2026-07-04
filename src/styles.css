@@ -540,6 +540,82 @@ input {
   gap: 7px;
 }
 
+.setup-tools {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.setup-tools-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.setup-tools-header > span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.orientation-button {
+  display: grid;
+  grid-template-columns: 18px auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.orientation-button strong {
+  font-size: 12px;
+}
+
+.ship-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ship-picker p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ship-choice {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 9px;
+}
+
+.ship-choice.is-selected {
+  border-color: var(--warning);
+  box-shadow: 0 0 0 3px var(--glow);
+}
+
+.ship-choice-cells {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 12px;
+  gap: 3px;
+  justify-content: start;
+}
+
+.ship-choice-cells span {
+  height: 12px;
+  border-radius: 3px;
+  background: var(--ship);
+}
+
 .board-stage {
   display: grid;
   gap: 18px;
@@ -655,6 +731,25 @@ input {
 .cell.has-ship {
   background: var(--ship);
   border-color: var(--ship);
+}
+
+.setup .cell:not(:disabled) {
+  cursor: crosshair;
+}
+
+.setup .cell:not(:disabled):hover {
+  background: var(--warning);
+  border-color: #ba8700;
+  box-shadow: 0 0 18px var(--glow);
+}
+
+.setup .cell.has-ship:not(:disabled) {
+  cursor: pointer;
+}
+
+.setup .cell.has-ship:not(:disabled):hover {
+  background: var(--sunk);
+  border-color: var(--sunk);
 }
 
 .cell.miss {

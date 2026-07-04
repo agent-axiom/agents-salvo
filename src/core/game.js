@@ -64,6 +64,18 @@ export function placeShip(board, ship, start, orientation) {
   };
 }
 
+export function removeShip(board, shipId) {
+  if (!board.ships.some((ship) => ship.id === shipId)) {
+    throw new Error(`Ship ${shipId} is not placed`);
+  }
+
+  return {
+    ...board,
+    ships: board.ships.filter((ship) => ship.id !== shipId).map(cloneShip),
+    shots: board.shots.map((shot) => ({ ...shot })),
+  };
+}
+
 export function randomlyPlaceFleet(fleet = defaultFleet(), size = 10, rng = Math.random) {
   return fleet.reduce((board, ship) => {
     const placements = validPlacements(board, ship);

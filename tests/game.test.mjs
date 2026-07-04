@@ -11,6 +11,7 @@ import {
   placeShip,
   randomlyPlaceFleet,
   receiveShot,
+  removeShip,
 } from "../src/core/game.js";
 
 test("createBoard creates a 10 by 10 empty board", () => {
@@ -66,6 +67,19 @@ test("placeShip rejects ships touching by side or corner", () => {
     () => placeShip(board, { id: "corner-touch", length: 1 }, { row: 1, col: 4 }, "horizontal"),
     /touch/i,
   );
+});
+
+test("removeShip removes one placed ship and keeps the rest of the board", () => {
+  let board = createBoard();
+  board = placeShip(board, { id: "battleship", length: 4 }, { row: 0, col: 0 }, "horizontal");
+  board = placeShip(board, { id: "patrol", length: 1 }, { row: 3, col: 3 }, "horizontal");
+
+  const updated = removeShip(board, "battleship");
+
+  assert.equal(getCell(updated, { row: 0, col: 0 }).shipId, null);
+  assert.equal(getCell(updated, { row: 3, col: 3 }).shipId, "patrol");
+  assert.equal(board.ships.length, 2);
+  assert.equal(updated.ships.length, 1);
 });
 
 test("randomlyPlaceFleet places every default ship without overlap or touching", () => {

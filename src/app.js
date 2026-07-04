@@ -7,8 +7,10 @@ import {
   fireAt,
   getCell,
   hasCompleteFleet,
+  placeShip,
   publicBoardView,
   randomlyPlaceFleet,
+  removeShip,
 } from "./core/game.js";
 import { summarizeBattleLog } from "./core/stats.js";
 import { getInitialLanguage, languages, t } from "./i18n.js";
@@ -27,6 +29,9 @@ const state = {
   mode: null,
   setupPlayerId: "p1",
   setupBoard: randomlyPlaceFleet(fleet),
+  setupOrientation: "horizontal",
+  setupSelectedShipId: "",
+  setupError: "",
   boards: { p1: null, p2: null },
   game: null,
   agentDifficulty: "normal",
@@ -207,6 +212,7 @@ function renderSetup() {
               </label>`
             : ""
         }
+        ${renderSetupTools()}
         <div class="button-row">
           <button data-action="randomize">${translate("setup.randomize")}</button>
           <button class="secondary-button" data-action="reset">${translate("setup.reset")}</button>
@@ -216,9 +222,58 @@ function renderSetup() {
         </button>
       </aside>
       <section class="board-stage">
-        ${renderBoard(state.setupBoard, { kind: "own", title })}
+        ${renderBoard(state.setupBoard, { kind: "setup", title })}
       </section>
     </section>
+  `;
+}
+
+function renderSetupTools() {
+  const placedShipIds = new Set(state.setupBoard.ships.map((ship) => ship.id));
+  const remainingShips = fleet.filter((ship) => !placedShipIds.has(ship.id));
+  const orientationKey =
+    state.setupOrientation === "horizontal" ? "setup.horizontal" : "setup.vertical";
+
+  return `
+    <section class="setup-tools">
+      <div class="setup-tools-header">
+        <span>${translate("setup.manual")}</span>
+        <button
+          class="orientation-button"
+          data-action="rotate-setup"
+          aria-label="${translate("setup.orientation")}: ${translate(orientationKey)}"
+        >
+          <span aria-hidden="true">${state.setupOrientation === "horizontal" ? "↔" : "↕"}</span>
+          <strong>${translate(orientationKey)}</strong>
+        </button>
+      </div>
+      <div class="ship-picker" aria-label="${translate("setup.manual")}">
+        ${
+          remainingShips.length === 0
+            ? `<p>${translate("setup.allPlaced")}</p>`
+            : remainingShips.map((ship) => renderShipChoice(ship)).join("")
+        }
+      </div>
+      ${state.setupError ? `<p class="error-line">${translate(state.setupError)}</p>` : ""}
+    </section>
+  `;
+}
+
+function renderShipChoice(ship) {
+  const selected = ship.id === state.setupSelectedShipId ? "is-selected" : "";
+  return `
+    <button
+      class="ship-choice ${selected}"
+      data-action="select-setup-ship"
+      data-ship-id="${ship.id}"
+      aria-pressed="${ship.id === state.setupSelectedShipId}"
+      aria-label="${translate("setup.selectShip", { length: ship.length })}"
+    >
+      <span class="ship-choice-cells" aria-hidden="true">
+        ${Array.from({ length: ship.length }, () => "<span></span>").join("")}
+      </span>
+      <strong>${ship.length}</strong>
+    </button>
   `;
 }
 
@@ -279,6 +334,15 @@ function renderOnline() {
           <span>${translate("mode.online")}</span>
           <h2>${translate("online.title")}</h2>
         </div>
+        ${snapshot ? "" : renderSetupTools()}
+        ${
+          snapshot
+            ? ""
+            : `<div class="button-row">
+                <button data-action="randomize">${translate("setup.randomize")}</button>
+                <button class="secondary-button" data-action="reset">${translate("setup.reset")}</button>
+              </div>`
+        }
         <div class="button-row">
           <button class="primary-button" data-action="online-create">${translate("online.create")}</button>
         </div>
@@ -292,7 +356,7 @@ function renderOnline() {
         ${state.online.error ? `<p class="error-line">${translate("online.error", { message: state.online.error })}</p>` : ""}
       </aside>
       <section class="board-stage">
-        ${snapshot ? renderOnlineSnapshot(snapshot) : renderBoard(state.setupBoard, { kind: "own", title: translate("game.yourFleet") })}
+        ${snapshot ? renderOnlineSnapshot(snapshot) : renderBoard(state.setupBoard, { kind: "setup", title: translate("game.yourFleet") })}
       </section>
       ${renderOnlineResultModal(snapshot)}
     </section>
@@ -419,12 +483,12 @@ function renderBoard(board, { kind, title, disabled = false }) {
             const row = Math.floor(index / board.size);
             const col = index % board.size;
             const coordinate = { row, col };
-            const cell = kind === "own" ? getCell(board, coordinate) : getTargetCell(board, coordinate);
+            const cell = kind === "own" || kind === "setup" ? getCell(board, coordinate) : getTargetCell(board, coordinate);
             const label = `${translate("board.row", { row: row + 1 })}, ${translate("board.col", { col: col + 1 })}`;
             const buttonDisabled = disabled || kind === "own" || cell.shot;
             return `<button
               class="cell ${cellClass(cell, kind, board, coordinate)}"
-              data-action="${kind === "target" ? "shot" : kind === "online-target" ? "online-shot" : ""}"
+              data-action="${kind === "target" ? "shot" : kind === "online-target" ? "online-shot" : kind === "setup" ? "setup-cell" : ""}"
               data-row="${row}"
               data-col="${col}"
               aria-label="${label}"
@@ -504,10 +568,13 @@ root.addEventListener("click", async (event) => {
   if (action === "new-game") startSetup(state.mode);
   if (action === "online-new-game") showOnline();
   if (action === "close-result") closeResultModal();
+  if (action === "select-setup-ship") selectSetupShip(button.dataset.shipId);
+  if (action === "rotate-setup") rotateSetupOrientation();
   if (action === "randomize") randomizeSetup();
   if (action === "reset") resetSetup();
   if (action === "ready") readySetup();
   if (action === "continue-pass") continueAfterPass();
+  if (action === "setup-cell") handleSetupCell(readCoordinate(button));
   if (action === "shot") handleLocalShot(readCoordinate(button));
   if (action === "online-shot") handleOnlineShot(readCoordinate(button));
   if (action === "online-create") await onlineCreate();
@@ -520,6 +587,9 @@ function startSetup(mode) {
   state.screen = "setup";
   state.setupPlayerId = "p1";
   state.setupBoard = randomlyPlaceFleet(fleet);
+  state.setupOrientation = "horizontal";
+  state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+  state.setupError = "";
   state.boards = { p1: null, p2: null };
   state.game = null;
   state.resultModalDismissed = null;
@@ -531,6 +601,9 @@ function showOnline() {
   state.mode = "online";
   state.screen = "online";
   state.setupBoard = randomlyPlaceFleet(fleet);
+  state.setupOrientation = "horizontal";
+  state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+  state.setupError = "";
   state.online.roomCodeInput = "";
   state.online.error = "";
   state.online.status = "";
@@ -574,13 +647,32 @@ function closeResultModal() {
   render();
 }
 
+function selectSetupShip(shipId) {
+  if (!shipId || isShipPlaced(state.setupBoard, shipId)) {
+    return;
+  }
+  state.setupSelectedShipId = shipId;
+  state.setupError = "";
+  render();
+}
+
+function rotateSetupOrientation() {
+  state.setupOrientation = state.setupOrientation === "horizontal" ? "vertical" : "horizontal";
+  state.setupError = "";
+  render();
+}
+
 function randomizeSetup() {
   state.setupBoard = randomlyPlaceFleet(fleet);
+  state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+  state.setupError = "";
   render();
 }
 
 function resetSetup() {
   state.setupBoard = createBoard();
+  state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+  state.setupError = "";
   render();
 }
 
@@ -602,6 +694,8 @@ function readySetup() {
     state.boards.p1 = state.setupBoard;
     state.setupPlayerId = "p2";
     state.setupBoard = randomlyPlaceFleet(fleet);
+    state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+    state.setupError = "";
     state.passPlayerId = "p2";
     state.screen = "pass";
     render();
@@ -617,6 +711,34 @@ function readySetup() {
 
 function continueAfterPass() {
   state.screen = state.game ? "playing" : "setup";
+  render();
+}
+
+function handleSetupCell(coordinate) {
+  const cell = getCell(state.setupBoard, coordinate);
+  if (cell.shipId) {
+    state.setupBoard = removeShip(state.setupBoard, cell.shipId);
+    state.setupSelectedShipId = cell.shipId;
+    state.setupError = "";
+    render();
+    return;
+  }
+
+  const ship = fleet.find((candidate) => candidate.id === state.setupSelectedShipId);
+  if (!ship || isShipPlaced(state.setupBoard, ship.id)) {
+    state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+    state.setupError = "";
+    render();
+    return;
+  }
+
+  try {
+    state.setupBoard = placeShip(state.setupBoard, ship, coordinate, state.setupOrientation);
+    state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+    state.setupError = "";
+  } catch {
+    state.setupError = "setup.invalidPlacement";
+  }
   render();
 }
 
@@ -797,6 +919,14 @@ function hasFullFleet(board) {
   return hasCompleteFleet(board, fleet);
 }
 
+function firstUnplacedShipId(board) {
+  return fleet.find((ship) => !isShipPlaced(board, ship.id))?.id ?? "";
+}
+
+function isShipPlaced(board, shipId) {
+  return board.ships.some((ship) => ship.id === shipId);
+}
+
 function getTargetCell(board, coordinate) {
   const shot = board.shots.find((entry) => entry.row === coordinate.row && entry.col === coordinate.col);
   return {
@@ -807,7 +937,7 @@ function getTargetCell(board, coordinate) {
 
 function cellClass(cell, kind, board, coordinate) {
   const classes = [];
-  if (kind === "own" && cell.shipId) classes.push("has-ship");
+  if ((kind === "own" || kind === "setup") && cell.shipId) classes.push("has-ship");
   if (cell.shot) classes.push(cell.shot);
   if (cell.shot === "sunk") classes.push(...sunkEdgeClasses(board, coordinate, kind));
   return classes.join(" ");
@@ -817,7 +947,7 @@ function cellText(cell, kind) {
   if (cell.shot === "miss") return "•";
   if (cell.shot === "hit") return "×";
   if (cell.shot === "sunk") return "×";
-  if (kind === "own" && cell.shipId) return "";
+  if ((kind === "own" || kind === "setup") && cell.shipId) return "";
   return "";
 }
 
