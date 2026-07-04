@@ -75,4 +75,4 @@ public/audio/room-ready.mp3
 
 ## 历史说明
 
-首页历史文本基于俄文维基百科文章 “Морской бой (игра)”：https://ru.wikipedia.org/wiki/Морской_бой_(игра)
+中文首页历史来源链接到 “海战棋”：https://zh.wikipedia.org/wiki/海战棋

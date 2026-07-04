@@ -40,3 +40,12 @@ test("i18n translates result modal, theme, and history labels in every language"
     }
   }
 });
+
+test("i18n uses localized Wikipedia source URLs", () => {
+  assert.equal(t("en", "history.sourceUrl"), "https://en.wikipedia.org/wiki/Battleship_(game)");
+  assert.equal(
+    t("ru", "history.sourceUrl"),
+    "https://ru.wikipedia.org/wiki/Морской_бой_(игра)",
+  );
+  assert.equal(t("zh-CN", "history.sourceUrl"), "https://zh.wikipedia.org/wiki/海战棋");
+});

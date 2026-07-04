@@ -95,4 +95,4 @@ public/audio/room-ready.mp3
 
 ## Historical Note
 
-The main-screen historical text is based on the Russian Wikipedia article “Морской бой (игра)”: https://ru.wikipedia.org/wiki/Морской_бой_(игра)
+The English main-screen historical source links to “Battleship (game)”: https://en.wikipedia.org/wiki/Battleship_(game)

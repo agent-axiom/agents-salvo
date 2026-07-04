@@ -169,7 +169,7 @@ function renderMenu() {
           <h3>${translate("history.title")}</h3>
           <p>${translate("history.body")}</p>
           <p>${translate("history.body2")}</p>
-          <a href="https://ru.wikipedia.org/wiki/%D0%9C%D0%BE%D1%80%D1%81%D0%BA%D0%BE%D0%B9_%D0%B1%D0%BE%D0%B9_(%D0%B8%D0%B3%D1%80%D0%B0)" target="_blank" rel="noreferrer">${translate("history.source")}</a>
+          <a href="${translate("history.sourceUrl")}" target="_blank" rel="noreferrer">${translate("history.source")}</a>
         </section>
       </div>
       <div class="fleet-visual" aria-hidden="true">
