@@ -13,6 +13,7 @@ import {
   removeMarker,
   removeShip,
 } from "./core/game.js";
+import { visibleBattleLog } from "./core/log.js";
 import { gamePresets, getGamePreset } from "./core/presets.js";
 import { summarizeBattleLog } from "./core/stats.js";
 import { getInitialLanguage, languages, t } from "./i18n.js";
@@ -567,9 +568,7 @@ function renderLog(log) {
       ${
         log.length === 0
           ? `<p>${translate("log.empty")}</p>`
-          : `<ol>${log
-              .slice(-8)
-              .reverse()
+          : `<ol>${visibleBattleLog(log)
               .map(
                 (entry) =>
                   `<li><span>${playerName(entry.playerId)}</span><strong>${translate(`shot.${entry.result}`)}</strong><small>${String.fromCharCode(65 + entry.coordinate.col)}${entry.coordinate.row + 1}</small></li>`,

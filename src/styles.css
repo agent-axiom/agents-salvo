@@ -988,9 +988,14 @@ input {
 .log-panel ol {
   display: grid;
   gap: 8px;
-  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 6px 0 0;
   margin: 0;
   list-style: none;
+  scrollbar-color: var(--accent) transparent;
+  scrollbar-width: thin;
 }
 
 .log-panel li {
