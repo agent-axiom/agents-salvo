@@ -21,6 +21,8 @@ import { RemoteClient } from "./remote.js";
 
 const root = document.querySelector("#app");
 const audio = createAudioController();
+const authTokenStorageKey = "salvo.authToken";
+let telegramWidgetScheduled = false;
 
 const state = {
   language: getInitialLanguage(),
@@ -41,6 +43,14 @@ const state = {
   agentDifficulty: "normal",
   passPlayerId: null,
   resultModalDismissed: null,
+  auth: {
+    workerUrl: window.SALVO_CONFIG?.workerUrl || "",
+    telegramBotUsername: window.SALVO_CONFIG?.telegramBotUsername || "",
+    token: getInitialAuthToken(),
+    user: null,
+    error: "",
+    loading: false,
+  },
   online: {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     roomCodeInput: "",
@@ -70,6 +80,10 @@ function getInitialVisualStyle() {
 
 function getInitialAudioEnabled() {
   return localStorage.getItem("salvo.audio") !== "off";
+}
+
+function getInitialAuthToken() {
+  return localStorage.getItem(authTokenStorageKey) || "";
 }
 
 function translate(key, params) {
@@ -161,12 +175,50 @@ function render() {
                 .join("")}
             </select>
           </label>
+          ${renderAuthControl()}
         </div>
       </header>
       ${renderScreen()}
     </main>
   `;
+  mountTelegramLoginWidget();
   syncMenuMusic();
+}
+
+function renderAuthControl() {
+  if (state.auth.user) {
+    const user = state.auth.user;
+    return `
+      <div class="auth-control is-authenticated">
+        <span>${translate("auth.label")}</span>
+        <div class="auth-card">
+          ${renderAuthAvatar(user)}
+          <div class="auth-name">
+            <strong>${escapeHtml(user.name || translate("auth.telegram"))}</strong>
+            <small>${user.username ? `@${escapeHtml(user.username)}` : translate("auth.telegram")}</small>
+          </div>
+          <button class="icon-button auth-logout" data-action="auth-logout" aria-label="${translate("auth.logout")}">×</button>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="auth-control">
+      <span>${translate("auth.label")}</span>
+      <div id="telegram-login-slot" class="telegram-login-slot" aria-label="${translate("auth.telegram")}"></div>
+      ${state.auth.loading ? `<small>${translate("auth.loading")}</small>` : ""}
+      ${state.auth.error ? `<small class="auth-error">${translate("auth.error", { message: state.auth.error })}</small>` : ""}
+    </div>
+  `;
+}
+
+function renderAuthAvatar(user) {
+  if (user.photoUrl) {
+    return `<img class="auth-avatar" src="${escapeHtml(user.photoUrl)}" alt="" referrerpolicy="no-referrer">`;
+  }
+  const letter = (user.name || user.username || "T").trim().slice(0, 1).toUpperCase();
+  return `<span class="auth-avatar" aria-hidden="true">${escapeHtml(letter)}</span>`;
 }
 
 function renderScreen() {
@@ -668,7 +720,12 @@ root.addEventListener("click", async (event) => {
   if (action === "online-shot") handleOnlineShot(readCoordinate(button));
   if (action === "online-create") await onlineCreate();
   if (action === "online-join") await onlineJoin();
+  if (action === "auth-logout") await logoutAuth();
 });
+
+window.onTelegramAuth = (payload) => {
+  void handleTelegramAuth(payload);
+};
 
 function selectPreset(presetId) {
   if (!gamePresets[presetId]) {
@@ -960,6 +1017,111 @@ function remoteHandlers() {
       render();
     },
   };
+}
+
+function mountTelegramLoginWidget() {
+  const slot = document.querySelector("#telegram-login-slot");
+  if (!slot || state.auth.user || state.auth.loading) {
+    return;
+  }
+  if (!state.auth.telegramBotUsername) {
+    slot.textContent = translate("auth.notConfigured");
+    return;
+  }
+  if (document.readyState !== "complete") {
+    if (!telegramWidgetScheduled) {
+      telegramWidgetScheduled = true;
+      window.addEventListener(
+        "load",
+        () => {
+          telegramWidgetScheduled = false;
+          mountTelegramLoginWidget();
+        },
+        { once: true },
+      );
+    }
+    return;
+  }
+
+  slot.innerHTML = "";
+  const script = document.createElement("script");
+  script.src = "https://telegram.org/js/telegram-widget.js?22";
+  script.async = true;
+  script.setAttribute("data-telegram-login", state.auth.telegramBotUsername);
+  script.setAttribute("data-size", "medium");
+  script.setAttribute("data-radius", "6");
+  script.setAttribute("data-onauth", "onTelegramAuth(user)");
+  slot.append(script);
+}
+
+async function handleTelegramAuth(payload) {
+  await withAuthError(async () => {
+    const response = await fetch(`${state.auth.workerUrl}/auth/telegram`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const authPayload = await readAuthJson(response);
+    state.auth.token = authPayload.token;
+    state.auth.user = authPayload.user;
+    localStorage.setItem(authTokenStorageKey, state.auth.token);
+  });
+}
+
+async function refreshAuth() {
+  if (!state.auth.token || !state.auth.workerUrl) {
+    return;
+  }
+  await withAuthError(async () => {
+    const response = await fetch(`${state.auth.workerUrl}/auth/me`, {
+      headers: { Authorization: `Bearer ${state.auth.token}` },
+    });
+    const payload = await readAuthJson(response);
+    state.auth.user = payload.user;
+    if (!payload.user) {
+      state.auth.token = "";
+      localStorage.removeItem(authTokenStorageKey);
+    }
+  });
+}
+
+async function logoutAuth() {
+  await withAuthError(async () => {
+    if (state.auth.token && state.auth.workerUrl) {
+      await fetch(`${state.auth.workerUrl}/auth/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${state.auth.token}` },
+      }).catch(() => {});
+    }
+    state.auth.token = "";
+    state.auth.user = null;
+    localStorage.removeItem(authTokenStorageKey);
+  });
+}
+
+async function withAuthError(action) {
+  state.auth.loading = true;
+  state.auth.error = "";
+  render();
+  try {
+    await action();
+  } catch (error) {
+    state.auth.error = error.message;
+    state.auth.token = "";
+    state.auth.user = null;
+    localStorage.removeItem(authTokenStorageKey);
+  } finally {
+    state.auth.loading = false;
+    render();
+  }
+}
+
+async function readAuthJson(response) {
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error ?? `HTTP ${response.status}`);
+  }
+  return payload;
 }
 
 async function unlockAudio() {
@@ -1307,3 +1469,4 @@ function escapeHtml(value) {
 }
 
 render();
+void refreshAuth();

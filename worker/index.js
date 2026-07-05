@@ -7,11 +7,18 @@ import {
   publicBoardView,
 } from "../src/core/game.js";
 import { getGamePreset } from "../src/core/presets.js";
+import {
+  createSessionToken,
+  parseBearerToken,
+  publicUser,
+  verifySessionToken,
+  verifyTelegramLoginPayload,
+} from "./auth.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type",
 };
 
 export default {
@@ -24,6 +31,16 @@ export default {
     const route = routeRequest(url);
     if (!route) {
       return json({ error: "Not found" }, 404);
+    }
+
+    if (route.kind === "authTelegram" && request.method === "POST") {
+      return authenticateTelegram(request, env);
+    }
+    if (route.kind === "authMe" && request.method === "GET") {
+      return currentUser(request, env);
+    }
+    if (route.kind === "authLogout" && request.method === "POST") {
+      return json({ ok: true });
     }
 
     if (route.kind === "create" && request.method === "POST") {
@@ -271,6 +288,15 @@ export function createPlayerSnapshot(room, playerId) {
 
 function routeRequest(url) {
   const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length === 2 && parts[0] === "auth" && parts[1] === "telegram") {
+    return { kind: "authTelegram" };
+  }
+  if (parts.length === 2 && parts[0] === "auth" && parts[1] === "me") {
+    return { kind: "authMe" };
+  }
+  if (parts.length === 2 && parts[0] === "auth" && parts[1] === "logout") {
+    return { kind: "authLogout" };
+  }
   if (parts.length === 1 && parts[0] === "rooms") {
     return { kind: "create", roomCode: url.searchParams.get("code") || createRoomCode() };
   }
@@ -281,6 +307,29 @@ function routeRequest(url) {
     return { kind: "socket", roomCode: sanitizeRoomCode(parts[1]) };
   }
   return null;
+}
+
+async function authenticateTelegram(request, env) {
+  try {
+    const payload = await request.json();
+    const user = await verifyTelegramLoginPayload(payload, env.TELEGRAM_BOT_TOKEN);
+    const token = await createSessionToken(user, env.SESSION_SECRET);
+    return json({ token, user });
+  } catch (error) {
+    return json({ error: error.message }, 401);
+  }
+}
+
+async function currentUser(request, env) {
+  const token = parseBearerToken(request);
+  if (!token) {
+    return json({ user: null });
+  }
+  try {
+    return json({ user: publicUser(await verifySessionToken(token, env.SESSION_SECRET)) });
+  } catch (error) {
+    return json({ error: error.message }, 401);
+  }
 }
 
 async function createRoom(request, env) {

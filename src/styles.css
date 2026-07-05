@@ -217,6 +217,7 @@ input {
 .language-control span,
 .theme-control > span,
 .visual-style-control > span,
+.auth-control > span,
 .stacked-field span,
 .status-line {
   color: var(--muted);
@@ -244,13 +245,89 @@ input {
 .audio-control,
 .language-control,
 .theme-control,
-.visual-style-control {
+.visual-style-control,
+.auth-control {
   display: grid;
   gap: 6px;
 }
 
 .language-control {
   min-width: 170px;
+}
+
+.auth-control {
+  min-width: 150px;
+  max-width: 230px;
+}
+
+.telegram-login-slot {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+}
+
+.auth-card {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 4px 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.auth-avatar {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  color: var(--primary-ink);
+  background: var(--accent);
+  border-radius: 50%;
+  font-size: 14px;
+  font-weight: 800;
+  object-fit: cover;
+}
+
+.auth-name {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.auth-name strong,
+.auth-name small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-name strong {
+  font-size: 13px;
+  line-height: 1.1;
+}
+
+.auth-name small,
+.auth-control small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.auth-error {
+  color: var(--hit) !important;
+}
+
+.icon-button {
+  display: grid;
+  min-width: 0;
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  place-items: center;
+  padding: 0;
+  font-weight: 800;
 }
 
 .theme-toggle,
