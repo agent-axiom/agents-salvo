@@ -10,6 +10,7 @@
   --board-fiber: rgba(88, 77, 56, 0.1);
   --pen-line: rgba(17, 54, 154, 0.72);
   --pen-line-soft: rgba(17, 54, 154, 0.23);
+  --board-sheen: rgba(255, 255, 255, 0.18);
   --water: rgba(38, 103, 203, 0.045);
   --water-dark: rgba(28, 86, 184, 0.2);
   --ship: rgba(21, 63, 134, 0.72);
@@ -42,6 +43,7 @@
   --board-fiber: rgba(234, 243, 255, 0.05);
   --pen-line: rgba(162, 204, 255, 0.78);
   --pen-line-soft: rgba(162, 204, 255, 0.28);
+  --board-sheen: rgba(255, 255, 255, 0);
   --water: rgba(96, 165, 250, 0.22);
   --water-dark: rgba(147, 197, 253, 0.42);
   --ship: rgba(224, 239, 255, 0.92);
@@ -817,7 +819,7 @@ input {
   background:
     radial-gradient(circle at 14% 18%, var(--board-fiber) 0 1px, transparent 1.5px),
     radial-gradient(circle at 82% 68%, var(--board-fiber) 0 1px, transparent 1.5px),
-    linear-gradient(105deg, transparent 0 42%, rgba(255, 255, 255, 0.18) 44% 48%, transparent 52%),
+    linear-gradient(105deg, transparent 0 42%, var(--board-sheen) 44% 48%, transparent 52%),
     var(--board-paper);
   background-size:
     37px 31px,

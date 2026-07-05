@@ -44,6 +44,18 @@ test("manual setup hover does not repaint board cells", () => {
   assert.doesNotMatch(shipHoverRule, /background\s*:/);
 });
 
+test("dark theme does not draw a bright diagonal sheen over the board", () => {
+  const vars = themeVariables("dark");
+  assert.ok(vars["board-sheen"], "Missing dark board sheen token");
+
+  const sheen = parseColor(vars["board-sheen"]);
+  const boardRule = cssRule(".board-grid");
+
+  assert.ok(sheen.alpha <= 0.03, `dark board sheen alpha is ${sheen.alpha}`);
+  assert.match(boardRule, /var\(--board-sheen\)/);
+  assert.doesNotMatch(boardRule, /rgba\(255,\s*255,\s*255,\s*0\.18\)/);
+});
+
 function themeVariables(theme) {
   const pattern =
     theme === "dark"
