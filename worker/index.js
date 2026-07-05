@@ -14,6 +14,7 @@ import {
   verifySessionToken,
   verifyTelegramLoginPayload,
 } from "./auth.js";
+import { getPlayerProfile, recordCompletedMatch } from "./profile.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -41,6 +42,12 @@ export default {
     }
     if (route.kind === "authLogout" && request.method === "POST") {
       return json({ ok: true });
+    }
+    if (route.kind === "profileMe" && request.method === "GET") {
+      return playerProfile(request, env);
+    }
+    if (route.kind === "profileMatches" && request.method === "POST") {
+      return saveProfileMatch(request, env);
     }
 
     if (route.kind === "create" && request.method === "POST") {
@@ -297,6 +304,12 @@ function routeRequest(url) {
   if (parts.length === 2 && parts[0] === "auth" && parts[1] === "logout") {
     return { kind: "authLogout" };
   }
+  if (parts.length === 2 && parts[0] === "profile" && parts[1] === "me") {
+    return { kind: "profileMe" };
+  }
+  if (parts.length === 2 && parts[0] === "profile" && parts[1] === "matches") {
+    return { kind: "profileMatches" };
+  }
   if (parts.length === 1 && parts[0] === "rooms") {
     return { kind: "create", roomCode: url.searchParams.get("code") || createRoomCode() };
   }
@@ -330,6 +343,44 @@ async function currentUser(request, env) {
   } catch (error) {
     return json({ error: error.message }, 401);
   }
+}
+
+async function playerProfile(request, env) {
+  try {
+    const user = await requireUser(request, env);
+    return json({ user: publicUser(user), profile: await getPlayerProfile(env.DB, user) });
+  } catch (error) {
+    return json({ error: error.message }, authErrorStatus(error));
+  }
+}
+
+async function saveProfileMatch(request, env) {
+  try {
+    const user = await requireUser(request, env);
+    const match = await recordCompletedMatch(env.DB, user, await request.json());
+    return json(
+      {
+        match,
+        profile: await getPlayerProfile(env.DB, user),
+      },
+      201,
+    );
+  } catch (error) {
+    return json({ error: error.message }, authErrorStatus(error));
+  }
+}
+
+async function requireUser(request, env) {
+  const token = parseBearerToken(request);
+  if (!token) {
+    throw new Error("Authentication required");
+  }
+  return verifySessionToken(token, env.SESSION_SECRET);
+}
+
+function authErrorStatus(error) {
+  const message = error.message.toLowerCase();
+  return message.includes("authentication") || message.includes("session") ? 401 : 400;
 }
 
 async function createRoom(request, env) {

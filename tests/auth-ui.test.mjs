@@ -13,8 +13,18 @@ test("frontend config exposes the public Telegram bot username only", () => {
 test("frontend mounts Telegram login and exchanges payloads with the worker", () => {
   assert.match(app, /telegram-widget\.js/);
   assert.match(app, /window\.onTelegramAuth/);
+  assert.match(app, /isTelegramLoginOriginAllowed/);
+  assert.match(app, /auth\.domainHint/);
   assert.match(app, /\/auth\/telegram/);
   assert.match(app, /\/auth\/me/);
   assert.match(app, /salvo\.authToken/);
   assert.match(app, /data-action="auth-logout"/);
+});
+
+test("frontend exposes player profile and completed battle recording hooks", () => {
+  assert.match(app, /\/profile\/me/);
+  assert.match(app, /\/profile\/matches/);
+  assert.match(app, /renderProfilePanel/);
+  assert.match(app, /recordCompletedBattle/);
+  assert.match(app, /data-action="refresh-profile"/);
 });

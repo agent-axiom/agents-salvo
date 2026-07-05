@@ -51,6 +51,13 @@ const state = {
     error: "",
     loading: false,
   },
+  profile: {
+    data: null,
+    loading: false,
+    error: "",
+    saveMessage: "",
+    savedMatchKeys: new Set(),
+  },
   online: {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     roomCodeInput: "",
@@ -246,6 +253,7 @@ function renderMenu() {
           <h2>${translate("mode.choose")}</h2>
         </div>
         ${renderPresetSelector()}
+        ${renderProfilePanel()}
         <div class="mode-grid">
           <button class="mode-button" data-action="start-hotseat">
             <span class="mode-icon ship-icon" aria-hidden="true"></span>
@@ -272,6 +280,93 @@ function renderMenu() {
         <img src="${menuArtworkSource()}" alt="${translate("art.alt")}" loading="lazy" decoding="async">
       </figure>
     </section>
+  `;
+}
+
+function renderProfilePanel() {
+  if (!state.auth.user) {
+    return `
+      <section class="profile-panel">
+        <div>
+          <span>${translate("profile.title")}</span>
+          <p>${translate("profile.loginPrompt")}</p>
+        </div>
+      </section>
+    `;
+  }
+
+  const profile = state.profile.data;
+  const summary = profile?.summary;
+  return `
+    <section class="profile-panel">
+      <div class="profile-panel-header">
+        <div>
+          <span>${translate("profile.title")}</span>
+          <h3>${escapeHtml(state.auth.user.name || translate("auth.telegram"))}</h3>
+          <p>${translate("profile.subtitle")}</p>
+        </div>
+        <button
+          class="icon-button"
+          data-action="refresh-profile"
+          aria-label="${translate("profile.refresh")}"
+          title="${translate("profile.refresh")}"
+        >↻</button>
+      </div>
+      ${state.profile.loading ? `<p class="status-line">${translate("auth.loading")}</p>` : ""}
+      ${state.profile.error ? `<p class="error-line">${escapeHtml(state.profile.error)}</p>` : ""}
+      ${state.profile.saveMessage ? `<p class="status-line">${escapeHtml(state.profile.saveMessage)}</p>` : ""}
+      ${
+        summary && summary.totalMatches > 0
+          ? `
+            <div class="profile-stats">
+              ${renderProfileStat("profile.matches", summary.totalMatches)}
+              ${renderProfileStat("profile.winRate", `${summary.winRate}%`)}
+              ${renderProfileStat("profile.accuracy", `${summary.accuracy}%`)}
+              ${renderProfileStat("profile.streak", summary.currentWinStreak)}
+              ${renderProfileStat(
+                "profile.bestMode",
+                summary.bestMode ? translate(`mode.${summary.bestMode}`) : "—",
+              )}
+            </div>
+            ${renderRecentMatches(profile.recentMatches ?? [])}
+          `
+          : `<p>${translate("profile.empty")}</p>`
+      }
+    </section>
+  `;
+}
+
+function renderProfileStat(key, value) {
+  return `
+    <div>
+      <span>${translate(key)}</span>
+      <strong>${value}</strong>
+    </div>
+  `;
+}
+
+function renderRecentMatches(matches) {
+  return `
+    <div class="profile-recent">
+      <h4>${translate("profile.recent")}</h4>
+      ${
+        matches.length === 0
+          ? `<p>${translate("profile.noMatches")}</p>`
+          : `<ol>
+              ${matches
+                .map(
+                  (match) => `
+                    <li>
+                      <strong>${translate(`profile.result.${match.result}`)}</strong>
+                      <span>${translate(`mode.${match.mode}`)} · ${translate(`preset.${match.presetId}.name`)}</span>
+                      <small>${match.playerShots} / ${match.accuracy}%</small>
+                    </li>
+                  `,
+                )
+                .join("")}
+            </ol>`
+      }
+    </div>
   `;
 }
 
@@ -721,6 +816,7 @@ root.addEventListener("click", async (event) => {
   if (action === "online-create") await onlineCreate();
   if (action === "online-join") await onlineJoin();
   if (action === "auth-logout") await logoutAuth();
+  if (action === "refresh-profile") await refreshProfile();
 });
 
 window.onTelegramAuth = (payload) => {
@@ -939,6 +1035,19 @@ function handleLocalShot(coordinate) {
 
   if (state.game.phase === "finished") {
     playFinalSound(state.game.winnerId, playerId);
+    if (state.mode === "agent") {
+      void recordCompletedBattle(
+        completedBattleMatch({
+          key: localResultKey(state.game),
+          mode: "agent",
+          presetId: state.game.presetId,
+          playerId: "p1",
+          winnerId: state.game.winnerId,
+          opponent: "agent",
+          log: state.game.log,
+        }),
+      );
+    }
   }
 
   render();
@@ -1009,6 +1118,19 @@ function remoteHandlers() {
     onMessage(message) {
       if (message.type === "snapshot") {
         playOnlineSnapshotSounds(state.online.snapshot, message.snapshot);
+        if (state.online.snapshot?.phase !== "finished" && message.snapshot.phase === "finished") {
+          void recordCompletedBattle(
+            completedBattleMatch({
+              key: onlineResultKey(message.snapshot),
+              mode: "online",
+              presetId: message.snapshot.presetId,
+              playerId: message.snapshot.playerId,
+              winnerId: message.snapshot.winnerId,
+              opponent: "online",
+              log: message.snapshot.log ?? [],
+            }),
+          );
+        }
         state.online.snapshot = message.snapshot;
       }
       if (message.type === "error") {
@@ -1026,6 +1148,10 @@ function mountTelegramLoginWidget() {
   }
   if (!state.auth.telegramBotUsername) {
     slot.textContent = translate("auth.notConfigured");
+    return;
+  }
+  if (!isTelegramLoginOriginAllowed()) {
+    slot.textContent = translate("auth.domainHint");
     return;
   }
   if (document.readyState !== "complete") {
@@ -1054,6 +1180,10 @@ function mountTelegramLoginWidget() {
   slot.append(script);
 }
 
+function isTelegramLoginOriginAllowed() {
+  return !["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+}
+
 async function handleTelegramAuth(payload) {
   await withAuthError(async () => {
     const response = await fetch(`${state.auth.workerUrl}/auth/telegram`, {
@@ -1065,6 +1195,7 @@ async function handleTelegramAuth(payload) {
     state.auth.token = authPayload.token;
     state.auth.user = authPayload.user;
     localStorage.setItem(authTokenStorageKey, state.auth.token);
+    await refreshProfile({ renderWhenDone: false });
   });
 }
 
@@ -1081,6 +1212,9 @@ async function refreshAuth() {
     if (!payload.user) {
       state.auth.token = "";
       localStorage.removeItem(authTokenStorageKey);
+      resetProfile();
+    } else {
+      await refreshProfile({ renderWhenDone: false });
     }
   });
 }
@@ -1095,8 +1229,70 @@ async function logoutAuth() {
     }
     state.auth.token = "";
     state.auth.user = null;
+    resetProfile();
     localStorage.removeItem(authTokenStorageKey);
   });
+}
+
+async function refreshProfile({ renderWhenDone = true } = {}) {
+  if (!state.auth.token || !state.auth.workerUrl || !state.auth.user) {
+    resetProfile();
+    return;
+  }
+  state.profile.loading = true;
+  state.profile.error = "";
+  if (renderWhenDone) {
+    render();
+  }
+  try {
+    const response = await fetch(`${state.auth.workerUrl}/profile/me`, {
+      headers: { Authorization: `Bearer ${state.auth.token}` },
+    });
+    const payload = await readAuthJson(response);
+    state.profile.data = payload.profile;
+  } catch (error) {
+    state.profile.error = error.message;
+  } finally {
+    state.profile.loading = false;
+    if (renderWhenDone) {
+      render();
+    }
+  }
+}
+
+async function recordCompletedBattle(match) {
+  if (!match || !state.auth.token || !state.auth.user || !state.auth.workerUrl) {
+    return;
+  }
+  if (state.profile.savedMatchKeys.has(match.id)) {
+    return;
+  }
+  state.profile.savedMatchKeys.add(match.id);
+  state.profile.saveMessage = "";
+  try {
+    const response = await fetch(`${state.auth.workerUrl}/profile/matches`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${state.auth.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(match),
+    });
+    const payload = await readAuthJson(response);
+    state.profile.data = payload.profile;
+    state.profile.saveMessage = translate("profile.saved");
+  } catch (error) {
+    state.profile.error = translate("profile.saveError", { message: error.message });
+  }
+  render();
+}
+
+function resetProfile() {
+  state.profile.data = null;
+  state.profile.loading = false;
+  state.profile.error = "";
+  state.profile.saveMessage = "";
+  state.profile.savedMatchKeys.clear();
 }
 
 async function withAuthError(action) {
@@ -1109,6 +1305,7 @@ async function withAuthError(action) {
     state.auth.error = error.message;
     state.auth.token = "";
     state.auth.user = null;
+    resetProfile();
     localStorage.removeItem(authTokenStorageKey);
   } finally {
     state.auth.loading = false;
@@ -1412,6 +1609,33 @@ function localResultKey(game) {
 
 function onlineResultKey(snapshot) {
   return `online:${snapshot.roomCode}:${snapshot.winnerId}:${snapshot.log?.length ?? 0}`;
+}
+
+function completedBattleMatch({ key, mode, presetId, playerId, winnerId, opponent, log }) {
+  const summary = summarizeBattleLog(log, winnerId);
+  const playerStats = summary.players.find((stats) => stats.playerId === playerId) ?? {
+    shots: 0,
+    hits: 0,
+    misses: 0,
+    sunk: 0,
+    accuracy: 0,
+  };
+  return {
+    id: `${state.auth.user?.provider ?? "anon"}:${state.auth.user?.id ?? "anon"}:${key}`,
+    mode,
+    presetId,
+    result: winnerId === playerId ? "win" : "loss",
+    opponent,
+    totalShots: summary.totalShots,
+    playerShots: playerStats.shots,
+    playerHits: playerStats.hits,
+    playerMisses: playerStats.misses,
+    playerSunk: playerStats.sunk,
+    accuracy: playerStats.accuracy,
+    turns: log.length,
+    winnerId,
+    playedAt: new Date().toISOString(),
+  };
 }
 
 function sunkEdgeClasses(board, coordinate, kind) {

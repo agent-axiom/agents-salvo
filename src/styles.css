@@ -181,20 +181,25 @@ input {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 18px;
   margin-bottom: 24px;
 }
 
 .topbar-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: end;
+  justify-content: flex-end;
   gap: 12px;
+  min-width: 0;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
 .brand h1,
@@ -465,6 +470,110 @@ input {
 
 .mode-panel {
   padding: 22px;
+}
+
+.profile-panel {
+  display: grid;
+  gap: 12px;
+  margin: 18px 0;
+  padding: 14px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.profile-panel-header {
+  display: flex;
+  gap: 12px;
+  align-items: start;
+  justify-content: space-between;
+}
+
+.profile-panel span,
+.profile-recent h4 {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.profile-panel h3,
+.profile-panel h4,
+.profile-panel p {
+  margin: 0;
+}
+
+.profile-panel h3 {
+  margin-top: 4px;
+  font-size: 20px;
+  line-height: 1.15;
+}
+
+.profile-panel p {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.profile-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(86px, 1fr));
+  gap: 8px;
+}
+
+.profile-stats div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.profile-stats strong {
+  overflow-wrap: anywhere;
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.profile-recent {
+  display: grid;
+  gap: 8px;
+}
+
+.profile-recent ol {
+  display: grid;
+  gap: 6px;
+  max-height: 170px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.profile-recent li {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.profile-recent li span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.profile-recent li small {
+  color: var(--muted);
+  font-weight: 700;
 }
 
 .history-panel {
@@ -1578,6 +1687,10 @@ input {
     grid-template-columns: 1fr;
   }
 
+  .profile-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .mode-button {
     min-height: 118px;
     grid-template-columns: auto 1fr;
@@ -1619,6 +1732,10 @@ input {
 
   .result-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .profile-recent li {
+    grid-template-columns: 1fr;
   }
 
   .board-grid {

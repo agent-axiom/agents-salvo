@@ -20,7 +20,8 @@ Live build: https://agent-axiom.github.io/agents-salvo/
 - English, Russian, and Chinese localizations.
 - Light and dark themes.
 - Synthetic Web Audio sound effects and menu music; no MP3 assets are required yet.
-- Cloudflare Worker backend with Durable Objects for online rooms.
+- Telegram login for player identity.
+- Cloudflare Worker backend with Durable Objects for online rooms and D1 for player profiles.
 - GitHub Pages workflow in `.github/workflows/pages.yml`.
 
 ## Local Development
@@ -43,7 +44,7 @@ The workflow runs `npm test`, builds `dist`, and publishes it as a Pages artifac
 
 ## Online Backend
 
-The backend is only required for the “Online room” mode.
+The backend is required for the “Online room” mode, Telegram auth, and saved player profiles.
 
 ```bash
 npx wrangler deploy
@@ -57,16 +58,27 @@ https://agents-salvo-room.if-ab6.workers.dev
 
 Players do not see this URL. To change the backend, update `window.SALVO_CONFIG.workerUrl` in `src/index.html` and redeploy Pages.
 
-`wrangler.toml` uses Durable Objects with SQLite storage:
+`wrangler.toml` uses Durable Objects with SQLite storage for rooms and D1 for profile/history storage:
 
 ```toml
 [[durable_objects.bindings]]
 name = "BATTLE_ROOM"
 class_name = "BattleRoom"
 
+[[d1_databases]]
+binding = "DB"
+database_name = "agents-salvo-profile"
+database_id = "fd744630-0b47-4432-8371-c059f5953989"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["BattleRoom"]
+```
+
+Apply D1 migrations before deploying a fresh Worker:
+
+```bash
+npx wrangler d1 migrations apply agents-salvo-profile --remote
 ```
 
 ## Online Protocol
@@ -76,6 +88,12 @@ new_sqlite_classes = ["BattleRoom"]
 - `GET /rooms/:roomCode/socket?playerId=...&token=...` opens a WebSocket.
 - The client sends `placeFleet` and `fire`.
 - The Durable Object validates turn order and never exposes opponent ships in snapshots.
+
+## Profile API
+
+- `POST /auth/telegram` verifies Telegram Login Widget payloads and returns a signed session token.
+- `GET /profile/me` returns the authenticated player profile, summary stats, and recent battles.
+- `POST /profile/matches` saves completed agent/online battles for the authenticated player.
 
 ## Audio
 

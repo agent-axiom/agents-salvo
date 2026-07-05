@@ -20,7 +20,8 @@
 - English、Русский、中文 三种本地化。
 - 浅色和深色主题。
 - 当前使用 Web Audio 合成音效和首页音乐，暂不需要 MP3 文件。
-- 在线房间使用 Cloudflare Worker 和 Durable Objects。
+- 使用 Telegram 登录提供固定玩家身份。
+- 在线房间使用 Cloudflare Worker 和 Durable Objects，玩家档案使用 D1。
 - GitHub Pages workflow：`.github/workflows/pages.yml`。
 
 ## 本地开发
@@ -43,7 +44,7 @@ Workflow 会运行 `npm test`，构建 `dist`，并发布为 Pages artifact。
 
 ## 在线后端
 
-后端只用于 “Online room” 模式。
+后端用于 “Online room” 模式、Telegram 登录和保存玩家档案。
 
 ```bash
 npx wrangler deploy
@@ -56,6 +57,31 @@ https://agents-salvo-room.if-ab6.workers.dev
 ```
 
 玩家不会看到这个 URL。若要更换后端，请更新 `src/index.html` 中的 `window.SALVO_CONFIG.workerUrl`，然后重新部署 Pages。
+
+`wrangler.toml` 使用 Durable Objects 保存房间状态，使用 D1 保存玩家档案和历史：
+
+```toml
+[[durable_objects.bindings]]
+name = "BATTLE_ROOM"
+class_name = "BattleRoom"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "agents-salvo-profile"
+database_id = "fd744630-0b47-4432-8371-c059f5953989"
+```
+
+部署新的 Worker 前先应用 D1 migrations：
+
+```bash
+npx wrangler d1 migrations apply agents-salvo-profile --remote
+```
+
+## Profile API
+
+- `POST /auth/telegram` 校验 Telegram Login Widget payload 并返回签名 session。
+- `GET /profile/me` 返回玩家档案、统计摘要和近期战斗。
+- `POST /profile/matches` 为已登录玩家保存智能体和在线对局结果。
 
 ## 音频
 

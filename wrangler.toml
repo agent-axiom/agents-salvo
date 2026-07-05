@@ -6,6 +6,11 @@ compatibility_date = "2026-07-04"
 name = "BATTLE_ROOM"
 class_name = "BattleRoom"
 
+[[d1_databases]]
+binding = "DB"
+database_name = "agents-salvo-profile"
+database_id = "fd744630-0b47-4432-8371-c059f5953989"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["BattleRoom"]
