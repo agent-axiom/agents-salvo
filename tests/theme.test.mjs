@@ -36,6 +36,14 @@ test("dark theme keeps board grid and water readable against the board surface",
   );
 });
 
+test("manual setup hover does not repaint board cells", () => {
+  const emptyHoverRule = cssRule(".setup .cell:not(:disabled):hover");
+  const shipHoverRule = cssRule(".setup .cell.has-ship:not(:disabled):hover");
+
+  assert.doesNotMatch(emptyHoverRule, /background\s*:/);
+  assert.doesNotMatch(shipHoverRule, /background\s*:/);
+});
+
 function themeVariables(theme) {
   const pattern =
     theme === "dark"
@@ -49,6 +57,13 @@ function themeVariables(theme) {
       value.trim(),
     ]),
   );
+}
+
+function cssRule(selector) {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = css.match(new RegExp(`${escapedSelector}\\s*\\{([\\s\\S]*?)\\}`));
+  assert.ok(match, `Missing CSS rule: ${selector}`);
+  return match[1];
 }
 
 function parseColor(value) {

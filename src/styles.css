@@ -894,9 +894,9 @@ input {
 }
 
 .setup .cell:not(:disabled):hover {
-  background: rgba(224, 173, 47, 0.24);
-  border-color: var(--warning);
-  box-shadow: 0 0 18px var(--glow);
+  box-shadow:
+    inset 0 0 0 2px var(--accent-strong),
+    0 0 12px var(--glow);
 }
 
 .setup .cell.has-ship:not(:disabled) {
@@ -904,8 +904,9 @@ input {
 }
 
 .setup .cell.has-ship:not(:disabled):hover {
-  background: rgba(199, 53, 45, 0.2);
-  border-color: var(--sunk);
+  box-shadow:
+    inset 0 0 0 2px var(--sunk),
+    0 0 12px rgba(255, 109, 95, 0.28);
 }
 
 .cell.miss {
