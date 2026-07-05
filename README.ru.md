@@ -80,8 +80,9 @@ npx wrangler d1 migrations apply agents-salvo-profile --remote
 ## Profile API
 
 - `POST /auth/telegram` проверяет Telegram Login Widget payload и возвращает подписанную сессию.
-- `GET /profile/me` возвращает профиль игрока, сводную статистику и последние бои.
+- `GET /profile/me` возвращает профиль игрока, сводную статистику, online-рейтинг, сезонную статистику, таблицу лидеров и последние бои.
 - `POST /profile/matches` сохраняет завершённые бои против агента; online-результаты записывает сервер комнаты.
+- `GET /leaderboard` возвращает публичную online-таблицу лидеров по серверно записанным online-матчам.
 
 Если при создании или входе в online-комнату передан `Authorization: Bearer ...`, Durable Object привязывает Telegram-профиль к игроку и сам записывает итог боя в D1 после завершения партии.
 

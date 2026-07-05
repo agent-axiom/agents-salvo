@@ -39,3 +39,42 @@ test("normal agent follows a known hit line", () => {
 
   assert.deepEqual(shot, { row: 2, col: 1 });
 });
+
+test("normal agent follows a vertical hit line", () => {
+  const shot = chooseAgentShot({
+    size: 5,
+    shots: [
+      { row: 1, col: 3, result: "hit" },
+      { row: 2, col: 3, result: "hit" },
+    ],
+    rng: () => 0,
+  });
+
+  assert.deepEqual(shot, { row: 0, col: 3 });
+});
+
+test("normal agent falls back to unknown cells when there are no unresolved hits", () => {
+  const shot = chooseAgentShot({
+    size: 2,
+    shots: [{ row: 0, col: 0, result: "sunk" }],
+    rng: () => 0,
+  });
+
+  assert.deepEqual(shot, { row: 0, col: 1 });
+});
+
+test("agent throws when there are no cells left to shoot", () => {
+  assert.throws(
+    () =>
+      chooseAgentShot({
+        size: 2,
+        shots: [
+          { row: 0, col: 0, result: "miss" },
+          { row: 0, col: 1, result: "miss" },
+          { row: 1, col: 0, result: "miss" },
+          { row: 1, col: 1, result: "miss" },
+        ],
+      }),
+    /No cells left/,
+  );
+});

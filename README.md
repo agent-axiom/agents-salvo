@@ -93,8 +93,9 @@ npx wrangler d1 migrations apply agents-salvo-profile --remote
 ## Profile API
 
 - `POST /auth/telegram` verifies Telegram Login Widget payloads and returns a signed session token.
-- `GET /profile/me` returns the authenticated player profile, summary stats, and recent battles.
+- `GET /profile/me` returns the authenticated player profile, summary stats, online rating, season stats, leaderboard, and recent battles.
 - `POST /profile/matches` saves completed agent battles for the authenticated player; online results are written by the room server.
+- `GET /leaderboard` returns the public online leaderboard derived from server-recorded online matches.
 
 ## Audio
 

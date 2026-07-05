@@ -434,7 +434,7 @@ function markSunkShipShots(board, ship) {
 
   for (const cell of surroundingCells(board, ship.cells)) {
     const key = coordinateKey(cell);
-    if (!shotsByCoordinate.has(key)) {
+    if (!shotsByCoordinate.has(key) && !findShipAt(board, cell) && !findMarkerAt(board, cell)) {
       shotsByCoordinate.set(key, { ...cell, result: "miss" });
     }
   }

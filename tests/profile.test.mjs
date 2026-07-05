@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { createSessionToken } from "../worker/auth.js";
 import worker from "../worker/index.js";
+import { getPlayerProfile, recordCompletedMatch } from "../worker/profile.js";
 
 const sessionSecret = "profile-session-secret";
 const profileUser = {
@@ -10,6 +11,13 @@ const profileUser = {
   id: "42",
   name: "Captain Test",
   username: "captain",
+  photoUrl: "",
+};
+const rivalUser = {
+  provider: "telegram",
+  id: "99",
+  name: "Rival Captain",
+  username: "rival",
   photoUrl: "",
 };
 
@@ -160,6 +168,179 @@ test("profile match endpoint rejects client-submitted online results", async () 
   assert.deepEqual(await response.json(), { error: "Online results are recorded by the game server" });
 });
 
+test("profile storage is required before reading or writing matches", async () => {
+  const token = await createSessionToken(profileUser, sessionSecret);
+
+  const profileResponse = await worker.fetch(
+    new Request("https://worker.test/profile/me", {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+    { SESSION_SECRET: sessionSecret },
+  );
+  assert.equal(profileResponse.status, 400);
+  assert.deepEqual(await profileResponse.json(), { error: "Profile storage is not configured" });
+
+  await assert.rejects(
+    () => recordCompletedMatch(null, profileUser, completedMatchPayload()),
+    /Profile storage is not configured/,
+  );
+});
+
+test("profile match recording validates required fields and numeric bounds", async () => {
+  const db = new MemoryD1();
+
+  await assert.rejects(() => recordCompletedMatch(db, profileUser, null), /Match result is required/);
+  await assert.rejects(
+    () => recordCompletedMatch(db, profileUser, { ...completedMatchPayload(), mode: "campaign" }),
+    /Match mode is invalid/,
+  );
+  await assert.rejects(
+    () => recordCompletedMatch(db, profileUser, { ...completedMatchPayload(), presetId: " " }),
+    /Battle format is required/,
+  );
+  await assert.rejects(
+    () => recordCompletedMatch(db, profileUser, { ...completedMatchPayload(), winnerId: "" }),
+    /Winner is required/,
+  );
+  await assert.rejects(
+    () => recordCompletedMatch(db, profileUser, { ...completedMatchPayload(), playedAt: "not-a-date" }),
+    /Played date is invalid/,
+  );
+  await assert.rejects(
+    () => recordCompletedMatch(db, profileUser, { ...completedMatchPayload(), playerShots: -1 }),
+    /Player shots must be a non-negative integer/,
+  );
+  await assert.rejects(
+    () => recordCompletedMatch(db, profileUser, { ...completedMatchPayload(), accuracy: 101 }),
+    /Accuracy is out of range/,
+  );
+});
+
+test("server-side online match recording can generate ids and timestamps", async () => {
+  const db = new MemoryD1();
+  const match = await recordCompletedMatch(
+    db,
+    profileUser,
+    {
+      ...completedMatchPayload(),
+      id: "",
+      mode: "online",
+      opponent: "",
+      playedAt: "",
+    },
+    { source: "server" },
+  );
+
+  assert.ok(match.id);
+  assert.equal(match.mode, "online");
+  assert.equal(match.opponent, "unknown");
+  assert.match(match.playedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(db.matches.length, 1);
+});
+
+test("player profiles include online rating and season stats", async () => {
+  const db = new MemoryD1();
+  await recordCompletedMatch(db, profileUser, {
+    ...completedMatchPayload(),
+    id: "online-win",
+    mode: "online",
+    result: "win",
+    opponent: "Rival Captain",
+    playedAt: "2026-07-02T12:00:00.000Z",
+  }, { source: "server" });
+  await recordCompletedMatch(db, profileUser, {
+    ...completedMatchPayload(),
+    id: "online-loss",
+    mode: "online",
+    result: "loss",
+    opponent: "Rival Captain",
+    playedAt: "2026-07-03T12:00:00.000Z",
+  }, { source: "server" });
+  await recordCompletedMatch(db, profileUser, {
+    ...completedMatchPayload(),
+    id: "agent-win",
+    mode: "agent",
+    result: "win",
+    playedAt: "2026-07-04T12:00:00.000Z",
+  });
+
+  const profile = await getPlayerProfile(db, profileUser, { now: new Date("2026-07-06T00:00:00.000Z") });
+
+  assert.deepEqual(profile.rating, {
+    mmr: 1008,
+    label: "cadet",
+    onlineMatches: 2,
+    onlineWins: 1,
+    onlineLosses: 1,
+    onlineWinRate: 50,
+    currentOnlineWinStreak: 0,
+  });
+  assert.deepEqual(profile.season, {
+    id: "2026-Q3",
+    matches: 2,
+    wins: 1,
+    losses: 1,
+    winRate: 50,
+  });
+});
+
+test("leaderboard endpoint ranks online players by rating", async () => {
+  const db = new MemoryD1();
+  await recordCompletedMatch(db, profileUser, {
+    ...completedMatchPayload(),
+    id: "captain-win",
+    mode: "online",
+    result: "win",
+    playedAt: "2026-07-02T12:00:00.000Z",
+  }, { source: "server" });
+  await recordCompletedMatch(db, profileUser, {
+    ...completedMatchPayload(),
+    id: "captain-loss",
+    mode: "online",
+    result: "loss",
+    playedAt: "2026-07-03T12:00:00.000Z",
+  }, { source: "server" });
+  await recordCompletedMatch(db, rivalUser, {
+    ...completedMatchPayload(),
+    id: "rival-win",
+    mode: "online",
+    result: "win",
+    playedAt: "2026-07-03T13:00:00.000Z",
+  }, { source: "server" });
+
+  const response = await worker.fetch(new Request("https://worker.test/leaderboard"), { DB: db });
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.leaderboard.season, "2026-Q3");
+  assert.deepEqual(
+    payload.leaderboard.entries.map((entry) => [entry.rank, entry.name, entry.rating, entry.onlineMatches]),
+    [
+      [1, "Rival Captain", 1024, 1],
+      [2, "Captain Test", 1008, 2],
+    ],
+  );
+});
+
+function completedMatchPayload() {
+  return {
+    id: "match-validation",
+    mode: "agent",
+    presetId: "classic",
+    result: "win",
+    opponent: "agent",
+    totalShots: 10,
+    playerShots: 6,
+    playerHits: 4,
+    playerMisses: 2,
+    playerSunk: 3,
+    accuracy: 67,
+    turns: 10,
+    winnerId: "p1",
+    playedAt: "2026-07-06T12:00:00.000Z",
+  };
+}
+
 class MemoryD1 {
   constructor() {
     this.users = new Map();
@@ -305,11 +486,39 @@ class MemoryStatement {
         .map((match) => ({ result: match.result }));
     }
 
+    if (this.sql.startsWith("SELECT result, played_at")) {
+      return this.matchesForUser()
+        .filter((match) => match.mode === "online")
+        .sort((first, second) => first.played_at.localeCompare(second.played_at))
+        .map((match) => ({ result: match.result, played_at: match.played_at }));
+    }
+
     if (this.sql.startsWith("SELECT id, mode")) {
       return this.matchesForUser()
         .sort((first, second) => second.played_at.localeCompare(first.played_at))
         .slice(0, this.params[1] ?? 12)
         .map((match) => ({ ...match }));
+    }
+
+    if (this.sql.startsWith("SELECT u.user_key")) {
+      return this.db.matches
+        .filter((match) => match.mode === "online")
+        .sort(
+          (first, second) =>
+            first.user_key.localeCompare(second.user_key) ||
+            first.played_at.localeCompare(second.played_at),
+        )
+        .map((match) => {
+          const user = this.db.users.get(match.user_key);
+          return {
+            user_key: match.user_key,
+            name: user?.name ?? "",
+            username: user?.username ?? "",
+            photo_url: user?.photo_url ?? "",
+            result: match.result,
+            played_at: match.played_at,
+          };
+        });
     }
 
     throw new Error(`Unsupported query SQL: ${this.sql}`);

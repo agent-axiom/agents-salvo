@@ -15,7 +15,7 @@ import {
   verifySessionToken,
   verifyTelegramLoginPayload,
 } from "./auth.js";
-import { getPlayerProfile, recordCompletedMatch } from "./profile.js";
+import { getLeaderboard, getPlayerProfile, recordCompletedMatch } from "./profile.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -30,7 +30,12 @@ export default {
     }
 
     const url = new URL(request.url);
-    const route = routeRequest(url);
+    let route;
+    try {
+      route = routeRequest(url);
+    } catch (error) {
+      return json({ error: error.message }, 400);
+    }
     if (!route) {
       return json({ error: "Not found" }, 404);
     }
@@ -49,6 +54,9 @@ export default {
     }
     if (route.kind === "profileMatches" && request.method === "POST") {
       return saveProfileMatch(request, env);
+    }
+    if (route.kind === "leaderboard" && request.method === "GET") {
+      return leaderboard(env);
     }
 
     if (route.kind === "create" && request.method === "POST") {
@@ -70,9 +78,9 @@ export class BattleRoom {
 
   async fetch(request) {
     const url = new URL(request.url);
-    const route = routeRequest(url);
 
     try {
+      const route = routeRequest(url);
       if (route?.kind === "create" && request.method === "POST") {
         return await this.create(request, route.roomCode);
       }
@@ -352,6 +360,9 @@ function routeRequest(url) {
   if (parts.length === 2 && parts[0] === "profile" && parts[1] === "matches") {
     return { kind: "profileMatches" };
   }
+  if (parts.length === 1 && parts[0] === "leaderboard") {
+    return { kind: "leaderboard" };
+  }
   if (parts.length === 1 && parts[0] === "rooms") {
     return { kind: "create", roomCode: url.searchParams.get("code") || createRoomCode() };
   }
@@ -390,7 +401,11 @@ async function currentUser(request, env) {
 async function playerProfile(request, env) {
   try {
     const user = await requireUser(request, env);
-    return json({ user: publicUser(user), profile: await getPlayerProfile(env.DB, user) });
+    const [profile, leaderboardPayload] = await Promise.all([
+      getPlayerProfile(env.DB, user),
+      getLeaderboard(env.DB),
+    ]);
+    return json({ user: publicUser(user), profile: { ...profile, leaderboard: leaderboardPayload } });
   } catch (error) {
     return json({ error: error.message }, authErrorStatus(error));
   }
@@ -400,13 +415,25 @@ async function saveProfileMatch(request, env) {
   try {
     const user = await requireUser(request, env);
     const match = await recordCompletedMatch(env.DB, user, await request.json(), { source: "client" });
+    const [profile, leaderboardPayload] = await Promise.all([
+      getPlayerProfile(env.DB, user),
+      getLeaderboard(env.DB),
+    ]);
     return json(
       {
         match,
-        profile: await getPlayerProfile(env.DB, user),
+        profile: { ...profile, leaderboard: leaderboardPayload },
       },
       201,
     );
+  } catch (error) {
+    return json({ error: error.message }, authErrorStatus(error));
+  }
+}
+
+async function leaderboard(env) {
+  try {
+    return json({ leaderboard: await getLeaderboard(env.DB) });
   } catch (error) {
     return json({ error: error.message }, authErrorStatus(error));
   }

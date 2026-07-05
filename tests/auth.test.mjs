@@ -4,6 +4,8 @@ import { webcrypto } from "node:crypto";
 
 import {
   createSessionToken,
+  parseBearerToken,
+  publicUser,
   verifySessionToken,
   verifyTelegramLoginPayload,
 } from "../worker/auth.js";
@@ -76,6 +78,27 @@ test("verifyTelegramLoginPayload rejects stale Telegram payloads", async () => {
   );
 });
 
+test("verifyTelegramLoginPayload rejects missing and malformed payloads", async () => {
+  await assert.rejects(() => verifyTelegramLoginPayload({}, "", { now: 1700000000 }), /bot token/);
+  await assert.rejects(
+    () => verifyTelegramLoginPayload(null, "123456:secret-token", { now: 1700000000 }),
+    /payload is required/,
+  );
+  await assert.rejects(
+    () => verifyTelegramLoginPayload({ id: "42" }, "123456:secret-token", { now: 1700000000 }),
+    /payload is incomplete/,
+  );
+  await assert.rejects(
+    () =>
+      verifyTelegramLoginPayload(
+        { id: "42", auth_date: "not-a-date", hash: "abc" },
+        "123456:secret-token",
+        { now: 1700000000 },
+      ),
+    /auth date is invalid/,
+  );
+});
+
 test("session tokens round-trip signed user profiles and reject tampering", async () => {
   const secret = "session-secret";
   const user = {
@@ -99,6 +122,47 @@ test("session tokens round-trip signed user profiles and reject tampering", asyn
   );
 });
 
+test("session tokens reject missing secrets, malformed payloads, and expiry", async () => {
+  const secret = "session-secret";
+  const user = {
+    provider: "telegram",
+    id: "42",
+    name: "",
+    username: "ivan",
+    photoUrl: "",
+  };
+
+  await assert.rejects(() => createSessionToken(user, ""), /Session secret/);
+  await assert.rejects(() => verifySessionToken("bad", secret), /Session token is invalid/);
+  await assert.rejects(() => verifySessionToken("bad.payload", ""), /Session secret/);
+
+  const expired = await createSessionToken(user, secret, { now: 1700000000, ttlSeconds: 1 });
+  await assert.rejects(() => verifySessionToken(expired, secret, { now: 1700000002 }), /Session expired/);
+
+  const invalidPayload = `${base64UrlEncode(JSON.stringify({ v: 999, user, exp: 1700009999 }))}.signature`;
+  const signature = await signSessionPayloadForTest(invalidPayload.split(".")[0], secret);
+  await assert.rejects(
+    () => verifySessionToken(`${invalidPayload.split(".")[0]}.${signature}`, secret, { now: 1700000002 }),
+    /Session token is invalid/,
+  );
+});
+
+test("parseBearerToken and publicUser normalize optional auth data", () => {
+  assert.equal(parseBearerToken(new Request("https://worker.test")), "");
+  assert.equal(
+    parseBearerToken(new Request("https://worker.test", { headers: { Authorization: "Bearer token-123" } })),
+    "token-123",
+  );
+  assert.equal(publicUser(null), null);
+  assert.deepEqual(publicUser({ provider: "telegram", id: 42 }), {
+    provider: "telegram",
+    id: "42",
+    name: "",
+    username: "",
+    photoUrl: "",
+  });
+});
+
 async function signTelegramPayload(payload, botToken) {
   const dataCheckString = Object.entries(payload)
     .filter(([key]) => key !== "hash")
@@ -115,6 +179,18 @@ async function signTelegramPayload(payload, botToken) {
   );
   const signature = await cryptoApi.subtle.sign("HMAC", key, textEncoder.encode(dataCheckString));
   return bytesToHex(new Uint8Array(signature));
+}
+
+async function signSessionPayloadForTest(encodedPayload, secret) {
+  const key = await cryptoApi.subtle.importKey(
+    "raw",
+    textEncoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await cryptoApi.subtle.sign("HMAC", key, textEncoder.encode(encodedPayload));
+  return Buffer.from(signature).toString("base64url");
 }
 
 function bytesToHex(bytes) {

@@ -61,6 +61,24 @@ test("placeShip rejects out of bounds and overlapping ships", () => {
   );
 });
 
+test("placeShip rejects malformed ships and orientations", () => {
+  let board = createBoard();
+  board = placeShip(board, { id: "patrol", length: 1 }, { row: 0, col: 0 }, "horizontal");
+
+  assert.throws(
+    () => placeShip(board, { id: "bad-length", length: 0 }, { row: 2, col: 2 }, "horizontal"),
+    /positive integer/i,
+  );
+  assert.throws(
+    () => placeShip(board, { id: "patrol", length: 1 }, { row: 2, col: 2 }, "horizontal"),
+    /already placed/i,
+  );
+  assert.throws(
+    () => placeShip(board, { id: "bad-orientation", length: 1 }, { row: 2, col: 2 }, "diagonal"),
+    /Invalid ship orientation/i,
+  );
+});
+
 test("placeShip rejects ships touching by side or corner", () => {
   let board = createBoard();
   board = placeShip(board, { id: "battleship", length: 4 }, { row: 0, col: 0 }, "horizontal");
@@ -86,6 +104,10 @@ test("removeShip removes one placed ship and keeps the rest of the board", () =>
   assert.equal(getCell(updated, { row: 3, col: 3 }).shipId, "patrol");
   assert.equal(board.ships.length, 2);
   assert.equal(updated.ships.length, 1);
+});
+
+test("removeShip rejects missing ships", () => {
+  assert.throws(() => removeShip(createBoard(), "missing"), /not placed/i);
 });
 
 test("randomlyPlaceFleet places every default ship without overlap or touching", () => {
@@ -146,6 +168,25 @@ test("placeMarker places and removes mines and sweepers without touching ships",
   assert.equal(getCell(updated, { row: 3, col: 3 }).markerType, null);
 });
 
+test("placeMarker and removeMarker reject malformed marker operations", () => {
+  let board = createBoard(8);
+  board = placeMarker(board, { id: "mine-1", type: "mine" }, { row: 2, col: 2 });
+
+  assert.throws(
+    () => placeMarker(board, { id: "bad", type: "decoy" }, { row: 4, col: 4 }),
+    /Invalid marker type/i,
+  );
+  assert.throws(
+    () => placeMarker(board, { id: "mine-1", type: "mine" }, { row: 4, col: 4 }),
+    /already placed/i,
+  );
+  assert.throws(
+    () => placeMarker(board, { id: "mine-2", type: "mine" }, { row: 2, col: 2 }),
+    /overlap/i,
+  );
+  assert.throws(() => removeMarker(board, "missing"), /not placed/i);
+});
+
 test("receiveShot records misses, hits, sunk ships, and rejects repeated shots", () => {
   let board = createBoard();
   board = placeShip(board, { id: "patrol", length: 2 }, { row: 0, col: 0 }, "horizontal");
@@ -204,6 +245,27 @@ test("receiveShot marks the sunk ship and surrounding cells as known water", () 
   assert.throws(() => receiveShot(result.board, { row: 3, col: 3 }), /already/i);
 });
 
+test("receiveShot never marks another ship cell as an automatic miss around a sunk ship", () => {
+  const board = {
+    ...createBoard(3),
+    ships: [
+      { id: "sunk-target", length: 1, cells: [{ row: 1, col: 1 }], hits: [] },
+      { id: "adjacent-invalid", length: 1, cells: [{ row: 1, col: 2 }], hits: [] },
+    ],
+  };
+
+  const result = receiveShot(board, { row: 1, col: 1 });
+
+  assert.equal(result.outcome.type, "sunk");
+  assert.equal(getCell(result.board, { row: 1, col: 1 }).shot, "sunk");
+  assert.equal(getCell(result.board, { row: 1, col: 2 }).shipId, "adjacent-invalid");
+  assert.equal(getCell(result.board, { row: 1, col: 2 }).shot, null);
+  assert.equal(
+    result.board.shots.some((shot) => shot.row === 1 && shot.col === 2 && shot.result === "miss"),
+    false,
+  );
+});
+
 test("fireAt switches turns after misses and keeps turn after hits", () => {
   const p1Board = placeShip(createBoard(), { id: "p1-patrol", length: 2 }, { row: 0, col: 0 }, "horizontal");
   const p2Board = placeShip(createBoard(), { id: "p2-patrol", length: 2 }, { row: 1, col: 1 }, "horizontal");
@@ -248,6 +310,17 @@ test("fireAt finishes the game when the last ship is sunk", () => {
   assert.equal(result.outcome.type, "sunk");
   assert.equal(result.game.phase, "finished");
   assert.equal(result.game.winnerId, "p1");
+});
+
+test("createGameFromBoards and fireAt reject invalid turn states", () => {
+  const p1Board = placeShip(createBoard(), { id: "p1-patrol", length: 1 }, { row: 0, col: 0 }, "horizontal");
+  const p2Board = placeShip(createBoard(), { id: "p2-patrol", length: 1 }, { row: 1, col: 1 }, "horizontal");
+  const game = createGameFromBoards(p1Board, p2Board, "p1");
+
+  assert.throws(() => createGameFromBoards(p1Board, p2Board, "p3"), /Invalid first player/);
+  assert.throws(() => fireAt(game, "p2", { row: 0, col: 0 }), /not this player's turn/i);
+  assert.throws(() => fireAt({ ...game, phase: "finished" }, "p1", { row: 0, col: 0 }), /already finished/i);
+  assert.throws(() => fireAt(game, "p1", { row: 10, col: 0 }), /out of bounds/i);
 });
 
 function cellsTouch(a, b) {

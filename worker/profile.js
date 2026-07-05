@@ -1,11 +1,14 @@
 const profileModes = new Set(["agent", "online", "hotseat"]);
 const matchResults = new Set(["win", "loss"]);
+const ratingBase = 1000;
+const ratingWinDelta = 24;
+const ratingLossDelta = -16;
 
-export async function getPlayerProfile(db, user) {
+export async function getPlayerProfile(db, user, { now = new Date() } = {}) {
   assertProfileDb(db);
   await upsertUser(db, user);
   const userKey = userSubject(user);
-  const [summaryRow, modeRows, streakRows, recentRows] = await Promise.all([
+  const [summaryRow, modeRows, streakRows, recentRows, onlineRows] = await Promise.all([
     db
       .prepare(
         `SELECT COUNT(*) AS total_matches,
@@ -52,11 +55,84 @@ export async function getPlayerProfile(db, user) {
       )
       .bind(userKey, 12)
       .all(),
+    db
+      .prepare(
+        `SELECT result, played_at
+        FROM matches
+        WHERE user_key = ? AND mode = 'online'
+        ORDER BY played_at ASC`,
+      )
+      .bind(userKey)
+      .all(),
   ]);
 
   return {
     summary: summarizeProfile(summaryRow ?? {}, modeRows.results ?? [], streakRows.results ?? []),
+    rating: summarizeOnlineRating(onlineRows.results ?? [], now),
+    season: summarizeSeason(onlineRows.results ?? [], now),
     recentMatches: (recentRows.results ?? []).map(publicMatch),
+  };
+}
+
+export async function getLeaderboard(db, { now = new Date(), limit = 20 } = {}) {
+  assertProfileDb(db);
+  const rows = await db
+    .prepare(
+      `SELECT u.user_key, u.name, u.username, u.photo_url, m.result, m.played_at
+      FROM matches m
+      JOIN users u ON u.user_key = m.user_key
+      WHERE m.mode = 'online'
+      ORDER BY u.user_key ASC, m.played_at ASC`,
+    )
+    .all();
+  const players = new Map();
+  for (const row of rows.results ?? []) {
+    if (!players.has(row.user_key)) {
+      players.set(row.user_key, {
+        userKey: row.user_key,
+        name: row.name || row.username || row.user_key,
+        username: row.username || "",
+        photoUrl: row.photo_url || "",
+        matches: [],
+      });
+    }
+    players.get(row.user_key).matches.push({
+      result: row.result,
+      played_at: row.played_at,
+    });
+  }
+
+  const entries = [...players.values()]
+    .map((player) => {
+      const rating = summarizeOnlineRating(player.matches, now);
+      const season = summarizeSeason(player.matches, now);
+      return {
+        name: player.name,
+        username: player.username,
+        photoUrl: player.photoUrl,
+        rating: rating.mmr,
+        label: rating.label,
+        onlineMatches: rating.onlineMatches,
+        onlineWins: rating.onlineWins,
+        onlineLosses: rating.onlineLosses,
+        onlineWinRate: rating.onlineWinRate,
+        seasonMatches: season.matches,
+        seasonWins: season.wins,
+      };
+    })
+    .sort(
+      (first, second) =>
+        second.rating - first.rating ||
+        second.onlineWins - first.onlineWins ||
+        first.onlineMatches - second.onlineMatches ||
+        first.name.localeCompare(second.name),
+    )
+    .slice(0, limit)
+    .map((entry, index) => ({ rank: index + 1, ...entry }));
+
+  return {
+    season: seasonKey(now),
+    entries,
   };
 }
 
@@ -217,6 +293,60 @@ function currentWinStreak(rows) {
     streak += 1;
   }
   return streak;
+}
+
+function summarizeOnlineRating(rows, now) {
+  const onlineWins = rows.filter((row) => row.result === "win").length;
+  const onlineLosses = rows.filter((row) => row.result === "loss").length;
+  const onlineMatches = onlineWins + onlineLosses;
+  const mmr = Math.max(0, ratingBase + onlineWins * ratingWinDelta + onlineLosses * ratingLossDelta);
+  return {
+    mmr,
+    label: ratingLabel(mmr, onlineMatches),
+    onlineMatches,
+    onlineWins,
+    onlineLosses,
+    onlineWinRate: onlineMatches === 0 ? 0 : Math.round((onlineWins / onlineMatches) * 100),
+    currentOnlineWinStreak: currentWinStreak([...rows].reverse()),
+  };
+}
+
+function summarizeSeason(rows, now) {
+  const id = seasonKey(now);
+  const seasonRows = rows.filter((row) => seasonKey(new Date(row.played_at)) === id);
+  const wins = seasonRows.filter((row) => row.result === "win").length;
+  const losses = seasonRows.filter((row) => row.result === "loss").length;
+  const matches = wins + losses;
+  return {
+    id,
+    matches,
+    wins,
+    losses,
+    winRate: matches === 0 ? 0 : Math.round((wins / matches) * 100),
+  };
+}
+
+function ratingLabel(mmr, matches) {
+  if (matches === 0) {
+    return "unrated";
+  }
+  if (mmr >= 1200) {
+    return "admiral";
+  }
+  if (mmr >= 1100) {
+    return "commander";
+  }
+  if (mmr >= 1020) {
+    return "lieutenant";
+  }
+  return "cadet";
+}
+
+function seasonKey(date) {
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  const year = safeDate.getUTCFullYear();
+  const quarter = Math.floor(safeDate.getUTCMonth() / 3) + 1;
+  return `${year}-Q${quarter}`;
 }
 
 function normalizePlayedAt(value) {

@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 
-import { createBoard, createGameFromBoards, placeShip } from "../src/core/game.js";
+import { createBoard, createGameFromBoards, placeShip, randomlyPlaceSetup } from "../src/core/game.js";
+import { gamePresets } from "../src/core/presets.js";
 import worker, { BattleRoom, createPlayerSnapshot } from "../worker/index.js";
 
 const cryptoApi = globalThis.crypto ?? webcrypto;
@@ -124,6 +125,61 @@ test("worker returns anonymous auth state without a session token", async () => 
   assert.deepEqual(await response.json(), { user: null });
 });
 
+test("worker handles CORS, not found, logout, and room routing", async () => {
+  const optionsResponse = await worker.fetch(new Request("https://worker.test/rooms", { method: "OPTIONS" }), {});
+  assert.equal(optionsResponse.status, 200);
+  assert.equal(optionsResponse.headers.get("Access-Control-Allow-Origin"), "*");
+
+  const notFoundResponse = await worker.fetch(new Request("https://worker.test/nope"), {});
+  assert.equal(notFoundResponse.status, 404);
+  assert.deepEqual(await notFoundResponse.json(), { error: "Not found" });
+
+  const logoutResponse = await worker.fetch(new Request("https://worker.test/auth/logout", { method: "POST" }), {});
+  assert.equal(logoutResponse.status, 200);
+  assert.deepEqual(await logoutResponse.json(), { ok: true });
+
+  const namespace = new FakeBattleRoomNamespace();
+  const joinResponse = await worker.fetch(
+    new Request("https://worker.test/rooms/ab12/join", { method: "POST" }),
+    { BATTLE_ROOM: namespace },
+  );
+  assert.equal(joinResponse.status, 200);
+  assert.equal(namespace.lastId, "AB12");
+  assert.equal(namespace.requests.at(-1).url, "https://worker.test/rooms/ab12/join");
+});
+
+test("worker create room retries collisions and reports allocation failure", async () => {
+  const namespace = new FakeBattleRoomNamespace({ statuses: [409, 409, 200] });
+
+  const response = await worker.fetch(new Request("https://worker.test/rooms", { method: "POST" }), {
+    BATTLE_ROOM: namespace,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(namespace.requests.length, 3);
+  assert.ok(namespace.requests.every((request) => request.headers instanceof Headers));
+
+  const failedNamespace = new FakeBattleRoomNamespace({ statuses: [409, 409, 409, 409, 409] });
+  const failed = await worker.fetch(new Request("https://worker.test/rooms", { method: "POST" }), {
+    BATTLE_ROOM: failedNamespace,
+  });
+  assert.equal(failed.status, 503);
+  assert.deepEqual(await failed.json(), { error: "Could not allocate room code" });
+});
+
+test("worker returns auth errors for invalid Telegram login payloads", async () => {
+  const response = await worker.fetch(
+    new Request("https://worker.test/auth/telegram", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "42" }),
+    }),
+    { TELEGRAM_BOT_TOKEN: "bot-token", SESSION_SECRET: "session-secret" },
+  );
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { error: "Telegram payload is incomplete" });
+});
+
 test("BattleRoom rejects invalid room auth tokens as unauthorized responses", async () => {
   const room = new BattleRoom({ storage: new MemoryStorage() }, { SESSION_SECRET: "session-secret" });
   const response = await room.fetch(
@@ -135,6 +191,203 @@ test("BattleRoom rejects invalid room auth tokens as unauthorized responses", as
 
   assert.equal(response.status, 401);
   assert.deepEqual(await response.json(), { error: "Session token is invalid" });
+});
+
+test("BattleRoom creates, joins, and rejects duplicate or full rooms", async () => {
+  const storage = new MemoryStorage();
+  const room = new BattleRoom({ storage });
+
+  const created = await room.fetch(new Request("https://worker.test/rooms?code=ROOM01", { method: "POST" }));
+  assert.equal(created.status, 200);
+  const createdPayload = await created.json();
+  assert.deepEqual(
+    Object.keys(createdPayload).sort(),
+    ["playerId", "playerToken", "roomCode"].sort(),
+  );
+
+  const duplicate = await room.fetch(new Request("https://worker.test/rooms?code=ROOM01", { method: "POST" }));
+  assert.equal(duplicate.status, 409);
+  assert.deepEqual(await duplicate.json(), { error: "Room already exists" });
+
+  const sent = [];
+  const previousWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = { OPEN: 1 };
+  try {
+    room.sessions.set("p1-session", {
+      playerId: "p1",
+      socket: {
+        readyState: 1,
+        send(payload) {
+          sent.push(JSON.parse(payload));
+        },
+      },
+    });
+    const joined = await room.fetch(new Request("https://worker.test/rooms/ROOM01/join", { method: "POST" }));
+    assert.equal(joined.status, 200);
+    assert.equal((await joined.json()).playerId, "p2");
+  } finally {
+    globalThis.WebSocket = previousWebSocket;
+  }
+
+  assert.equal(sent.at(-1)?.type, "snapshot");
+  const full = await room.fetch(new Request("https://worker.test/rooms/ROOM01/join", { method: "POST" }));
+  assert.equal(full.status, 409);
+  assert.deepEqual(await full.json(), { error: "Room is full" });
+});
+
+test("BattleRoom handles fetch-level room and socket errors", async () => {
+  const empty = new BattleRoom({ storage: new MemoryStorage() });
+  const missingJoin = await empty.fetch(new Request("https://worker.test/rooms/MISS/join", { method: "POST" }));
+  assert.equal(missingJoin.status, 400);
+  assert.deepEqual(await missingJoin.json(), { error: "Room not found" });
+
+  const options = await empty.fetch(new Request("https://worker.test/rooms/MISS/socket", { method: "OPTIONS" }));
+  assert.equal(options.status, 200);
+
+  const notFound = await empty.fetch(new Request("https://worker.test/elsewhere"));
+  assert.equal(notFound.status, 404);
+
+  const invalidCode = await empty.fetch(new Request("https://worker.test/rooms/x/join", { method: "POST" }));
+  assert.equal(invalidCode.status, 400);
+  assert.deepEqual(await invalidCode.json(), { error: "Invalid room code" });
+
+  const room = new BattleRoom({
+    storage: new MemoryStorage({
+      room: {
+        code: "SOCKET",
+        players: { p1: { token: "p1-token", board: null, user: null }, p2: null },
+        presetId: null,
+        game: null,
+      },
+    }),
+  });
+  const noUpgrade = await room.fetch(new Request("https://worker.test/rooms/SOCKET/socket?playerId=p1&token=p1-token"));
+  assert.equal(noUpgrade.status, 426);
+  assert.deepEqual(await noUpgrade.json(), { error: "Expected WebSocket upgrade" });
+
+  const badPlayer = await room.fetch(
+    new Request("https://worker.test/rooms/SOCKET/socket?playerId=p2&token=p2-token", {
+      headers: { Upgrade: "websocket" },
+    }),
+  );
+  assert.equal(badPlayer.status, 400);
+  assert.deepEqual(await badPlayer.json(), { error: "Unknown player" });
+
+  const badToken = await room.fetch(
+    new Request("https://worker.test/rooms/SOCKET/socket?playerId=p1&token=bad", {
+      headers: { Upgrade: "websocket" },
+    }),
+  );
+  assert.equal(badToken.status, 400);
+  assert.deepEqual(await badToken.json(), { error: "Invalid player token" });
+});
+
+test("BattleRoom accepts WebSocket connections and removes closed sessions", async () => {
+  const room = new BattleRoom({
+    storage: new MemoryStorage({
+      room: {
+        code: "SOCKET",
+        players: { p1: { token: "p1-token", board: null, user: null }, p2: null },
+        presetId: "quick",
+        game: null,
+      },
+    }),
+  });
+  const restore = installSocketGlobals();
+
+  try {
+    const response = await room.fetch(
+      new Request("https://worker.test/rooms/SOCKET/socket?playerId=p1&token=p1-token", {
+        headers: { Upgrade: "websocket" },
+      }),
+    );
+    assert.equal(response.status, 101);
+    assert.equal(FakeSocketPair.last.server.accepted, true);
+    assert.equal(FakeSocketPair.last.server.sent.at(-1).type, "snapshot");
+    assert.equal(room.sessions.size, 1);
+
+    FakeSocketPair.last.server.dispatch("message", { data: JSON.stringify({ type: "unknown" }) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(FakeSocketPair.last.server.sent.at(-1).type, "error");
+
+    FakeSocketPair.last.server.dispatch("close", {});
+    assert.equal(room.sessions.size, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("BattleRoom places fleets, starts games, and reports setup message errors", async () => {
+  const p1Board = randomlyPlaceSetup(gamePresets.quick, () => 0.12);
+  const p2Board = randomlyPlaceSetup(gamePresets.quick, () => 0.72);
+  const storage = new MemoryStorage({
+    room: {
+      code: "SETUP",
+      players: {
+        p1: { token: "p1-token", board: null, user: null },
+        p2: { token: "p2-token", board: null, user: null },
+      },
+      presetId: null,
+      game: null,
+    },
+  });
+  const room = new BattleRoom({ storage });
+  const sent = [];
+  const previousWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = { OPEN: 1 };
+
+  try {
+    room.sessions.set("p1-session", { playerId: "p1", socket: recordingSocket(sent) });
+    room.sessions.set("p2-session", { playerId: "p2", socket: recordingSocket(sent) });
+    await room.handleMessage("missing-session", JSON.stringify({ type: "placeFleet", board: p1Board, presetId: "quick" }));
+    await room.handleMessage("p1-session", JSON.stringify({ type: "placeFleet", board: p1Board, presetId: "quick" }));
+    assert.equal((await storage.get("room")).game, null);
+
+    await room.handleMessage("p2-session", JSON.stringify({ type: "placeFleet", board: p2Board, presetId: "quick" }));
+  } finally {
+    globalThis.WebSocket = previousWebSocket;
+  }
+
+  const savedRoom = await storage.get("room");
+  assert.equal(savedRoom.presetId, "quick");
+  assert.equal(savedRoom.game.phase, "playing");
+  assert.equal(sent.some((message) => message.type === "snapshot" && message.snapshot.phase === "playing"), true);
+
+  const errorSent = [];
+  const errorRoom = new BattleRoom({
+    storage: new MemoryStorage({
+      room: {
+        code: "ERR",
+        players: { p1: { token: "p1-token", board: null, user: null }, p2: null },
+        presetId: "classic",
+        game: null,
+      },
+    }),
+  });
+  const previousErrorWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = { OPEN: 1 };
+  try {
+    errorRoom.sessions.set("session", { playerId: "p1", socket: recordingSocket(errorSent) });
+    await errorRoom.handleMessage("session", JSON.stringify({ type: "placeFleet", board: p1Board, presetId: "quick" }));
+    await errorRoom.handleMessage("session", "{bad-json");
+    await errorRoom.handleMessage("session", JSON.stringify({ type: "fire", coordinate: { row: 0, col: 0 } }));
+  } finally {
+    globalThis.WebSocket = previousErrorWebSocket;
+  }
+
+  assert.equal(errorSent[0].message, "Room uses a different battle format");
+  assert.match(errorSent[1].message, /Expected property name or '\}' in JSON at position 1/);
+  assert.equal(errorSent[2].message, "Game has not started");
+});
+
+test("BattleRoom skips profile recording when online match data is not recordable", async () => {
+  const room = new BattleRoom({ storage: new MemoryStorage() });
+  await room.recordFinishedOnlineBattle({ game: null });
+  await room.recordFinishedOnlineBattle({ game: { log: [] }, profileRecordedAt: "done" });
+  await room.recordFinishedOnlineBattle({
+    players: { p1: { user: null }, p2: null },
+    game: { log: [], winnerId: "p1" },
+  });
 });
 
 test("BattleRoom records completed authenticated online matches in profile storage", async () => {
@@ -270,6 +523,98 @@ class MemoryStorage {
 
   async put(key, value) {
     this.values.set(key, value);
+  }
+}
+
+class FakeBattleRoomNamespace {
+  constructor({ statuses = [200] } = {}) {
+    this.statuses = [...statuses];
+    this.requests = [];
+    this.lastId = "";
+  }
+
+  idFromName(name) {
+    this.lastId = name;
+    return name;
+  }
+
+  get() {
+    return {
+      fetch: async (request) => {
+        this.requests.push(request);
+        const status = this.statuses.shift() ?? 200;
+        return new Response(JSON.stringify({ ok: status < 400 }), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    };
+  }
+}
+
+function recordingSocket(sent) {
+  return {
+    readyState: 1,
+    send(payload) {
+      sent.push(JSON.parse(payload));
+    },
+  };
+}
+
+function installSocketGlobals() {
+  const previousWebSocket = globalThis.WebSocket;
+  const previousWebSocketPair = globalThis.WebSocketPair;
+  const previousResponse = globalThis.Response;
+  globalThis.WebSocket = { OPEN: 1 };
+  globalThis.WebSocketPair = FakeSocketPair;
+  globalThis.Response = FakeUpgradeResponse;
+  return () => {
+    globalThis.WebSocket = previousWebSocket;
+    globalThis.WebSocketPair = previousWebSocketPair;
+    globalThis.Response = previousResponse;
+  };
+}
+
+class FakeSocketPair {
+  constructor() {
+    FakeSocketPair.last = {
+      client: new FakeSocket(),
+      server: new FakeSocket(),
+    };
+    return FakeSocketPair.last;
+  }
+}
+
+class FakeSocket {
+  constructor() {
+    this.readyState = 1;
+    this.sent = [];
+    this.listeners = new Map();
+    this.accepted = false;
+  }
+
+  accept() {
+    this.accepted = true;
+  }
+
+  addEventListener(type, listener) {
+    this.listeners.set(type, listener);
+  }
+
+  send(payload) {
+    this.sent.push(JSON.parse(payload));
+  }
+
+  dispatch(type, event) {
+    this.listeners.get(type)?.(event);
+  }
+}
+
+class FakeUpgradeResponse {
+  constructor(body, init = {}) {
+    this.body = body;
+    this.status = init.status ?? 200;
+    this.webSocket = init.webSocket;
   }
 }
 

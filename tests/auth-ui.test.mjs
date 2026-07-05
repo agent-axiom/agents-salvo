@@ -26,6 +26,9 @@ test("frontend exposes player profile and completed battle recording hooks", () 
   assert.match(app, /\/profile\/me/);
   assert.match(app, /\/profile\/matches/);
   assert.match(app, /renderProfilePanel/);
+  assert.match(app, /renderLeaderboard/);
+  assert.match(app, /profile\.rating/);
+  assert.match(app, /profile\.leaderboard/);
   assert.match(app, /recordCompletedBattle/);
   assert.match(app, /data-action="refresh-profile"/);
 });

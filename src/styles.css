@@ -490,7 +490,8 @@ input {
 }
 
 .profile-panel span,
-.profile-recent h4 {
+.profile-recent h4,
+.profile-leaderboard h4 {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
@@ -517,7 +518,7 @@ input {
 
 .profile-stats {
   display: grid;
-  grid-template-columns: repeat(5, minmax(86px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
   gap: 8px;
 }
 
@@ -537,12 +538,14 @@ input {
   line-height: 1.1;
 }
 
-.profile-recent {
+.profile-recent,
+.profile-leaderboard {
   display: grid;
   gap: 8px;
 }
 
-.profile-recent ol {
+.profile-recent ol,
+.profile-leaderboard ol {
   display: grid;
   gap: 6px;
   max-height: 170px;
@@ -552,7 +555,8 @@ input {
   list-style: none;
 }
 
-.profile-recent li {
+.profile-recent li,
+.profile-leaderboard li {
   display: grid;
   grid-template-columns: minmax(72px, auto) minmax(0, 1fr) auto;
   gap: 8px;
@@ -561,7 +565,8 @@ input {
   border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
 }
 
-.profile-recent li span {
+.profile-recent li span,
+.profile-leaderboard li span {
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
@@ -571,7 +576,8 @@ input {
   text-transform: none;
 }
 
-.profile-recent li small {
+.profile-recent li small,
+.profile-leaderboard li small {
   color: var(--muted);
   font-weight: 700;
 }

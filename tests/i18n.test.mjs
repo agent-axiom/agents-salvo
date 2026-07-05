@@ -56,12 +56,24 @@ test("i18n translates result modal, theme, and history labels in every language"
     "profile.accuracy",
     "profile.streak",
     "profile.bestMode",
+    "profile.rating",
+    "profile.league",
+    "profile.online",
+    "profile.season",
+    "profile.seasonRecord",
+    "profile.leaderboard",
+    "profile.noLeaderboard",
     "profile.recent",
     "profile.noMatches",
     "profile.saved",
     "profile.saveError",
     "profile.result.win",
     "profile.result.loss",
+    "profile.ratingLabel.unrated",
+    "profile.ratingLabel.cadet",
+    "profile.ratingLabel.lieutenant",
+    "profile.ratingLabel.commander",
+    "profile.ratingLabel.admiral",
     "history.title",
     "history.body",
     "history.body2",
@@ -120,3 +132,59 @@ test("Russian board columns use Cyrillic coordinate letters", () => {
   assert.equal(i18n.coordinateColumnLabel("en", 9), "J");
   assert.equal(i18n.coordinateColumnLabel("zh-CN", 9), "J");
 });
+
+test("getInitialLanguage prefers saved language and falls back from browser locale", () => {
+  withLanguageGlobals({ saved: "ru", browser: "en-US" }, () => {
+    assert.equal(i18n.getInitialLanguage(), "ru");
+  });
+  withLanguageGlobals({ saved: "unknown", browser: "zh-Hans-CN" }, () => {
+    assert.equal(i18n.getInitialLanguage(), "zh-CN");
+  });
+  withLanguageGlobals({ saved: "", browser: "ru-RU" }, () => {
+    assert.equal(i18n.getInitialLanguage(), "ru");
+  });
+  withLanguageGlobals({ saved: "", browser: "fr-FR" }, () => {
+    assert.equal(i18n.getInitialLanguage(), "en");
+  });
+});
+
+test("translations and coordinates fall back safely", () => {
+  assert.equal(t("missing-language", "nav.mainMenu"), "Main menu");
+  assert.equal(t("en", "missing.key"), "missing.key");
+  assert.equal(t("en", "online.opponent", { player: "Ada" }), "Opponent: Ada");
+  assert.equal(i18n.coordinateColumnLabel("missing-language", 0), "A");
+  assert.equal(i18n.coordinateColumnLabel("en", 30), "31");
+});
+
+function withLanguageGlobals({ saved, browser }, callback) {
+  const previousLocalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem(key) {
+        return key === "salvo.language" ? saved : null;
+      },
+    },
+  });
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { language: browser },
+  });
+
+  try {
+    callback();
+  } finally {
+    restoreDescriptor("localStorage", previousLocalStorage);
+    restoreDescriptor("navigator", previousNavigator);
+  }
+}
+
+function restoreDescriptor(name, descriptor) {
+  if (descriptor) {
+    Object.defineProperty(globalThis, name, descriptor);
+  } else {
+    delete globalThis[name];
+  }
+}

@@ -297,6 +297,8 @@ function renderProfilePanel() {
 
   const profile = state.profile.data;
   const summary = profile?.summary;
+  const rating = profile?.rating;
+  const season = profile?.season;
   return `
     <section class="profile-panel">
       <div class="profile-panel-header">
@@ -327,8 +329,17 @@ function renderProfilePanel() {
                 "profile.bestMode",
                 summary.bestMode ? translate(`mode.${summary.bestMode}`) : "—",
               )}
+              ${renderProfileStat("profile.rating", rating?.onlineMatches ? rating.mmr : "—")}
+              ${renderProfileStat(
+                "profile.league",
+                translate(`profile.ratingLabel.${rating?.label ?? "unrated"}`),
+              )}
+              ${renderProfileStat("profile.online", `${rating?.onlineWins ?? 0}-${rating?.onlineLosses ?? 0}`)}
+              ${renderProfileStat("profile.season", season?.id ?? "—")}
+              ${renderProfileStat("profile.seasonRecord", `${season?.wins ?? 0}-${season?.losses ?? 0}`)}
             </div>
             ${renderRecentMatches(profile.recentMatches ?? [])}
+            ${renderLeaderboard(profile.leaderboard)}
           `
           : `<p>${translate("profile.empty")}</p>`
       }
@@ -360,6 +371,32 @@ function renderRecentMatches(matches) {
                       <strong>${translate(`profile.result.${match.result}`)}</strong>
                       <span>${translate(`mode.${match.mode}`)} · ${translate(`preset.${match.presetId}.name`)}</span>
                       <small>${match.playerShots} / ${match.accuracy}%</small>
+                    </li>
+                  `,
+                )
+                .join("")}
+            </ol>`
+      }
+    </div>
+  `;
+}
+
+function renderLeaderboard(leaderboard) {
+  const entries = leaderboard?.entries ?? [];
+  return `
+    <div class="profile-leaderboard">
+      <h4>${translate("profile.leaderboard")}</h4>
+      ${
+        entries.length === 0
+          ? `<p>${translate("profile.noLeaderboard")}</p>`
+          : `<ol>
+              ${entries
+                .map(
+                  (entry) => `
+                    <li>
+                      <strong>#${entry.rank}</strong>
+                      <span>${escapeHtml(entry.name)}</span>
+                      <small>${entry.rating} · ${entry.onlineWins}-${entry.onlineLosses}</small>
                     </li>
                   `,
                 )
