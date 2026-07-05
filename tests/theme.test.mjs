@@ -52,7 +52,8 @@ test("dark theme does not draw a bright diagonal sheen over the board", () => {
   const boardRule = cssRule(".board-grid");
 
   assert.ok(sheen.alpha <= 0.03, `dark board sheen alpha is ${sheen.alpha}`);
-  assert.match(boardRule, /var\(--board-sheen\)/);
+  assert.doesNotMatch(boardRule, /var\(--board-sheen\)/);
+  assert.doesNotMatch(boardRule, /linear-gradient\(105deg/);
   assert.doesNotMatch(boardRule, /rgba\(255,\s*255,\s*255,\s*0\.18\)/);
 });
 

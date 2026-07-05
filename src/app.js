@@ -1080,7 +1080,9 @@ function getTargetCell(board, coordinate) {
 
 function cellClass(cell, kind, board, coordinate) {
   const classes = [];
-  if ((kind === "own" || kind === "setup") && cell.shipId) classes.push("has-ship");
+  if ((kind === "own" || kind === "setup") && cell.shipId) {
+    classes.push("has-ship", ...shipEdgeClasses(board, coordinate));
+  }
   if ((kind === "own" || kind === "setup") && isShipSpriteAnchor(board, coordinate)) {
     classes.push("ship-anchor");
   }
@@ -1268,6 +1270,31 @@ function sunkEdgeClasses(board, coordinate, kind) {
     hasSunkNeighbor(1, 0) ? "" : "sunk-edge-bottom",
     hasSunkNeighbor(0, -1) ? "" : "sunk-edge-left",
     hasSunkNeighbor(0, 1) ? "" : "sunk-edge-right",
+  ].filter(Boolean);
+}
+
+function shipEdgeClasses(board, coordinate) {
+  const cell = getCell(board, coordinate);
+  if (!cell.shipId) {
+    return [];
+  }
+
+  const hasSameShipNeighbor = (rowOffset, colOffset) => {
+    const target = {
+      row: coordinate.row + rowOffset,
+      col: coordinate.col + colOffset,
+    };
+    if (target.row < 0 || target.col < 0 || target.row >= board.size || target.col >= board.size) {
+      return false;
+    }
+    return getCell(board, target).shipId === cell.shipId;
+  };
+
+  return [
+    hasSameShipNeighbor(-1, 0) ? "" : "ship-edge-top",
+    hasSameShipNeighbor(1, 0) ? "" : "ship-edge-bottom",
+    hasSameShipNeighbor(0, -1) ? "" : "ship-edge-left",
+    hasSameShipNeighbor(0, 1) ? "" : "ship-edge-right",
   ].filter(Boolean);
 }
 

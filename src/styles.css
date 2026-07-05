@@ -1,31 +1,35 @@
 :root {
   color-scheme: light;
-  --paper: #fff8df;
-  --ink: #153f86;
-  --muted: #657188;
-  --surface: rgba(255, 252, 236, 0.94);
-  --surface-strong: rgba(246, 238, 207, 0.86);
-  --line: rgba(28, 86, 184, 0.42);
-  --board-paper: #f7f2e6;
-  --board-fiber: rgba(88, 77, 56, 0.1);
-  --pen-line: rgba(17, 54, 154, 0.72);
-  --pen-line-soft: rgba(17, 54, 154, 0.23);
-  --board-sheen: rgba(255, 255, 255, 0.18);
-  --water: rgba(38, 103, 203, 0.045);
-  --water-dark: rgba(28, 86, 184, 0.2);
-  --ship: rgba(21, 63, 134, 0.72);
-  --ship-stroke: rgba(21, 63, 134, 0.32);
-  --hit: #c7352d;
-  --miss: #164d9c;
-  --sunk: #98281f;
-  --accent: #1c56b8;
-  --accent-strong: #123f91;
+  --paper: #fffdf8;
+  --ink: #4f05c8;
+  --muted: #7b45c8;
+  --surface: rgba(255, 255, 255, 0.9);
+  --surface-strong: rgba(255, 255, 255, 0.78);
+  --line: rgba(111, 0, 255, 0.34);
+  --board-paper: #fffdf8;
+  --board-fiber: rgba(219, 105, 255, 0.16);
+  --notebook-grid: rgba(219, 105, 255, 0.52);
+  --battle-purple: #6f00ff;
+  --battle-red: #e54862;
+  --ship-outline: #6f00ff;
+  --pen-line: rgba(111, 0, 255, 0.95);
+  --pen-line-soft: rgba(219, 105, 255, 0.52);
+  --board-sheen: rgba(255, 255, 255, 0);
+  --water: rgba(111, 0, 255, 0.035);
+  --water-dark: rgba(111, 0, 255, 0.14);
+  --ship: #6f00ff;
+  --ship-stroke: rgba(111, 0, 255, 0.78);
+  --hit: #e54862;
+  --miss: #e54862;
+  --sunk: #e54862;
+  --accent: #6f00ff;
+  --accent-strong: #4f05c8;
   --primary-ink: #ffffff;
   --warning: #e0ad2f;
-  --glow: rgba(28, 86, 184, 0.22);
+  --glow: rgba(111, 0, 255, 0.18);
   --panel-light: rgba(255, 252, 236, 0.9);
-  --scan-light: rgba(255, 255, 255, 0.36);
-  --shadow: 5px 6px 0 rgba(21, 63, 134, 0.12);
+  --scan-light: rgba(255, 255, 255, 0.24);
+  --shadow: 5px 6px 0 rgba(111, 0, 255, 0.1);
   --hand-font: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -39,18 +43,22 @@
   --surface: rgba(11, 21, 38, 0.96);
   --surface-strong: rgba(24, 43, 70, 0.95);
   --line: rgba(151, 201, 255, 0.68);
-  --board-paper: #142238;
-  --board-fiber: rgba(234, 243, 255, 0.05);
-  --pen-line: rgba(162, 204, 255, 0.78);
-  --pen-line-soft: rgba(162, 204, 255, 0.28);
+  --board-paper: #fffdf8;
+  --board-fiber: rgba(219, 105, 255, 0.16);
+  --notebook-grid: rgba(219, 105, 255, 0.52);
+  --battle-purple: #6f00ff;
+  --battle-red: #e54862;
+  --ship-outline: #6f00ff;
+  --pen-line: rgba(111, 0, 255, 0.95);
+  --pen-line-soft: rgba(219, 105, 255, 0.52);
   --board-sheen: rgba(255, 255, 255, 0);
   --water: rgba(96, 165, 250, 0.22);
   --water-dark: rgba(147, 197, 253, 0.42);
-  --ship: rgba(224, 239, 255, 0.92);
+  --ship: #6f00ff;
   --ship-stroke: rgba(255, 255, 255, 0.88);
-  --hit: #ff8a78;
-  --miss: #c4ddff;
-  --sunk: #ff6d5f;
+  --hit: #e54862;
+  --miss: #e54862;
+  --sunk: #e54862;
   --accent: #8fc2ff;
   --accent-strong: #d4e8ff;
   --primary-ink: #07111f;
@@ -71,12 +79,10 @@ body {
   margin: 0;
   color: var(--ink);
   background:
-    linear-gradient(90deg, transparent 72px, rgba(199, 53, 45, 0.22) 73px 74px, transparent 75px),
-    linear-gradient(90deg, rgba(28, 86, 184, 0.09) 1px, transparent 1px),
-    linear-gradient(rgba(28, 86, 184, 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, var(--notebook-grid) 1px, transparent 1px),
+    linear-gradient(var(--notebook-grid) 1px, transparent 1px),
     var(--paper);
   background-size:
-    100% 100%,
     34px 34px,
     34px 34px,
     auto;
@@ -84,12 +90,10 @@ body {
 
 :root[data-theme="dark"] body {
   background:
-    linear-gradient(90deg, transparent 72px, rgba(255, 111, 94, 0.22) 73px 74px, transparent 75px),
-    linear-gradient(90deg, rgba(106, 158, 232, 0.12) 1px, transparent 1px),
-    linear-gradient(rgba(106, 158, 232, 0.12) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(219, 105, 255, 0.18) 1px, transparent 1px),
+    linear-gradient(rgba(219, 105, 255, 0.18) 1px, transparent 1px),
     var(--paper);
   background-size:
-    100% 100%,
     34px 34px,
     34px 34px,
     auto;
@@ -111,6 +115,11 @@ body::before {
   background:
     radial-gradient(circle at 72% 18%, rgba(245, 200, 76, 0.1), transparent 28%),
     linear-gradient(112deg, transparent 0 42%, rgba(106, 158, 232, 0.1) 48%, transparent 56%);
+}
+
+:root:not([data-visual-style="render"]) body::before {
+  background: none;
+  animation: none;
 }
 
 button,
@@ -760,11 +769,17 @@ input {
   position: relative;
   overflow: hidden;
   padding: 16px;
+  color: var(--battle-purple);
   background:
-    linear-gradient(90deg, rgba(28, 86, 184, 0.055) 1px, transparent 1px),
-    linear-gradient(rgba(28, 86, 184, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, var(--notebook-grid) 1px, transparent 1px),
+    linear-gradient(var(--notebook-grid) 1px, transparent 1px),
     var(--panel-light);
-  background-size: 18px 18px;
+  background-size:
+    34px 34px,
+    34px 34px,
+    auto;
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .board-panel::after {
@@ -776,6 +791,10 @@ input {
   opacity: 0.28;
   transform: translateX(-120%);
   animation: board-scan 7s ease-in-out infinite;
+}
+
+:root:not([data-visual-style="render"]) .board-panel::after {
+  content: none;
 }
 
 .board-title {
@@ -805,10 +824,10 @@ input {
 .column-headers,
 .row-headers {
   display: grid;
-  color: var(--pen-line);
+  color: var(--battle-purple);
   font-family: var(--hand-font);
-  font-size: 14px;
-  font-weight: 700;
+  font-size: clamp(18px, 2.2vw, 30px);
+  font-weight: 800;
   line-height: 1;
 }
 
@@ -841,19 +860,15 @@ input {
   aspect-ratio: 1;
   overflow: hidden;
   background:
-    radial-gradient(circle at 14% 18%, var(--board-fiber) 0 1px, transparent 1.5px),
-    radial-gradient(circle at 82% 68%, var(--board-fiber) 0 1px, transparent 1.5px),
-    linear-gradient(105deg, transparent 0 42%, var(--board-sheen) 44% 48%, transparent 52%),
+    linear-gradient(90deg, var(--notebook-grid) 1px, transparent 1px),
+    linear-gradient(var(--notebook-grid) 1px, transparent 1px),
     var(--board-paper);
   background-size:
-    37px 31px,
-    43px 39px,
-    100% 100%,
+    calc(100% / var(--board-size, 10)) calc(100% / var(--board-size, 10)),
+    calc(100% / var(--board-size, 10)) calc(100% / var(--board-size, 10)),
     auto;
-  border: 2px solid var(--pen-line);
-  box-shadow:
-    inset 0 0 0 1px var(--pen-line-soft),
-    0 0 28px rgba(28, 86, 184, 0.08);
+  border: 4px solid var(--battle-purple);
+  box-shadow: none;
 }
 
 .cell {
@@ -871,11 +886,9 @@ input {
   line-height: 1;
   background: transparent;
   border: 0;
-  border-right: 1px solid var(--pen-line);
-  border-bottom: 1px solid var(--pen-line);
-  box-shadow:
-    inset 1px 0 0 var(--pen-line-soft),
-    inset 0 1px 0 var(--pen-line-soft);
+  border-right: 1px solid var(--notebook-grid);
+  border-bottom: 1px solid var(--notebook-grid);
+  box-shadow: none;
 }
 
 .ship-sprite,
@@ -894,10 +907,24 @@ input {
 }
 
 .cell.has-ship {
-  background:
-    repeating-linear-gradient(-10deg, transparent 0 7px, var(--ship-stroke) 8px 11px),
-    rgba(28, 86, 184, 0.035);
+  background: transparent;
   color: var(--ship);
+}
+
+.cell.ship-edge-top {
+  border-top: 4px solid var(--ship-outline);
+}
+
+.cell.ship-edge-bottom {
+  border-bottom: 4px solid var(--ship-outline);
+}
+
+.cell.ship-edge-left {
+  border-left: 4px solid var(--ship-outline);
+}
+
+.cell.ship-edge-right {
+  border-right: 4px solid var(--ship-outline);
 }
 
 .cell.has-mine,
@@ -931,8 +958,12 @@ input {
 }
 
 .cell.miss {
-  color: var(--miss);
+  color: var(--battle-red);
   background: transparent;
+}
+
+.cell.miss .cell-symbol {
+  font-size: 1em;
 }
 
 .cell.mine,
@@ -941,18 +972,20 @@ input {
 }
 
 .cell.hit {
-  color: var(--hit);
-  background: rgba(199, 53, 45, 0.08);
-  border-color: var(--hit);
-  box-shadow: 0 0 18px rgba(217, 72, 15, 0.44);
+  color: var(--battle-red);
+  background: transparent;
   animation: hit-flare 520ms ease-out;
 }
 
 .cell.sunk {
-  color: var(--sunk);
-  background: rgba(199, 53, 45, 0.1);
-  border-color: var(--sunk);
-  box-shadow: 0 0 14px rgba(159, 31, 20, 0.42);
+  color: var(--battle-red);
+  background: transparent;
+}
+
+.cell.hit .cell-symbol,
+.cell.sunk .cell-symbol {
+  font-size: 1.55em;
+  line-height: 0.85;
 }
 
 .cell.sunk-edge-top {
@@ -981,14 +1014,19 @@ input {
 
 .target .cell:not(:disabled),
 .online-target .cell:not(:disabled) {
-  background: rgba(28, 86, 184, 0.035);
+  background: transparent;
 }
 
-.target .cell:not(:disabled):hover,
+.target .cell:not(:disabled):hover {
+  background: rgba(111, 0, 255, 0.12);
+  border-color: var(--battle-purple);
+  box-shadow: inset 0 0 0 2px var(--battle-purple);
+}
+
 .online-target .cell:not(:disabled):hover {
-  background: rgba(224, 173, 47, 0.22);
-  border-color: var(--warning);
-  box-shadow: 0 0 18px var(--glow);
+  background: rgba(111, 0, 255, 0.12);
+  border-color: var(--battle-purple);
+  box-shadow: inset 0 0 0 2px var(--battle-purple);
 }
 
 .log-panel {
@@ -1305,6 +1343,22 @@ input {
 
 :root[data-visual-style="render"] .cell.has-ship {
   background: transparent;
+}
+
+:root[data-visual-style="render"] .cell.ship-edge-top {
+  border-top: 0;
+}
+
+:root[data-visual-style="render"] .cell.ship-edge-bottom {
+  border-bottom: 1px solid var(--pen-line-soft);
+}
+
+:root[data-visual-style="render"] .cell.ship-edge-left {
+  border-left: 0;
+}
+
+:root[data-visual-style="render"] .cell.ship-edge-right {
+  border-right: 1px solid var(--pen-line-soft);
 }
 
 :root[data-visual-style="render"] .cell.ship-anchor {
