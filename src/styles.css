@@ -43,24 +43,24 @@
   --surface: rgba(11, 21, 38, 0.96);
   --surface-strong: rgba(24, 43, 70, 0.95);
   --line: rgba(151, 201, 255, 0.68);
-  --board-paper: #fffdf8;
-  --board-fiber: rgba(219, 105, 255, 0.16);
-  --notebook-grid: rgba(219, 105, 255, 0.52);
-  --battle-purple: #6f00ff;
-  --battle-red: #e54862;
-  --ship-outline: #6f00ff;
-  --pen-line: rgba(111, 0, 255, 0.95);
-  --pen-line-soft: rgba(219, 105, 255, 0.52);
+  --board-paper: #130b1f;
+  --board-fiber: rgba(190, 93, 255, 0.08);
+  --notebook-grid: rgba(190, 93, 255, 0.34);
+  --battle-purple: #b667ff;
+  --battle-red: #ff6f88;
+  --ship-outline: #b667ff;
+  --pen-line: rgba(182, 103, 255, 0.92);
+  --pen-line-soft: rgba(190, 93, 255, 0.34);
   --board-sheen: rgba(255, 255, 255, 0);
-  --water: rgba(96, 165, 250, 0.22);
-  --water-dark: rgba(147, 197, 253, 0.42);
-  --ship: #6f00ff;
+  --water: rgba(182, 103, 255, 0.3);
+  --water-dark: rgba(190, 93, 255, 0.42);
+  --ship: #b667ff;
   --ship-stroke: rgba(255, 255, 255, 0.88);
-  --hit: #e54862;
-  --miss: #e54862;
-  --sunk: #e54862;
-  --accent: #8fc2ff;
-  --accent-strong: #d4e8ff;
+  --hit: #ff6f88;
+  --miss: #ff6f88;
+  --sunk: #ff6f88;
+  --accent: #b667ff;
+  --accent-strong: #ead9ff;
   --primary-ink: #07111f;
   --warning: #f5c84c;
   --glow: rgba(106, 158, 232, 0.32);
@@ -90,8 +90,8 @@ body {
 
 :root[data-theme="dark"] body {
   background:
-    linear-gradient(90deg, rgba(219, 105, 255, 0.18) 1px, transparent 1px),
-    linear-gradient(rgba(219, 105, 255, 0.18) 1px, transparent 1px),
+    linear-gradient(90deg, var(--notebook-grid) 1px, transparent 1px),
+    linear-gradient(var(--notebook-grid) 1px, transparent 1px),
     var(--paper);
   background-size:
     34px 34px,

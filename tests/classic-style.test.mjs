@@ -15,6 +15,18 @@ test("classic style uses notebook paper colors from the reference", () => {
   assert.match(cssRule(".board-grid"), /var\(--battle-purple\)/);
 });
 
+test("dark classic style uses a muted night notebook board", () => {
+  const vars = themeVariables("dark");
+
+  assert.equal(vars["board-paper"], "#130b1f");
+  assert.notEqual(vars["board-paper"], "#fffdf8");
+  assert.equal(vars["notebook-grid"], "rgba(190, 93, 255, 0.34)");
+  assert.equal(vars["battle-purple"], "#b667ff");
+  assert.equal(vars["battle-red"], "#ff6f88");
+  assert.equal(vars["ship-outline"], "#b667ff");
+  assert.match(cssRule(':root[data-theme="dark"] body'), /var\(--notebook-grid\)/);
+});
+
 test("classic ships are outlined instead of filled with hatch shading", () => {
   assert.match(app, /shipEdgeClasses\(board, coordinate\)/);
   assert.match(app, /function shipEdgeClasses/);
