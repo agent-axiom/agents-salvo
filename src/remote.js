@@ -1,9 +1,10 @@
 export class RemoteClient {
-  constructor({ workerUrl, onMessage, onStatus, onError }) {
+  constructor({ workerUrl, authToken = "", onMessage, onStatus, onError }) {
     this.workerUrl = (workerUrl || "").replace(/\/$/, "");
     if (!this.workerUrl) {
       throw new Error("Online service is not configured");
     }
+    this.authToken = authToken;
     this.onMessage = onMessage;
     this.onStatus = onStatus;
     this.onError = onError;
@@ -13,7 +14,10 @@ export class RemoteClient {
   }
 
   async createRoom() {
-    const response = await fetch(`${this.workerUrl}/rooms`, { method: "POST" });
+    const response = await fetch(`${this.workerUrl}/rooms`, {
+      method: "POST",
+      headers: this.authHeaders(),
+    });
     this.session = await readJson(response);
     await this.connect();
     return this.session;
@@ -22,6 +26,7 @@ export class RemoteClient {
   async joinRoom(roomCode) {
     const response = await fetch(`${this.workerUrl}/rooms/${encodeURIComponent(roomCode)}/join`, {
       method: "POST",
+      headers: this.authHeaders(),
     });
     this.session = await readJson(response);
     await this.connect();
@@ -90,6 +95,10 @@ export class RemoteClient {
       this.socket.close();
       this.socket = null;
     }
+  }
+
+  authHeaders() {
+    return this.authToken ? { Authorization: `Bearer ${this.authToken}` } : {};
   }
 }
 

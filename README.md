@@ -85,15 +85,16 @@ npx wrangler d1 migrations apply agents-salvo-profile --remote
 
 - `POST /rooms` creates a room and returns `roomCode`, `playerId`, and `playerToken`.
 - `POST /rooms/:roomCode/join` connects the second player.
+- If `Authorization: Bearer ...` is present on create/join, the room stores that Telegram identity for server-side history.
 - `GET /rooms/:roomCode/socket?playerId=...&token=...` opens a WebSocket.
 - The client sends `placeFleet` and `fire`.
-- The Durable Object validates turn order and never exposes opponent ships in snapshots.
+- The Durable Object validates turn order, never exposes opponent ships in snapshots, and records completed authenticated online matches in D1.
 
 ## Profile API
 
 - `POST /auth/telegram` verifies Telegram Login Widget payloads and returns a signed session token.
 - `GET /profile/me` returns the authenticated player profile, summary stats, and recent battles.
-- `POST /profile/matches` saves completed agent/online battles for the authenticated player.
+- `POST /profile/matches` saves completed agent battles for the authenticated player; online results are written by the room server.
 
 ## Audio
 

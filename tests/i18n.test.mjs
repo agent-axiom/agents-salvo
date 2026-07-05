@@ -89,6 +89,7 @@ test("i18n translates result modal, theme, and history labels in every language"
     "game.salvoShots",
     "shot.mine",
     "shot.sweeper",
+    "online.opponent",
   ];
 
   for (const language of languages) {

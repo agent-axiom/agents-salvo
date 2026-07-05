@@ -7,6 +7,7 @@ import {
   publicBoardView,
 } from "../src/core/game.js";
 import { getGamePreset } from "../src/core/presets.js";
+import { summarizeBattleLog } from "../src/core/stats.js";
 import {
   createSessionToken,
   parseBearerToken,
@@ -61,8 +62,9 @@ export default {
 };
 
 export class BattleRoom {
-  constructor(state) {
+  constructor(state, env = {}) {
     this.state = state;
+    this.env = env;
     this.sessions = new Map();
   }
 
@@ -72,10 +74,10 @@ export class BattleRoom {
 
     try {
       if (route?.kind === "create" && request.method === "POST") {
-        return this.create(route.roomCode);
+        return this.create(request, route.roomCode);
       }
       if (route?.kind === "join" && request.method === "POST") {
-        return this.join(route.roomCode);
+        return this.join(request, route.roomCode);
       }
       if (route?.kind === "socket" && request.method === "GET") {
         return this.connect(request, url);
@@ -85,20 +87,21 @@ export class BattleRoom {
       }
       return json({ error: "Not found" }, 404);
     } catch (error) {
-      return json({ error: error.message }, 400);
+      return json({ error: error.message }, authErrorStatus(error));
     }
   }
 
-  async create(roomCode) {
+  async create(request, roomCode) {
     const existing = await this.getRoom();
     if (existing) {
       return json({ error: "Room already exists" }, 409);
     }
+    const user = await optionalUser(request, this.env);
 
     const room = {
       code: roomCode,
       players: {
-        p1: { token: createToken(), board: null },
+        p1: { token: createToken(), board: null, user },
         p2: null,
       },
       presetId: null,
@@ -113,13 +116,13 @@ export class BattleRoom {
     });
   }
 
-  async join(roomCode) {
+  async join(request, roomCode) {
     const room = await this.requireRoom();
     if (room.players.p2) {
       return json({ error: "Room is full" }, 409);
     }
 
-    room.players.p2 = { token: createToken(), board: null };
+    room.players.p2 = { token: createToken(), board: null, user: await optionalUser(request, this.env) };
     await this.saveRoom(room);
     await this.broadcast(room);
 
@@ -186,9 +189,22 @@ export class BattleRoom {
         if (!room.game) {
           throw new Error("Game has not started");
         }
+        const wasFinished = room.game.phase === "finished";
         const result = fireAt(room.game, session.playerId, message.coordinate);
         room.game = result.game;
+        const finishedNow = !wasFinished && room.game.phase === "finished";
+        if (finishedNow) {
+          room.finishedAt = new Date().toISOString();
+        }
         await this.saveRoom(room);
+        if (finishedNow) {
+          try {
+            await this.recordFinishedOnlineBattle(room);
+          } catch {
+            room.profileRecordErrorAt = new Date().toISOString();
+            await this.saveRoom(room);
+          }
+        }
         await this.broadcast(room);
         return;
       }
@@ -242,6 +258,27 @@ export class BattleRoom {
   async saveRoom(room) {
     await this.state.storage.put("room", room);
   }
+
+  async recordFinishedOnlineBattle(room) {
+    if (!this.env?.DB || !room.game || room.profileRecordedAt) {
+      return;
+    }
+
+    const players = Object.entries(room.players).filter(([, player]) => player?.user);
+    if (players.length === 0) {
+      return;
+    }
+
+    await Promise.all(
+      players.map(([playerId, player]) =>
+        recordCompletedMatch(this.env.DB, player.user, onlineMatchPayload(room, playerId), {
+          source: "server",
+        }),
+      ),
+    );
+    room.profileRecordedAt = room.finishedAt;
+    await this.saveRoom(room);
+  }
 }
 
 export function createPlayerSnapshot(room, playerId) {
@@ -262,7 +299,11 @@ export function createPlayerSnapshot(room, playerId) {
       isYourTurn: false,
       opponentJoined,
       winnerId: null,
-      you: { board: ownRoomPlayer?.board ? cloneBoard(ownRoomPlayer.board) : createBoard(preset.size) },
+      you: {
+        board: ownRoomPlayer?.board ? cloneBoard(ownRoomPlayer.board) : createBoard(preset.size),
+        user: ownRoomPlayer?.user ?? null,
+      },
+      opponentUser: room.players[opponentId]?.user ?? null,
       opponentShots: [],
       log: [],
     };
@@ -282,7 +323,8 @@ export function createPlayerSnapshot(room, playerId) {
     isYourTurn: room.game.phase === "playing" && room.game.currentPlayerId === playerId,
     opponentJoined,
     winnerId: room.game.winnerId,
-    you: { board: ownBoard },
+    you: { board: ownBoard, user: ownRoomPlayer?.user ?? null },
+    opponentUser: room.players[opponentId]?.user ?? null,
     opponentShots: opponentView.shots.map(({ row, col, result }) => ({ row, col, result })),
     log: room.game.log.map(({ playerId: shooterId, targetPlayerId, coordinate, result }) => ({
       playerId: shooterId,
@@ -357,7 +399,7 @@ async function playerProfile(request, env) {
 async function saveProfileMatch(request, env) {
   try {
     const user = await requireUser(request, env);
-    const match = await recordCompletedMatch(env.DB, user, await request.json());
+    const match = await recordCompletedMatch(env.DB, user, await request.json(), { source: "client" });
     return json(
       {
         match,
@@ -378,6 +420,14 @@ async function requireUser(request, env) {
   return verifySessionToken(token, env.SESSION_SECRET);
 }
 
+async function optionalUser(request, env) {
+  const token = parseBearerToken(request);
+  if (!token) {
+    return null;
+  }
+  return publicUser(await verifySessionToken(token, env.SESSION_SECRET));
+}
+
 function authErrorStatus(error) {
   const message = error.message.toLowerCase();
   return message.includes("authentication") || message.includes("session") ? 401 : 400;
@@ -389,7 +439,10 @@ async function createRoom(request, env) {
     const id = env.BATTLE_ROOM.idFromName(roomCode);
     const room = env.BATTLE_ROOM.get(id);
     const response = await room.fetch(
-      new Request(new URL(`/rooms?code=${roomCode}`, request.url), { method: "POST" }),
+      new Request(new URL(`/rooms?code=${roomCode}`, request.url), {
+        method: "POST",
+        headers: request.headers,
+      }),
     );
     if (response.status !== 409) {
       return response;
@@ -448,6 +501,36 @@ function sanitizeRoomCode(value) {
 
 function createToken() {
   return crypto.randomUUID();
+}
+
+function onlineMatchPayload(room, playerId) {
+  const opponentId = playerId === "p1" ? "p2" : "p1";
+  const game = room.game;
+  const summary = summarizeBattleLog(game.log, game.winnerId);
+  const playerStats = summary.players.find((stats) => stats.playerId === playerId) ?? {
+    shots: 0,
+    hits: 0,
+    misses: 0,
+    sunk: 0,
+    accuracy: 0,
+  };
+  const opponent = room.players[opponentId]?.user;
+  return {
+    id: `online:${room.code}:${playerId}:${game.winnerId}:${game.log.length}`,
+    mode: "online",
+    presetId: game.presetId,
+    result: game.winnerId === playerId ? "win" : "loss",
+    opponent: opponent?.name || opponent?.username || (opponent ? `${opponent.provider}:${opponent.id}` : "online"),
+    totalShots: summary.totalShots,
+    playerShots: playerStats.shots,
+    playerHits: playerStats.hits,
+    playerMisses: playerStats.misses,
+    playerSunk: playerStats.sunk,
+    accuracy: playerStats.accuracy,
+    turns: game.log.length,
+    winnerId: game.winnerId,
+    playedAt: room.finishedAt,
+  };
 }
 
 function json(payload, status = 200) {

@@ -81,7 +81,9 @@ npx wrangler d1 migrations apply agents-salvo-profile --remote
 
 - `POST /auth/telegram` 校验 Telegram Login Widget payload 并返回签名 session。
 - `GET /profile/me` 返回玩家档案、统计摘要和近期战斗。
-- `POST /profile/matches` 为已登录玩家保存智能体和在线对局结果。
+- `POST /profile/matches` 为已登录玩家保存智能体对局结果；在线对局结果由房间服务器写入。
+
+创建或加入在线房间时如果带有 `Authorization: Bearer ...`，Durable Object 会把 Telegram 档案绑定到该玩家，并在对局结束后把结果写入 D1。
 
 ## 音频
 

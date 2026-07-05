@@ -1107,6 +1107,7 @@ function handleOnlineShot(coordinate) {
 function remoteHandlers() {
   return {
     workerUrl: state.online.workerUrl,
+    authToken: state.auth.token,
     onStatus(status) {
       state.online.status = status;
       render();
@@ -1117,21 +1118,12 @@ function remoteHandlers() {
     },
     onMessage(message) {
       if (message.type === "snapshot") {
+        const finishedNow = state.online.snapshot?.phase !== "finished" && message.snapshot.phase === "finished";
         playOnlineSnapshotSounds(state.online.snapshot, message.snapshot);
-        if (state.online.snapshot?.phase !== "finished" && message.snapshot.phase === "finished") {
-          void recordCompletedBattle(
-            completedBattleMatch({
-              key: onlineResultKey(message.snapshot),
-              mode: "online",
-              presetId: message.snapshot.presetId,
-              playerId: message.snapshot.playerId,
-              winnerId: message.snapshot.winnerId,
-              opponent: "online",
-              log: message.snapshot.log ?? [],
-            }),
-          );
-        }
         state.online.snapshot = message.snapshot;
+        if (finishedNow && state.auth.user) {
+          void refreshProfile();
+        }
       }
       if (message.type === "error") {
         state.online.error = message.message;
@@ -1577,6 +1569,13 @@ function renderOnlineStatus(snapshot) {
   }
   if (snapshot) {
     lines.push(translate("online.youAre", { player: playerName(snapshot.playerId) }));
+    if (snapshot.opponentUser) {
+      lines.push(
+        translate("online.opponent", {
+          player: snapshot.opponentUser.name || snapshot.opponentUser.username || translate("game.player2"),
+        }),
+      );
+    }
     if (snapshot.phase === "lobby") lines.push(translate("online.waiting"));
     if (snapshot.phase === "setup") lines.push(translate("online.setup"));
     if (snapshot.phase === "playing") {

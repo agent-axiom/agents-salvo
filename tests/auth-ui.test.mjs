@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 
 const app = readFileSync("src/app.js", "utf8");
 const index = readFileSync("src/index.html", "utf8");
+const remote = readFileSync("src/remote.js", "utf8");
 
 test("frontend config exposes the public Telegram bot username only", () => {
   assert.match(index, /telegramBotUsername:\s*"agents_salvo_bot"/);
@@ -27,4 +28,13 @@ test("frontend exposes player profile and completed battle recording hooks", () 
   assert.match(app, /renderProfilePanel/);
   assert.match(app, /recordCompletedBattle/);
   assert.match(app, /data-action="refresh-profile"/);
+});
+
+test("online client sends auth tokens and does not submit online results directly", () => {
+  assert.match(remote, /authToken/);
+  assert.match(remote, /Authorization/);
+  assert.match(remote, /Bearer/);
+  assert.match(app, /authToken:\s*state\.auth\.token/);
+  assert.match(app, /refreshProfile\(/);
+  assert.doesNotMatch(app, /recordCompletedBattle\(\s*completedBattleMatch\(\{\s*key:\s*onlineResultKey/s);
 });

@@ -60,9 +60,9 @@ export async function getPlayerProfile(db, user) {
   };
 }
 
-export async function recordCompletedMatch(db, user, payload) {
+export async function recordCompletedMatch(db, user, payload, { source = "client" } = {}) {
   assertProfileDb(db);
-  const match = normalizeMatch(payload);
+  const match = normalizeMatch(payload, { source });
   await upsertUser(db, user);
   await db
     .prepare(
@@ -149,12 +149,15 @@ function summarizeProfile(row, modeRows, streakRows) {
   };
 }
 
-function normalizeMatch(payload) {
+function normalizeMatch(payload, { source }) {
   if (!payload || typeof payload !== "object") {
     throw new Error("Match result is required");
   }
   if (!profileModes.has(payload.mode)) {
     throw new Error("Match mode is invalid");
+  }
+  if (payload.mode === "online" && source !== "server") {
+    throw new Error("Online results are recorded by the game server");
   }
   if (!matchResults.has(payload.result)) {
     throw new Error("Match result is invalid");

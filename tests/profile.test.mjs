@@ -125,6 +125,41 @@ test("profile match recording validates result payloads", async () => {
   assert.deepEqual(await response.json(), { error: "Match result is invalid" });
 });
 
+test("profile match endpoint rejects client-submitted online results", async () => {
+  const env = { SESSION_SECRET: sessionSecret, DB: new MemoryD1() };
+  const token = await createSessionToken(profileUser, sessionSecret);
+
+  const response = await worker.fetch(
+    new Request("https://worker.test/profile/matches", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        id: "client-online",
+        mode: "online",
+        presetId: "classic",
+        result: "win",
+        opponent: "online",
+        totalShots: 1,
+        playerShots: 1,
+        playerHits: 1,
+        playerMisses: 0,
+        playerSunk: 1,
+        accuracy: 100,
+        turns: 1,
+        winnerId: "p1",
+        playedAt: "2026-07-06T12:00:00.000Z",
+      }),
+    }),
+    env,
+  );
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Online results are recorded by the game server" });
+});
+
 class MemoryD1 {
   constructor() {
     this.users = new Map();
