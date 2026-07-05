@@ -1,0 +1,66 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+
+const app = readFileSync("src/app.js", "utf8");
+const css = readFileSync("src/styles.css", "utf8");
+const i18n = readFileSync("src/i18n.js", "utf8");
+
+test("main menu is a focused game hub with agent play as the primary action", () => {
+  assert.match(app, /class="game-hub"/);
+  assert.match(app, /class="hub-primary"/);
+  assert.match(app, /class="hub-cta primary-button"[^>]+data-action="start-agent"/);
+  assert.match(app, /class="hub-rule-summary"/);
+  assert.match(app, /renderCompactProfile/);
+  assert.match(app, /class="rules-panel"/);
+});
+
+test("topbar delegates secondary controls to a settings panel", () => {
+  assert.match(app, /data-action="toggle-settings"/);
+  assert.match(app, /function renderSettingsPanel/);
+  assert.match(app, /class="settings-panel/);
+  assert.match(app, /settings-row/);
+  assert.match(app, /data-action="theme-toggle"/);
+  assert.match(app, /data-action="visual-style-toggle"/);
+  assert.match(app, /data-action="audio-toggle"/);
+  assert.match(app, /data-action="language"/);
+});
+
+test("battlefield prioritizes the opponent board and keeps own fleet/log secondary", () => {
+  assert.match(app, /class="battlefield target-first"/);
+  assert.match(app, /class="[^"]*target-primary/);
+  assert.match(app, /class="[^"]*own-minimap/);
+  assert.match(app, /class="[^"]*battle-log-aside/);
+  assert.match(app, /class="battle-tabs"/);
+  assert.match(app, /data-action="battle-tab"/);
+  assert.match(css, /\.target-primary/);
+  assert.match(css, /\.own-minimap/);
+});
+
+test("manual setup has random-first actions, progress, and placement preview states", () => {
+  assert.match(app, /class="setup-primary-actions"/);
+  assert.match(app, /class="setup-progress"/);
+  assert.match(app, /function setupPreview/);
+  assert.match(app, /placement-ok/);
+  assert.match(app, /placement-bad/);
+  assert.match(css, /\.cell\.placement-ok/);
+  assert.match(css, /\.cell\.placement-bad/);
+});
+
+test("online mode separates lobby controls from the active room state", () => {
+  assert.match(app, /function renderOnlineLobby/);
+  assert.match(app, /function renderOnlineRoom/);
+  assert.match(app, /class="[^"]*online-lobby/);
+  assert.match(app, /class="[^"]*online-room/);
+  assert.match(app, /data-action="copy-room-code"/);
+  assert.match(app, /data-action="share-telegram"/);
+});
+
+test("board cells expose localized state in aria labels", () => {
+  assert.match(app, /function cellAriaLabel/);
+  assert.match(app, /board\.state\./);
+  assert.match(i18n, /"board\.state\.empty"/);
+  assert.match(i18n, /"board\.state\.miss"/);
+  assert.match(i18n, /"board\.state\.hit"/);
+  assert.match(i18n, /"board\.state\.sunk"/);
+});

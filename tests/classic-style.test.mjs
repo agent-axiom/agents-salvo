@@ -5,13 +5,15 @@ import { readFileSync } from "node:fs";
 const app = readFileSync("src/app.js", "utf8");
 const css = readFileSync("src/styles.css", "utf8");
 
-test("classic style uses notebook paper colors from the reference", () => {
+test("classic style uses blue ballpoint notebook colors from the reference", () => {
   const vars = themeVariables("light");
 
-  assert.equal(vars["battle-purple"], "#6f00ff");
-  assert.equal(vars["battle-red"], "#e54862");
-  assert.equal(vars["notebook-grid"], "rgba(219, 105, 255, 0.52)");
-  assert.equal(vars["target-hover"], "rgba(111, 0, 255, 0.12)");
+  assert.equal(vars["battle-purple"], "#123e9a");
+  assert.equal(vars["battle-red"], "#c93636");
+  assert.equal(vars["miss"], "#1454bd");
+  assert.equal(vars["hit"], "#c93636");
+  assert.equal(vars["notebook-grid"], "rgba(18, 62, 154, 0.32)");
+  assert.equal(vars["target-hover"], "rgba(20, 84, 189, 0.12)");
   assert.match(cssRule(".board-grid"), /var\(--notebook-grid\)/);
   assert.match(cssRule(".board-grid"), /var\(--battle-purple\)/);
 });
@@ -41,9 +43,9 @@ test("classic ships are outlined instead of filled with hatch shading", () => {
   assert.match(css, /var\(--ship-outline\)/);
 });
 
-test("classic shot marks use red dots and crosses without glow cards", () => {
-  assert.match(cssRule(".cell.miss"), /var\(--battle-red\)/);
-  assert.match(cssRule(".cell.hit"), /var\(--battle-red\)/);
+test("classic shot marks distinguish blue misses from red hits", () => {
+  assert.match(cssRule(".cell.miss"), /var\(--miss\)/);
+  assert.match(cssRule(".cell.hit"), /var\(--hit\)/);
   assert.doesNotMatch(cssRule(".cell.hit"), /box-shadow/);
   assert.match(cssRule(".target .cell:not(:disabled):hover"), /var\(--target-hover\)/);
   assert.match(cssRule(".online-target .cell:not(:disabled):hover"), /var\(--target-hover\)/);

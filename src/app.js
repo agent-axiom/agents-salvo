@@ -30,6 +30,7 @@ const state = {
   visualStyle: getInitialVisualStyle(),
   audioEnabled: getInitialAudioEnabled(),
   audioUnlocked: false,
+  settingsOpen: false,
   screen: "menu",
   mode: null,
   presetId: "classic",
@@ -37,9 +38,11 @@ const state = {
   setupBoard: randomlyPlaceSetup(getGamePreset("classic")),
   setupOrientation: "horizontal",
   setupSelectedShipId: "",
+  setupHover: null,
   setupError: "",
   boards: { p1: null, p2: null },
   game: null,
+  battleTab: "target",
   agentDifficulty: "normal",
   passPlayerId: null,
   resultModalDismissed: null,
@@ -82,7 +85,7 @@ function getInitialVisualStyle() {
   if (saved === "classic" || saved === "render") {
     return saved;
   }
-  return "classic";
+  return "render";
 }
 
 function getInitialAudioEnabled() {
@@ -134,62 +137,127 @@ function render() {
             <p>${translate("app.subtitle")}</p>
           </div>
         </div>
-        <div class="topbar-controls">
-          <div class="audio-control">
-            <span>${translate("audio.label")}</span>
-            <button
-              class="audio-toggle ${state.audioEnabled ? "is-on" : ""}"
-              data-action="audio-toggle"
-              aria-pressed="${state.audioEnabled}"
-              aria-label="${translate("audio.label")}: ${translate(state.audioEnabled ? "audio.on" : "audio.off")}"
-            >
-              <span class="audio-toggle-icon" aria-hidden="true"></span>
-              <strong>${translate(state.audioEnabled ? "audio.on" : "audio.off")}</strong>
-            </button>
-          </div>
-          <div class="theme-control">
-            <span>${translate("theme.label")}</span>
-            <button
-              class="theme-toggle ${state.theme === "dark" ? "is-dark" : ""}"
-              data-action="theme-toggle"
-              aria-pressed="${state.theme === "dark"}"
-              aria-label="${translate("theme.label")}: ${translate(state.theme === "dark" ? "theme.dark" : "theme.light")}"
-            >
-              <span class="theme-toggle-track" aria-hidden="true"><span></span></span>
-              <strong>${translate(state.theme === "dark" ? "theme.dark" : "theme.light")}</strong>
-            </button>
-          </div>
-          <div class="visual-style-control">
-            <span>${translate("visualStyle.label")}</span>
-            <button
-              class="visual-style-toggle ${state.visualStyle === "render" ? "is-render" : ""}"
-              data-action="visual-style-toggle"
-              aria-pressed="${state.visualStyle === "render"}"
-              aria-label="${translate("visualStyle.label")}: ${translate(state.visualStyle === "render" ? "visualStyle.render" : "visualStyle.classic")}"
-            >
-              <span class="visual-style-toggle-icon" aria-hidden="true"></span>
-              <strong>${translate(state.visualStyle === "render" ? "visualStyle.render" : "visualStyle.classic")}</strong>
-            </button>
-          </div>
-          <label class="language-control">
-            <span>${translate("nav.language")}</span>
-            <select data-action="language">
-              ${languages
-                .map(
-                  (language) =>
-                    `<option value="${language.code}" ${language.code === state.language ? "selected" : ""}>${language.label}</option>`,
-                )
-                .join("")}
-            </select>
-          </label>
-          ${renderAuthControl()}
+        <div class="topbar-controls compact-controls">
+          ${renderTopbarProfile()}
+          <button
+            class="settings-button"
+            data-action="toggle-settings"
+            aria-expanded="${state.settingsOpen}"
+            aria-label="${translate("settings.open")}"
+          >
+            <span aria-hidden="true">⚙</span>
+            <strong>${translate("settings.title")}</strong>
+          </button>
         </div>
+        ${renderSettingsPanel()}
       </header>
       ${renderScreen()}
     </main>
   `;
   mountTelegramLoginWidget();
   syncMenuMusic();
+}
+
+function renderTopbarProfile() {
+  if (!state.auth.user) {
+    return `
+      <button class="topbar-profile" data-action="toggle-settings">
+        <span class="auth-avatar" aria-hidden="true">T</span>
+        <span>
+          <strong>${translate("auth.telegram")}</strong>
+          <small>${translate("profile.compactAnonymous")}</small>
+        </span>
+      </button>
+    `;
+  }
+
+  const profile = state.profile.data;
+  const summary = profile?.summary;
+  const rating = profile?.rating;
+  return `
+    <button class="topbar-profile" data-action="refresh-profile">
+      ${renderAuthAvatar(state.auth.user)}
+      <span>
+        <strong>${escapeHtml(state.auth.user.name || translate("auth.telegram"))}</strong>
+        <small>${translate("profile.compactStats", {
+          wins: summary?.wins ?? 0,
+          rating: rating?.onlineMatches ? rating.mmr : "—",
+        })}</small>
+      </span>
+    </button>
+  `;
+}
+
+function renderSettingsPanel() {
+  const simplified = state.visualStyle === "classic";
+  return `
+    <section class="settings-panel ${state.settingsOpen ? "is-open" : ""}" ${state.settingsOpen ? "" : "hidden"}>
+      <div class="settings-panel-header">
+        <h2>${translate("settings.title")}</h2>
+        <button class="icon-button" data-action="toggle-settings" aria-label="${translate("settings.close")}">×</button>
+      </div>
+      <div class="settings-row">
+        <div>
+          <strong>${translate("audio.label")}</strong>
+          <span>${translate(state.audioEnabled ? "audio.on" : "audio.off")}</span>
+        </div>
+        <button
+          class="audio-toggle ${state.audioEnabled ? "is-on" : ""}"
+          data-action="audio-toggle"
+          aria-pressed="${state.audioEnabled}"
+          aria-label="${translate("audio.label")}: ${translate(state.audioEnabled ? "audio.on" : "audio.off")}"
+        >
+          <span class="audio-toggle-icon" aria-hidden="true"></span>
+          <strong>${translate(state.audioEnabled ? "audio.on" : "audio.off")}</strong>
+        </button>
+      </div>
+      <div class="settings-row">
+        <div>
+          <strong>${translate("theme.label")}</strong>
+          <span>${translate(state.theme === "dark" ? "theme.dark" : "theme.light")}</span>
+        </div>
+        <button
+          class="theme-toggle ${state.theme === "dark" ? "is-dark" : ""}"
+          data-action="theme-toggle"
+          aria-pressed="${state.theme === "dark"}"
+          aria-label="${translate("theme.label")}: ${translate(state.theme === "dark" ? "theme.dark" : "theme.light")}"
+        >
+          <span class="theme-toggle-track" aria-hidden="true"><span></span></span>
+          <strong>${translate(state.theme === "dark" ? "theme.dark" : "theme.light")}</strong>
+        </button>
+      </div>
+      <div class="settings-row">
+        <div>
+          <strong>${translate("settings.simplifiedGraphics")}</strong>
+          <span>${translate("settings.simplifiedGraphicsDesc")}</span>
+        </div>
+        <button
+          class="visual-style-toggle ${simplified ? "" : "is-render"}"
+          data-action="visual-style-toggle"
+          aria-pressed="${simplified}"
+          aria-label="${translate("settings.simplifiedGraphics")}: ${translate(simplified ? "settings.on" : "settings.off")}"
+        >
+          <span class="visual-style-toggle-icon" aria-hidden="true"></span>
+          <strong>${translate(simplified ? "settings.on" : "settings.off")}</strong>
+        </button>
+      </div>
+      <label class="settings-row language-control">
+        <div>
+          <strong>${translate("nav.language")}</strong>
+          <span>${languages.find((language) => language.code === state.language)?.label ?? state.language}</span>
+        </div>
+        <select data-action="language">
+          ${languages
+            .map(
+              (language) =>
+                `<option value="${language.code}" ${language.code === state.language ? "selected" : ""}>${language.label}</option>`,
+            )
+            .join("")}
+        </select>
+      </label>
+      ${renderAuthControl()}
+    </section>
+  `;
 }
 
 function renderAuthControl() {
@@ -246,39 +314,79 @@ function renderScreen() {
 
 function renderMenu() {
   return `
-    <section class="mode-layout">
-      <div class="mode-panel">
+    <section class="game-hub">
+      <div class="hub-primary">
         <div class="section-heading">
           <span>${translate("nav.mode")}</span>
           <h2>${translate("mode.choose")}</h2>
+          <p>${translate("hub.subtitle")}</p>
         </div>
-        ${renderPresetSelector()}
-        ${renderProfilePanel()}
-        <div class="mode-grid">
-          <button class="mode-button" data-action="start-hotseat">
-            <span class="mode-icon ship-icon" aria-hidden="true"></span>
-            <strong>${translate("mode.hotseat")}</strong>
-          </button>
-          <button class="mode-button" data-action="start-agent">
+        <div class="hub-actions">
+          <button class="hub-cta primary-button" data-action="start-agent">
             <span class="mode-icon radar-icon" aria-hidden="true"></span>
             <strong>${translate("mode.agent")}</strong>
           </button>
-          <button class="mode-button" data-action="show-online">
+          <button class="hub-cta" data-action="show-online">
             <span class="mode-icon signal-icon" aria-hidden="true"></span>
             <strong>${translate("mode.online")}</strong>
           </button>
+          <button class="hub-cta" data-action="start-hotseat">
+            <span class="mode-icon ship-icon" aria-hidden="true"></span>
+            <strong>${translate("mode.hotseat")}</strong>
+          </button>
         </div>
-        <section class="history-panel">
-          <span>${translate("history.kicker")}</span>
-          <h3>${translate("history.title")}</h3>
-          <p>${translate("history.body")}</p>
-          <p>${translate("history.body2")}</p>
-          <a href="${translate("history.sourceUrl")}" target="_blank" rel="noreferrer">${translate("history.source")}</a>
-        </section>
+        <details class="hub-rule-summary">
+          <summary>
+            <span>${translate("preset.title")}</span>
+            <strong>${translate(`preset.${state.presetId}.name`)}</strong>
+          </summary>
+          ${renderPresetSelector()}
+        </details>
+        ${renderCompactProfile()}
+        <details class="rules-panel">
+          <summary>${translate("history.title")}</summary>
+          <div class="history-panel">
+            <span>${translate("history.kicker")}</span>
+            <p>${translate("history.body")}</p>
+            <p>${translate("history.body2")}</p>
+            <a href="${translate("history.sourceUrl")}" target="_blank" rel="noreferrer">${translate("history.source")}</a>
+          </div>
+        </details>
       </div>
-      <figure class="fleet-visual">
+      <figure class="fleet-visual hub-art">
         <img src="${menuArtworkSource()}" alt="${translate("art.alt")}" loading="lazy" decoding="async">
       </figure>
+    </section>
+  `;
+}
+
+function renderCompactProfile() {
+  if (!state.auth.user) {
+    return `
+      <section class="profile-compact">
+        <div>
+          <span>${translate("profile.title")}</span>
+          <p>${translate("profile.loginPrompt")}</p>
+        </div>
+        <button data-action="toggle-settings">${translate("auth.telegram")}</button>
+      </section>
+    `;
+  }
+
+  const profile = state.profile.data;
+  const summary = profile?.summary;
+  const rating = profile?.rating;
+  return `
+    <section class="profile-compact">
+      <div>
+        <span>${translate("profile.title")}</span>
+        <h3>${escapeHtml(state.auth.user.name || translate("auth.telegram"))}</h3>
+        <p>${translate("profile.compactStats", {
+          wins: summary?.wins ?? 0,
+          rating: rating?.onlineMatches ? rating.mmr : "—",
+        })}</p>
+      </div>
+      <button data-action="refresh-profile">${translate("profile.refresh")}</button>
     </section>
   `;
 }
@@ -453,12 +561,13 @@ function renderSetup() {
   const readyDisabled = hasFullFleet(state.setupBoard) ? "" : "disabled";
 
   return `
-    <section class="play-layout">
+    <section class="play-layout setup-layout">
       <aside class="control-panel">
         <button class="ghost-button" data-action="menu">${translate("nav.mainMenu")}</button>
         <div class="section-heading">
           <span>${translate("setup.title")}</span>
           <h2>${title}</h2>
+          <p>${translate("setup.rulesHint")}</p>
         </div>
         <p class="status-line">${translate(`preset.${state.presetId}.name`)}</p>
         ${
@@ -472,20 +581,42 @@ function renderSetup() {
               </label>`
             : ""
         }
-        ${renderSetupTools()}
-        <div class="button-row">
-          <button data-action="randomize">${translate("setup.randomize")}</button>
+        <div class="setup-primary-actions">
+          <button class="primary-button" data-action="randomize">${translate("setup.randomize")}</button>
           <button class="secondary-button" data-action="reset">${translate("setup.reset")}</button>
+          <button data-action="ready" ${readyDisabled}>
+            ${readyDisabled ? translate("setup.needFleet") : translate("setup.ready")}
+          </button>
         </div>
-        <button class="primary-button" data-action="ready" ${readyDisabled}>
-          ${readyDisabled ? translate("setup.needFleet") : translate("setup.ready")}
-        </button>
+        ${renderSetupProgress()}
+        ${renderSetupTools()}
       </aside>
       <section class="board-stage">
         ${renderBoard(state.setupBoard, { kind: "setup", title })}
       </section>
     </section>
   `;
+}
+
+function renderSetupProgress() {
+  const remainingPieces = setupPieces().filter((piece) => !isPiecePlaced(state.setupBoard, piece.id));
+  return `
+    <section class="setup-progress">
+      <span>${translate("setup.remaining")}</span>
+      ${
+        remainingPieces.length === 0
+          ? `<strong>${translate("setup.allPlaced")}</strong>`
+          : `<div>${remainingPieces.map((piece) => `<small>${setupPieceLabel(piece)}</small>`).join("")}</div>`
+      }
+    </section>
+  `;
+}
+
+function setupPieceLabel(piece) {
+  if (piece.type) {
+    return translate(`setup.${piece.type}`);
+  }
+  return translate("setup.selectShip", { length: piece.length });
 }
 
 function renderSetupTools() {
@@ -572,15 +703,15 @@ function renderGame() {
   const status = gameStatusText(state.game);
 
   return `
-    <section class="play-layout">
-      <aside class="control-panel">
+    <section class="game-screen">
+      <div class="battle-header">
         <button class="ghost-button" data-action="menu">${translate("nav.mainMenu")}</button>
-        <div class="section-heading">
-          <span>${translate("nav.mode")}</span>
+        <div>
+          <span>${translate(`preset.${state.presetId}.name`)}</span>
           <h2>${status}</h2>
         </div>
-        <button class="primary-button" data-action="new-game">${translate("game.restart")}</button>
-      </aside>
+        <button class="secondary-button" data-action="new-game">${translate("game.restart")}</button>
+      </div>
       <section class="board-stage">
         ${renderBattlefield({
           ownBoard,
@@ -597,33 +728,61 @@ function renderGame() {
 
 function renderOnline() {
   const snapshot = state.online.snapshot;
+  if (state.online.session || snapshot) {
+    return renderOnlineRoom(snapshot);
+  }
+  return renderOnlineLobby();
+}
+
+function renderOnlineLobby() {
   return `
-    <section class="play-layout">
-      <aside class="control-panel">
+    <section class="play-layout online-screen">
+      <aside class="control-panel online-lobby">
+        <button class="ghost-button" data-action="menu">${translate("nav.mainMenu")}</button>
+        <div class="section-heading">
+          <span>${translate("mode.online")}</span>
+          <h2>${translate("online.title")}</h2>
+          <p>${state.auth.user ? translate("online.authReady") : translate("online.authHint")}</p>
+        </div>
+        <p class="status-line">${translate(`preset.${state.presetId}.name`)}</p>
+        <div class="setup-primary-actions">
+          <button class="primary-button" data-action="randomize">${translate("setup.randomize")}</button>
+          <button class="secondary-button" data-action="reset">${translate("setup.reset")}</button>
+        </div>
+        ${renderSetupProgress()}
+        ${renderSetupTools()}
+        <div class="online-actions">
+          <button class="primary-button" data-action="online-create">${translate("online.create")}</button>
+          <label class="stacked-field">
+            <span>${translate("online.roomCode")}</span>
+            <input data-action="room-code" value="${escapeHtml(state.online.roomCodeInput)}" />
+          </label>
+          <button data-action="online-join">${translate("online.join")}</button>
+        </div>
+        ${state.online.error ? `<p class="error-line">${translate("online.error", { message: state.online.error })}</p>` : ""}
+      </aside>
+      <section class="board-stage">
+        ${renderBoard(state.setupBoard, { kind: "setup", title: translate("game.yourFleet") })}
+      </section>
+    </section>
+  `;
+}
+
+function renderOnlineRoom(snapshot) {
+  const roomCode = state.online.session?.roomCode ?? snapshot?.roomCode ?? "";
+  return `
+    <section class="play-layout online-screen">
+      <aside class="control-panel online-room">
         <button class="ghost-button" data-action="menu">${translate("nav.mainMenu")}</button>
         <div class="section-heading">
           <span>${translate("mode.online")}</span>
           <h2>${translate("online.title")}</h2>
         </div>
-        <p class="status-line">${translate(`preset.${state.presetId}.name`)}</p>
-        ${snapshot ? "" : renderSetupTools()}
-        ${
-          snapshot
-            ? ""
-            : `<div class="button-row">
-                <button data-action="randomize">${translate("setup.randomize")}</button>
-                <button class="secondary-button" data-action="reset">${translate("setup.reset")}</button>
-              </div>`
-        }
+        ${roomCode ? `<p class="room-code">${escapeHtml(roomCode)}</p>` : ""}
         <div class="button-row">
-          <button class="primary-button" data-action="online-create">${translate("online.create")}</button>
+          <button data-action="copy-room-code">${translate("online.copyCode")}</button>
+          <button data-action="share-telegram">${translate("online.shareTelegram")}</button>
         </div>
-        <label class="stacked-field">
-          <span>${translate("online.roomCode")}</span>
-          <input data-action="room-code" value="${escapeHtml(state.online.roomCodeInput)}" />
-        </label>
-        <button data-action="online-join">${translate("online.join")}</button>
-        ${state.online.session ? `<p class="room-code">${state.online.session.roomCode}</p>` : ""}
         ${renderOnlineStatus(snapshot)}
         ${state.online.error ? `<p class="error-line">${translate("online.error", { message: state.online.error })}</p>` : ""}
       </aside>
@@ -653,20 +812,42 @@ function renderOnlineSnapshot(snapshot) {
 }
 
 function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, log }) {
+  const activeTab = state.battleTab || "target";
   return `
-    <div class="two-boards battlefield">
-      <div class="board-stack">
-        ${renderBoard(ownBoard, { kind: "own", title: translate("game.yourFleet") })}
+    <div class="battlefield target-first" data-active-tab="${activeTab}">
+      <div class="battle-tabs" role="tablist" aria-label="${translate("battle.tabs")}">
+        ${renderBattleTab("target", "game.target", activeTab)}
+        ${renderBattleTab("own", "game.yourFleet", activeTab)}
+        ${renderBattleTab("log", "log.title", activeTab)}
       </div>
-      <div class="target-stack">
+      <div class="target-primary battle-tab-panel" data-panel="target">
         ${renderBoard(targetBoard, {
           kind: targetKind,
           title: translate("game.target"),
           disabled: targetDisabled,
         })}
-        ${renderLog(log)}
       </div>
+      <aside class="battle-side">
+        <div class="own-minimap battle-tab-panel" data-panel="own">
+          ${renderBoard(ownBoard, { kind: "own", title: translate("game.yourFleet") })}
+        </div>
+        <div class="battle-log-aside battle-tab-panel" data-panel="log">
+          ${renderLog(log)}
+        </div>
+      </aside>
     </div>
+  `;
+}
+
+function renderBattleTab(tab, labelKey, activeTab) {
+  return `
+    <button
+      class="${activeTab === tab ? "is-selected" : ""}"
+      data-action="battle-tab"
+      data-tab="${tab}"
+      role="tab"
+      aria-selected="${activeTab === tab}"
+    >${translate(labelKey)}</button>
   `;
 }
 
@@ -757,7 +938,7 @@ function renderBoard(board, { kind, title, disabled = false }) {
             const col = index % board.size;
             const coordinate = { row, col };
             const cell = kind === "own" || kind === "setup" ? getCell(board, coordinate) : getTargetCell(board, coordinate);
-            const label = `${translate("board.row", { row: row + 1 })}, ${translate("board.col", { col: columnLabels[col] })}`;
+            const label = cellAriaLabel(cell, kind, row, columnLabels[col]);
             const buttonDisabled = disabled || kind === "own" || cell.shot;
             return `<button
               class="cell ${cellClass(cell, kind, board, coordinate)}"
@@ -784,7 +965,11 @@ function renderLog(log) {
           : `<ol>${visibleBattleLog(log)
               .map(
                 (entry) =>
-                  `<li><span>${playerName(entry.playerId)}</span><strong>${translate(`shot.${entry.result}`)}</strong><small>${coordinateColumnLabel(state.language, entry.coordinate.col)}${entry.coordinate.row + 1}</small></li>`,
+                  `<li class="log-entry ${entry.result}">
+                    <span>${playerName(entry.playerId)}</span>
+                    <strong><i aria-hidden="true"></i>${translate(`shot.${entry.result}`)}</strong>
+                    <small>${coordinateColumnLabel(state.language, entry.coordinate.col)}${entry.coordinate.row + 1}</small>
+                  </li>`,
               )
               .join("")}</ol>`
       }
@@ -830,6 +1015,7 @@ root.addEventListener("click", async (event) => {
   if (action !== "shot" && action !== "online-shot" && action !== "audio-toggle") {
     playSound("ui");
   }
+  if (action === "toggle-settings") toggleSettings();
   if (action === "start-hotseat") startSetup("hotseat");
   if (action === "start-agent") startSetup("agent");
   if (action === "show-online") showOnline();
@@ -852,8 +1038,25 @@ root.addEventListener("click", async (event) => {
   if (action === "online-shot") handleOnlineShot(readCoordinate(button));
   if (action === "online-create") await onlineCreate();
   if (action === "online-join") await onlineJoin();
+  if (action === "copy-room-code") await copyRoomCode();
+  if (action === "share-telegram") shareRoomInTelegram();
+  if (action === "battle-tab") selectBattleTab(button.dataset.tab);
   if (action === "auth-logout") await logoutAuth();
   if (action === "refresh-profile") await refreshProfile();
+});
+
+root.addEventListener("mouseover", (event) => {
+  const cell = event.target.closest('.setup .cell[data-action="setup-cell"]');
+  if (cell) {
+    updateSetupHover(readCoordinate(cell));
+  }
+});
+
+root.addEventListener("focusin", (event) => {
+  const cell = event.target.closest('.setup .cell[data-action="setup-cell"]');
+  if (cell) {
+    updateSetupHover(readCoordinate(cell));
+  }
 });
 
 window.onTelegramAuth = (payload) => {
@@ -867,47 +1070,60 @@ function selectPreset(presetId) {
   state.presetId = presetId;
   state.setupBoard = randomlyPlaceSetup(currentPreset());
   state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+  state.setupHover = null;
   render();
 }
 
 function startSetup(mode) {
   closeRemote();
+  state.settingsOpen = false;
   state.mode = mode;
   state.screen = "setup";
   state.setupPlayerId = "p1";
   state.setupBoard = randomlyPlaceSetup(currentPreset());
   state.setupOrientation = "horizontal";
   state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+  state.setupHover = null;
   state.setupError = "";
   state.boards = { p1: null, p2: null };
   state.game = null;
+  state.battleTab = "target";
   state.resultModalDismissed = null;
   render();
 }
 
 function showOnline() {
   closeRemote();
+  state.settingsOpen = false;
   state.mode = "online";
   state.screen = "online";
   state.setupBoard = randomlyPlaceSetup(currentPreset());
   state.setupOrientation = "horizontal";
   state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+  state.setupHover = null;
   state.setupError = "";
   state.online.roomCodeInput = "";
   state.online.error = "";
   state.online.status = "";
+  state.battleTab = "target";
   state.resultModalDismissed = null;
   render();
 }
 
 function goToMenu() {
   closeRemote();
+  state.settingsOpen = false;
   state.screen = "menu";
   state.mode = null;
   state.game = null;
   state.online.error = "";
   state.online.status = "";
   state.resultModalDismissed = null;
+  render();
+}
+
+function toggleSettings() {
+  state.settingsOpen = !state.settingsOpen;
   render();
 }
 
@@ -947,6 +1163,7 @@ function selectSetupShip(shipId) {
     return;
   }
   state.setupSelectedShipId = shipId;
+  state.setupHover = null;
   state.setupError = "";
   render();
 }
@@ -960,6 +1177,7 @@ function rotateSetupOrientation() {
 function randomizeSetup() {
   state.setupBoard = randomlyPlaceSetup(currentPreset());
   state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+  state.setupHover = null;
   state.setupError = "";
   render();
 }
@@ -967,6 +1185,7 @@ function randomizeSetup() {
 function resetSetup() {
   state.setupBoard = createBoard(currentPreset().size);
   state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+  state.setupHover = null;
   state.setupError = "";
   render();
 }
@@ -990,6 +1209,7 @@ function readySetup() {
     state.setupPlayerId = "p2";
     state.setupBoard = randomlyPlaceSetup(currentPreset());
     state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+    state.setupHover = null;
     state.setupError = "";
     state.passPlayerId = "p2";
     state.screen = "pass";
@@ -1014,6 +1234,7 @@ function handleSetupCell(coordinate) {
   if (cell.shipId) {
     state.setupBoard = removeShip(state.setupBoard, cell.shipId);
     state.setupSelectedShipId = cell.shipId;
+    state.setupHover = null;
     state.setupError = "";
     render();
     return;
@@ -1021,6 +1242,7 @@ function handleSetupCell(coordinate) {
   if (cell.markerId) {
     state.setupBoard = removeMarker(state.setupBoard, cell.markerId);
     state.setupSelectedShipId = cell.markerId;
+    state.setupHover = null;
     state.setupError = "";
     render();
     return;
@@ -1032,6 +1254,7 @@ function handleSetupCell(coordinate) {
   const piece = ship ?? marker;
   if (!piece || isPiecePlaced(state.setupBoard, piece.id)) {
     state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+    state.setupHover = null;
     state.setupError = "";
     render();
     return;
@@ -1042,10 +1265,22 @@ function handleSetupCell(coordinate) {
       ? placeShip(state.setupBoard, ship, coordinate, state.setupOrientation)
       : placeMarker(state.setupBoard, marker, coordinate);
     state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+    state.setupHover = null;
     state.setupError = "";
   } catch {
     state.setupError = "setup.invalidPlacement";
   }
+  render();
+}
+
+function updateSetupHover(coordinate) {
+  if (state.screen !== "setup" && state.screen !== "online") {
+    return;
+  }
+  if (state.setupHover && sameCoordinate(state.setupHover, coordinate)) {
+    return;
+  }
+  state.setupHover = coordinate;
   render();
 }
 
@@ -1139,6 +1374,38 @@ function handleOnlineShot(coordinate) {
   withOnlineError(async () => {
     await state.online.client.send("fire", { coordinate });
   });
+}
+
+async function copyRoomCode() {
+  const roomCode = state.online.session?.roomCode ?? state.online.snapshot?.roomCode ?? "";
+  if (!roomCode) {
+    return;
+  }
+  try {
+    await navigator.clipboard?.writeText(roomCode);
+  } catch {}
+  state.online.status = "copied";
+  render();
+}
+
+function shareRoomInTelegram() {
+  const roomCode = state.online.session?.roomCode ?? state.online.snapshot?.roomCode ?? "";
+  if (!roomCode) {
+    return;
+  }
+  const text = translate("online.shareText", { code: roomCode });
+  const url = new URL("https://t.me/share/url");
+  url.searchParams.set("url", window.location.href);
+  url.searchParams.set("text", text);
+  window.open(url.toString(), "_blank", "noopener,noreferrer");
+}
+
+function selectBattleTab(tab) {
+  if (!["target", "own", "log"].includes(tab)) {
+    return;
+  }
+  state.battleTab = tab;
+  render();
 }
 
 function remoteHandlers() {
@@ -1433,6 +1700,58 @@ function setupPieces(preset = currentPreset()) {
   return [...preset.fleet, ...(preset.markers ?? [])];
 }
 
+function setupPreview(origin = state.setupHover) {
+  if (!origin) {
+    return null;
+  }
+  const preset = currentPreset();
+  const ship = preset.fleet.find((candidate) => candidate.id === state.setupSelectedShipId);
+  const marker = (preset.markers ?? []).find((candidate) => candidate.id === state.setupSelectedShipId);
+  const piece = ship ?? marker;
+  if (!piece || isPiecePlaced(state.setupBoard, piece.id)) {
+    return null;
+  }
+
+  const cells = ship ? shipPreviewCells(ship, origin) : [origin];
+  const visibleCells = cells.filter(
+    (cell) =>
+      cell.row >= 0 &&
+      cell.col >= 0 &&
+      cell.row < state.setupBoard.size &&
+      cell.col < state.setupBoard.size,
+  );
+
+  try {
+    if (ship) {
+      placeShip(state.setupBoard, ship, origin, state.setupOrientation);
+    } else {
+      placeMarker(state.setupBoard, marker, origin);
+    }
+    return { cells: visibleCells, valid: true };
+  } catch {
+    return { cells: visibleCells, valid: false };
+  }
+}
+
+function shipPreviewCells(ship, origin) {
+  return Array.from({ length: ship.length }, (_, index) => ({
+    row: origin.row + (state.setupOrientation === "vertical" ? index : 0),
+    col: origin.col + (state.setupOrientation === "horizontal" ? index : 0),
+  }));
+}
+
+function setupPreviewClass(coordinate) {
+  const preview = setupPreview();
+  if (!preview?.cells.some((cell) => sameCoordinate(cell, coordinate))) {
+    return "";
+  }
+  return preview.valid ? "placement-ok" : "placement-bad";
+}
+
+function sameCoordinate(first, second) {
+  return first.row === second.row && first.col === second.col;
+}
+
 function gameOptions() {
   const preset = currentPreset();
   return {
@@ -1468,6 +1787,10 @@ function getTargetCell(board, coordinate) {
 
 function cellClass(cell, kind, board, coordinate) {
   const classes = [];
+  if (kind === "setup") {
+    const previewClass = setupPreviewClass(coordinate);
+    if (previewClass) classes.push(previewClass);
+  }
   if ((kind === "own" || kind === "setup") && cell.shipId) {
     classes.push("has-ship", ...shipEdgeClasses(board, coordinate));
   }
@@ -1478,6 +1801,27 @@ function cellClass(cell, kind, board, coordinate) {
   if (cell.shot) classes.push(cell.shot);
   if (cell.shot === "sunk") classes.push(...sunkEdgeClasses(board, coordinate, kind));
   return classes.join(" ");
+}
+
+function cellAriaLabel(cell, kind, row, columnLabel) {
+  return [
+    translate("board.row", { row: row + 1 }),
+    translate("board.col", { col: columnLabel }),
+    cellStateLabel(cell, kind),
+  ].join(", ");
+}
+
+function cellStateLabel(cell, kind) {
+  if (cell.shot) {
+    return translate(`board.state.${cell.shot}`);
+  }
+  if ((kind === "own" || kind === "setup") && cell.shipId) {
+    return translate("board.state.ship");
+  }
+  if ((kind === "own" || kind === "setup") && cell.markerType) {
+    return translate(`board.state.${cell.markerType}`);
+  }
+  return translate("board.state.empty");
 }
 
 function cellContents(cell, kind, board, coordinate) {
@@ -1594,6 +1938,7 @@ function onlineStatusText(status) {
   const keys = {
     connecting: "online.connecting",
     connected: "online.connected",
+    copied: "online.copied",
     disconnected: "online.disconnected",
   };
   return translate(keys[status] ?? "online.waiting");

@@ -6,12 +6,14 @@ import { join } from "node:path";
 const projectRoot = new URL("..", import.meta.url).pathname;
 const readText = (path) => readFileSync(join(projectRoot, path), "utf8");
 
-test("visual style defaults to classic and exposes a render toggle", () => {
+test("visual style defaults to render and moves the simplified toggle into settings", () => {
   const app = readText("src/app.js");
 
   assert.match(app, /visualStyle:\s*getInitialVisualStyle\(\)/);
   assert.match(app, /localStorage\.getItem\("salvo\.visualStyle"\)/);
-  assert.match(app, /return "classic";/);
+  assert.match(app, /return "render";/);
+  assert.match(app, /renderSettingsPanel/);
+  assert.match(app, /class="settings-panel/);
   assert.match(app, /data-action="visual-style-toggle"/);
   assert.match(app, /dataset\.visualStyle = state\.visualStyle/);
 });
