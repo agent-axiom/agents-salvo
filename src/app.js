@@ -16,7 +16,7 @@ import {
 import { visibleBattleLog } from "./core/log.js";
 import { gamePresets, getGamePreset } from "./core/presets.js";
 import { summarizeBattleLog } from "./core/stats.js";
-import { getInitialLanguage, languages, t } from "./i18n.js";
+import { coordinateColumnLabel, getInitialLanguage, languages, t } from "./i18n.js";
 import { RemoteClient } from "./remote.js";
 
 const root = document.querySelector("#app");
@@ -552,7 +552,7 @@ function renderResultStat(key, value) {
 
 function renderBoard(board, { kind, title, disabled = false }) {
   const columnLabels = Array.from({ length: board.size }, (_, index) =>
-    String.fromCharCode(65 + index),
+    coordinateColumnLabel(state.language, index),
   );
   return `
     <section class="board-panel">
@@ -573,7 +573,7 @@ function renderBoard(board, { kind, title, disabled = false }) {
             const col = index % board.size;
             const coordinate = { row, col };
             const cell = kind === "own" || kind === "setup" ? getCell(board, coordinate) : getTargetCell(board, coordinate);
-            const label = `${translate("board.row", { row: row + 1 })}, ${translate("board.col", { col: col + 1 })}`;
+            const label = `${translate("board.row", { row: row + 1 })}, ${translate("board.col", { col: columnLabels[col] })}`;
             const buttonDisabled = disabled || kind === "own" || cell.shot;
             return `<button
               class="cell ${cellClass(cell, kind, board, coordinate)}"
@@ -600,7 +600,7 @@ function renderLog(log) {
           : `<ol>${visibleBattleLog(log)
               .map(
                 (entry) =>
-                  `<li><span>${playerName(entry.playerId)}</span><strong>${translate(`shot.${entry.result}`)}</strong><small>${String.fromCharCode(65 + entry.coordinate.col)}${entry.coordinate.row + 1}</small></li>`,
+                  `<li><span>${playerName(entry.playerId)}</span><strong>${translate(`shot.${entry.result}`)}</strong><small>${coordinateColumnLabel(state.language, entry.coordinate.col)}${entry.coordinate.row + 1}</small></li>`,
               )
               .join("")}</ol>`
       }

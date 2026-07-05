@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { languages, t } from "../src/i18n.js";
+import * as i18n from "../src/i18n.js";
+
+const { languages, t } = i18n;
 
 test("i18n exposes English, Russian, and Chinese", () => {
   assert.deepEqual(
@@ -80,4 +82,17 @@ test("i18n uses localized Wikipedia source URLs", () => {
     "https://ru.wikipedia.org/wiki/Морской_бой_(игра)",
   );
   assert.equal(t("zh-CN", "history.sourceUrl"), "https://zh.wikipedia.org/wiki/海战棋");
+});
+
+test("Russian board columns use Cyrillic coordinate letters", () => {
+  assert.deepEqual(
+    Array.from({ length: 10 }, (_, index) => i18n.coordinateColumnLabel("ru", index)),
+    ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К"],
+  );
+  assert.deepEqual(
+    Array.from({ length: 16 }, (_, index) => i18n.coordinateColumnLabel("ru", index)),
+    ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К", "Л", "М", "Н", "О", "П", "Р"],
+  );
+  assert.equal(i18n.coordinateColumnLabel("en", 9), "J");
+  assert.equal(i18n.coordinateColumnLabel("zh-CN", 9), "J");
 });

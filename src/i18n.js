@@ -319,6 +319,12 @@ const dictionaries = {
   },
 };
 
+const coordinateColumns = {
+  en: "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  ru: "АБВГДЕЖЗИКЛМНОПРСТУФХЦЧШЩ",
+  "zh-CN": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+};
+
 export function getInitialLanguage() {
   const saved = localStorage.getItem("salvo.language");
   if (saved && dictionaries[saved]) {
@@ -340,5 +346,13 @@ export function t(language, key, params = {}) {
   return Object.entries(params).reduce(
     (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)),
     template,
+  );
+}
+
+export function coordinateColumnLabel(language, columnIndex) {
+  return (
+    coordinateColumns[language]?.[columnIndex] ??
+    coordinateColumns.en[columnIndex] ??
+    String(columnIndex + 1)
   );
 }
