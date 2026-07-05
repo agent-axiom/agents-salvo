@@ -124,6 +124,19 @@ test("worker returns anonymous auth state without a session token", async () => 
   assert.deepEqual(await response.json(), { user: null });
 });
 
+test("BattleRoom rejects invalid room auth tokens as unauthorized responses", async () => {
+  const room = new BattleRoom({ storage: new MemoryStorage() }, { SESSION_SECRET: "session-secret" });
+  const response = await room.fetch(
+    new Request("https://worker.test/rooms?code=BADTOK", {
+      method: "POST",
+      headers: { Authorization: "Bearer invalid" },
+    }),
+  );
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { error: "Session token is invalid" });
+});
+
 test("BattleRoom records completed authenticated online matches in profile storage", async () => {
   const p1Board = placeShip(createBoard(2), { id: "p1-patrol", length: 1 }, { row: 0, col: 0 }, "horizontal");
   const p2Board = placeShip(createBoard(2), { id: "p2-patrol", length: 1 }, { row: 1, col: 1 }, "horizontal");

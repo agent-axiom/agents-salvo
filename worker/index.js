@@ -74,13 +74,13 @@ export class BattleRoom {
 
     try {
       if (route?.kind === "create" && request.method === "POST") {
-        return this.create(request, route.roomCode);
+        return await this.create(request, route.roomCode);
       }
       if (route?.kind === "join" && request.method === "POST") {
-        return this.join(request, route.roomCode);
+        return await this.join(request, route.roomCode);
       }
       if (route?.kind === "socket" && request.method === "GET") {
-        return this.connect(request, url);
+        return await this.connect(request, url);
       }
       if (request.method === "OPTIONS") {
         return new Response(null, { headers: corsHeaders });
