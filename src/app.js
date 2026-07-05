@@ -25,6 +25,7 @@ const audio = createAudioController();
 const state = {
   language: getInitialLanguage(),
   theme: getInitialTheme(),
+  visualStyle: getInitialVisualStyle(),
   audioEnabled: getInitialAudioEnabled(),
   audioUnlocked: false,
   screen: "menu",
@@ -57,6 +58,14 @@ function getInitialTheme() {
     return saved;
   }
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function getInitialVisualStyle() {
+  const saved = localStorage.getItem("salvo.visualStyle");
+  if (saved === "classic" || saved === "render") {
+    return saved;
+  }
+  return "classic";
 }
 
 function getInitialAudioEnabled() {
@@ -93,6 +102,7 @@ function gameStatusText(game) {
 function render() {
   document.documentElement.lang = state.language;
   document.documentElement.dataset.theme = state.theme;
+  document.documentElement.dataset.visualStyle = state.visualStyle;
   root.innerHTML = `
     <main class="shell">
       <header class="topbar">
@@ -126,6 +136,18 @@ function render() {
             >
               <span class="theme-toggle-track" aria-hidden="true"><span></span></span>
               <strong>${translate(state.theme === "dark" ? "theme.dark" : "theme.light")}</strong>
+            </button>
+          </div>
+          <div class="visual-style-control">
+            <span>${translate("visualStyle.label")}</span>
+            <button
+              class="visual-style-toggle ${state.visualStyle === "render" ? "is-render" : ""}"
+              data-action="visual-style-toggle"
+              aria-pressed="${state.visualStyle === "render"}"
+              aria-label="${translate("visualStyle.label")}: ${translate(state.visualStyle === "render" ? "visualStyle.render" : "visualStyle.classic")}"
+            >
+              <span class="visual-style-toggle-icon" aria-hidden="true"></span>
+              <strong>${translate(state.visualStyle === "render" ? "visualStyle.render" : "visualStyle.classic")}</strong>
             </button>
           </div>
           <label class="language-control">
@@ -195,10 +217,19 @@ function renderMenu() {
         </section>
       </div>
       <figure class="fleet-visual">
-        <img src="./assets/salvo-board-action.png" alt="${translate("art.alt")}" loading="lazy" decoding="async">
+        <img src="${menuArtworkSource()}" alt="${translate("art.alt")}" loading="lazy" decoding="async">
       </figure>
     </section>
   `;
+}
+
+function menuArtworkSource() {
+  if (state.visualStyle !== "render") {
+    return "./assets/salvo-board-action.png";
+  }
+  return state.theme === "dark"
+    ? "./assets/images/backgrounds/main-menu-hero-dark-no-ui.png"
+    : "./assets/images/backgrounds/main-menu-hero-no-ui.png";
 }
 
 function renderPresetSelector() {
@@ -551,7 +582,7 @@ function renderBoard(board, { kind, title, disabled = false }) {
               data-col="${col}"
               aria-label="${label}"
               ${buttonDisabled ? "disabled" : ""}
-            >${cellText(cell, kind)}</button>`;
+            >${cellContents(cell, kind, board, coordinate)}</button>`;
           }).join("")}
         </div>
       </div>
@@ -621,6 +652,7 @@ root.addEventListener("click", async (event) => {
   if (action === "select-preset") selectPreset(button.dataset.presetId);
   if (action === "audio-toggle") toggleAudio();
   if (action === "theme-toggle") toggleTheme();
+  if (action === "visual-style-toggle") toggleVisualStyle();
   if (action === "menu") goToMenu();
   if (action === "new-game") startSetup(state.mode);
   if (action === "online-new-game") showOnline();
@@ -692,6 +724,12 @@ function goToMenu() {
 function toggleTheme() {
   state.theme = state.theme === "dark" ? "light" : "dark";
   localStorage.setItem("salvo.theme", state.theme);
+  render();
+}
+
+function toggleVisualStyle() {
+  state.visualStyle = state.visualStyle === "classic" ? "render" : "classic";
+  localStorage.setItem("salvo.visualStyle", state.visualStyle);
   render();
 }
 
@@ -1043,10 +1081,23 @@ function getTargetCell(board, coordinate) {
 function cellClass(cell, kind, board, coordinate) {
   const classes = [];
   if ((kind === "own" || kind === "setup") && cell.shipId) classes.push("has-ship");
+  if ((kind === "own" || kind === "setup") && isShipSpriteAnchor(board, coordinate)) {
+    classes.push("ship-anchor");
+  }
   if ((kind === "own" || kind === "setup") && cell.markerType) classes.push(`has-${cell.markerType}`);
   if (cell.shot) classes.push(cell.shot);
   if (cell.shot === "sunk") classes.push(...sunkEdgeClasses(board, coordinate, kind));
   return classes.join(" ");
+}
+
+function cellContents(cell, kind, board, coordinate) {
+  const text = cellText(cell, kind);
+  return `
+    ${shipSprite(cell, kind, board, coordinate)}
+    ${markerSprite(cell, kind)}
+    ${shotSprite(cell)}
+    ${text ? `<span class="cell-symbol">${text}</span>` : ""}
+  `;
 }
 
 function cellText(cell, kind) {
@@ -1059,6 +1110,87 @@ function cellText(cell, kind) {
   if ((kind === "own" || kind === "setup") && cell.markerType === "sweeper") return "^";
   if ((kind === "own" || kind === "setup") && cell.shipId) return "";
   return "";
+}
+
+function shipSprite(cell, kind, board, coordinate) {
+  if ((kind !== "own" && kind !== "setup") || !cell.shipId) {
+    return "";
+  }
+  const ship = findShipForCoordinate(board, coordinate);
+  if (!ship || !isShipSpriteAnchor(board, coordinate)) {
+    return "";
+  }
+  const orientation = shipOrientation(ship);
+  const state = shipState(ship);
+  const direction = orientation === "horizontal" ? "h" : "v";
+  const path = `./assets/images/ships/ship-${ship.length}-${direction}-${state}.png`;
+  return `<span class="ship-sprite ship-sprite-${direction}" style="--ship-cells: ${ship.length}; --ship-image: url('${path}')" aria-hidden="true"></span>`;
+}
+
+function markerSprite(cell, kind) {
+  if ((kind !== "own" && kind !== "setup") || !cell.markerType) {
+    return "";
+  }
+  const path =
+    cell.markerType === "mine"
+      ? "./assets/images/special/mine.png"
+      : "./assets/images/special/minesweeper-2-h-normal.png";
+  return `<span class="marker-sprite marker-sprite-${cell.markerType}" style="--marker-image: url('${path}')" aria-hidden="true"></span>`;
+}
+
+function shotSprite(cell) {
+  const paths = {
+    miss: "./assets/images/markers/miss-blue-dot.png",
+    hit: "./assets/images/effects/hit-explosion-smoke.png",
+    sunk: "./assets/images/effects/sunk-destruction-smoke.png",
+    mine: "./assets/images/special/mine-triggered.png",
+    sweeper: "./assets/images/special/mine-disabled.png",
+  };
+  const path = paths[cell.shot];
+  if (!path) {
+    return "";
+  }
+  return `<span class="shot-sprite shot-sprite-${cell.shot}" style="--shot-image: url('${path}')" aria-hidden="true"></span>`;
+}
+
+function findShipForCoordinate(board, coordinate) {
+  return board.ships.find((ship) =>
+    ship.cells.some((cell) => cell.row === coordinate.row && cell.col === coordinate.col),
+  );
+}
+
+function shipOrientation(ship) {
+  if (ship.cells.length < 2) {
+    return "horizontal";
+  }
+  return ship.cells.every((cell) => cell.row === ship.cells[0].row) ? "horizontal" : "vertical";
+}
+
+function shipStartCell(ship) {
+  const orientation = shipOrientation(ship);
+  return [...ship.cells].sort((first, second) =>
+    orientation === "horizontal" ? first.col - second.col : first.row - second.row,
+  )[0];
+}
+
+function isShipSpriteAnchor(board, coordinate) {
+  const ship = findShipForCoordinate(board, coordinate);
+  if (!ship) {
+    return false;
+  }
+  const start = shipStartCell(ship);
+  return start.row === coordinate.row && start.col === coordinate.col;
+}
+
+function shipState(ship) {
+  if (
+    ship.cells.every((cell) =>
+      ship.hits.some((hit) => hit.row === cell.row && hit.col === cell.col),
+    )
+  ) {
+    return "sunk";
+  }
+  return ship.hits.length > 0 ? "damaged" : "normal";
 }
 
 function readCoordinate(button) {

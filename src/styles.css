@@ -205,6 +205,7 @@ input {
 .audio-control > span,
 .language-control span,
 .theme-control > span,
+.visual-style-control > span,
 .stacked-field span,
 .status-line {
   color: var(--muted);
@@ -231,7 +232,8 @@ input {
 
 .audio-control,
 .language-control,
-.theme-control {
+.theme-control,
+.visual-style-control {
   display: grid;
   gap: 6px;
 }
@@ -240,7 +242,8 @@ input {
   min-width: 170px;
 }
 
-.theme-toggle {
+.theme-toggle,
+.visual-style-toggle {
   display: grid;
   grid-template-columns: 42px auto;
   align-items: center;
@@ -302,9 +305,30 @@ input {
   transform: rotate(-38deg);
 }
 
-.theme-toggle strong {
+.theme-toggle strong,
+.visual-style-toggle strong {
   font-size: 13px;
   line-height: 1;
+}
+
+.visual-style-toggle-icon {
+  display: block;
+  width: 34px;
+  height: 22px;
+  background:
+    linear-gradient(90deg, var(--accent) 1px, transparent 1px),
+    linear-gradient(var(--accent) 1px, transparent 1px),
+    var(--surface-strong);
+  background-size: 8px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.visual-style-toggle.is-render .visual-style-toggle-icon {
+  background:
+    radial-gradient(circle at 50% 50%, var(--hit) 0 3px, transparent 4px),
+    url("./assets/images/markers/cell-target-crosshair.png") center / contain no-repeat,
+    var(--surface);
 }
 
 .theme-toggle-track {
@@ -854,6 +878,21 @@ input {
     inset 0 1px 0 var(--pen-line-soft);
 }
 
+.ship-sprite,
+.marker-sprite,
+.shot-sprite {
+  display: none;
+  position: absolute;
+  pointer-events: none;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.cell-symbol {
+  position: relative;
+  z-index: 5;
+}
+
 .cell.has-ship {
   background:
     repeating-linear-gradient(-10deg, transparent 0 7px, var(--ship-stroke) 8px 11px),
@@ -1092,6 +1131,257 @@ input {
 .result-stats strong {
   font-size: 22px;
   line-height: 1;
+}
+
+:root[data-visual-style="render"] {
+  --paper: #ece3d2;
+  --ink: #133a86;
+  --muted: #52627f;
+  --surface: rgba(248, 241, 222, 0.92);
+  --surface-strong: rgba(241, 232, 207, 0.94);
+  --line: rgba(31, 73, 157, 0.42);
+  --board-paper: #f3ecd9;
+  --board-fiber: rgba(58, 46, 30, 0.12);
+  --pen-line: rgba(17, 57, 158, 0.7);
+  --pen-line-soft: rgba(17, 57, 158, 0.18);
+  --water: rgba(35, 94, 182, 0.02);
+  --ship-stroke: rgba(31, 73, 157, 0.16);
+  --panel-light: rgba(249, 243, 226, 0.88);
+  --shadow: 4px 5px 0 rgba(42, 33, 22, 0.13);
+  --render-shot-hit: url("./assets/images/effects/hit-explosion-smoke.png");
+  --render-shot-sunk: url("./assets/images/effects/sunk-destruction-smoke.png");
+  --render-mine: url("./assets/images/special/mine.png");
+}
+
+:root[data-visual-style="render"][data-theme="dark"] {
+  --paper: #111315;
+  --ink: #e7eef9;
+  --muted: #b7c5dd;
+  --surface: rgba(24, 26, 30, 0.9);
+  --surface-strong: rgba(34, 37, 42, 0.94);
+  --line: rgba(169, 196, 235, 0.5);
+  --board-paper: #1e232b;
+  --board-fiber: rgba(237, 241, 248, 0.05);
+  --pen-line: rgba(174, 207, 255, 0.68);
+  --pen-line-soft: rgba(174, 207, 255, 0.2);
+  --water: rgba(174, 207, 255, 0.03);
+  --ship-stroke: rgba(255, 255, 255, 0.48);
+  --panel-light: rgba(18, 20, 24, 0.9);
+  --shadow: 4px 5px 0 rgba(0, 0, 0, 0.24);
+}
+
+:root[data-visual-style="render"] body {
+  background:
+    linear-gradient(90deg, transparent 72px, rgba(190, 45, 37, 0.18) 73px 74px, transparent 75px),
+    url("./assets/images/backgrounds/paper-texture-512.png") 0 0 / 512px 512px repeat,
+    var(--paper);
+}
+
+:root[data-visual-style="render"][data-theme="dark"] body {
+  background:
+    linear-gradient(90deg, transparent 72px, rgba(230, 93, 79, 0.15) 73px 74px, transparent 75px),
+    url("./assets/images/backgrounds/paper-texture-dark-512.png") 0 0 / 512px 512px repeat,
+    var(--paper);
+}
+
+:root[data-visual-style="render"] body::before {
+  background:
+    radial-gradient(circle at 10% 6%, rgba(57, 37, 18, 0.22), transparent 18%),
+    radial-gradient(circle at 92% 4%, rgba(31, 73, 157, 0.1), transparent 18%);
+  animation: none;
+}
+
+:root[data-visual-style="render"] button,
+:root[data-visual-style="render"] select,
+:root[data-visual-style="render"] input {
+  border-radius: 3px;
+}
+
+:root[data-visual-style="render"] .brand h1,
+:root[data-visual-style="render"] .section-heading h2,
+:root[data-visual-style="render"] .board-title h3 {
+  color: var(--ink);
+  font-family: var(--hand-font);
+}
+
+:root[data-visual-style="render"] .brand-mark {
+  background: url("./assets/images/ui/icons/icon-anchor.png") center / 84% no-repeat;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+:root[data-visual-style="render"] .mode-icon {
+  background-color: transparent;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 74%;
+  border: 0;
+}
+
+:root[data-visual-style="render"] .ship-icon {
+  background-image: url("./assets/images/ui/icons/icon-anchor.png");
+}
+
+:root[data-visual-style="render"] .radar-icon {
+  background-image: url("./assets/images/ui/icons/icon-target.png");
+}
+
+:root[data-visual-style="render"] .signal-icon {
+  background-image: url("./assets/images/ui/icons/icon-binoculars.png");
+}
+
+:root[data-visual-style="render"] .ship-icon::before,
+:root[data-visual-style="render"] .radar-icon::before,
+:root[data-visual-style="render"] .radar-icon::after,
+:root[data-visual-style="render"] .signal-icon::before,
+:root[data-visual-style="render"] .signal-icon::after {
+  content: none;
+}
+
+:root[data-visual-style="render"] .mode-panel,
+:root[data-visual-style="render"] .control-panel,
+:root[data-visual-style="render"] .board-panel,
+:root[data-visual-style="render"] .pass-panel,
+:root[data-visual-style="render"] .log-panel {
+  background:
+    url("./assets/images/backgrounds/paper-texture-512.png") 0 0 / 512px 512px repeat,
+    var(--panel-light);
+  border-color: rgba(31, 73, 157, 0.28);
+}
+
+:root[data-visual-style="render"][data-theme="dark"] .mode-panel,
+:root[data-visual-style="render"][data-theme="dark"] .control-panel,
+:root[data-visual-style="render"][data-theme="dark"] .board-panel,
+:root[data-visual-style="render"][data-theme="dark"] .pass-panel,
+:root[data-visual-style="render"][data-theme="dark"] .log-panel {
+  background:
+    url("./assets/images/backgrounds/paper-texture-dark-512.png") 0 0 / 512px 512px repeat,
+    var(--panel-light);
+}
+
+:root[data-visual-style="render"] .fleet-visual img {
+  filter: saturate(1.02) contrast(1.02);
+}
+
+:root[data-visual-style="render"] .board-grid {
+  background:
+    linear-gradient(90deg, var(--pen-line) 1px, transparent 1px),
+    linear-gradient(var(--pen-line) 1px, transparent 1px),
+    radial-gradient(circle at 14% 18%, var(--board-fiber) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 82% 68%, var(--board-fiber) 0 1px, transparent 1.5px),
+    url("./assets/images/backgrounds/paper-texture-512.png") 0 0 / 512px 512px repeat,
+    var(--board-paper);
+  background-size:
+    calc(100% / var(--board-size, 10)) calc(100% / var(--board-size, 10)),
+    calc(100% / var(--board-size, 10)) calc(100% / var(--board-size, 10)),
+    37px 31px,
+    43px 39px,
+    512px 512px,
+    auto;
+}
+
+:root[data-visual-style="render"][data-theme="dark"] .board-grid {
+  background:
+    linear-gradient(90deg, var(--pen-line) 1px, transparent 1px),
+    linear-gradient(var(--pen-line) 1px, transparent 1px),
+    radial-gradient(circle at 14% 18%, var(--board-fiber) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 82% 68%, var(--board-fiber) 0 1px, transparent 1.5px),
+    url("./assets/images/backgrounds/paper-texture-dark-512.png") 0 0 / 512px 512px repeat,
+    var(--board-paper);
+  background-size:
+    calc(100% / var(--board-size, 10)) calc(100% / var(--board-size, 10)),
+    calc(100% / var(--board-size, 10)) calc(100% / var(--board-size, 10)),
+    37px 31px,
+    43px 39px,
+    512px 512px,
+    auto;
+}
+
+:root[data-visual-style="render"] .cell {
+  overflow: visible;
+  background: transparent;
+  border-color: var(--pen-line-soft);
+}
+
+:root[data-visual-style="render"] .cell.has-ship {
+  background: transparent;
+}
+
+:root[data-visual-style="render"] .cell.ship-anchor {
+  z-index: 4;
+}
+
+:root[data-visual-style="render"] .ship-sprite {
+  display: block;
+  inset: 0;
+  z-index: 2;
+  background-image: var(--ship-image);
+  background-size: 100% 100%;
+}
+
+:root[data-visual-style="render"] .ship-sprite-h {
+  width: calc(var(--ship-cells) * 100%);
+  height: 100%;
+}
+
+:root[data-visual-style="render"] .ship-sprite-v {
+  width: 100%;
+  height: calc(var(--ship-cells) * 100%);
+}
+
+:root[data-visual-style="render"] .marker-sprite,
+:root[data-visual-style="render"] .shot-sprite {
+  display: block;
+  inset: -18%;
+  z-index: 3;
+  background-image: var(--marker-image);
+  background-size: contain;
+}
+
+:root[data-visual-style="render"] .shot-sprite {
+  background-image: var(--shot-image);
+}
+
+:root[data-visual-style="render"] .marker-sprite-sweeper {
+  inset: -8%;
+}
+
+:root[data-visual-style="render"] .shot-sprite-hit,
+:root[data-visual-style="render"] .shot-sprite-sunk,
+:root[data-visual-style="render"] .shot-sprite-mine,
+:root[data-visual-style="render"] .shot-sprite-sweeper {
+  inset: -52%;
+  background-size: cover;
+}
+
+:root[data-visual-style="render"] .cell.miss,
+:root[data-visual-style="render"] .cell.hit,
+:root[data-visual-style="render"] .cell.sunk,
+:root[data-visual-style="render"] .cell.mine,
+:root[data-visual-style="render"] .cell.sweeper {
+  background: transparent;
+  box-shadow: none;
+}
+
+:root[data-visual-style="render"] .cell.miss .cell-symbol,
+:root[data-visual-style="render"] .cell.hit .cell-symbol,
+:root[data-visual-style="render"] .cell.sunk .cell-symbol,
+:root[data-visual-style="render"] .cell.mine .cell-symbol,
+:root[data-visual-style="render"] .cell.sweeper .cell-symbol {
+  opacity: 0;
+}
+
+:root[data-visual-style="render"] .target .cell:not(:disabled):hover,
+:root[data-visual-style="render"] .online-target .cell:not(:disabled):hover {
+  background: url("./assets/images/markers/cell-target-crosshair.png") center / contain no-repeat;
+}
+
+:root[data-visual-style="render"] .setup .cell:not(:disabled):hover {
+  background: url("./assets/images/markers/place-ok.png") center / contain no-repeat;
+}
+
+:root[data-visual-style="render"] .setup .cell.has-ship:not(:disabled):hover {
+  background: url("./assets/images/markers/place-bad.png") center / contain no-repeat;
 }
 
 @keyframes ambient-sweep {
