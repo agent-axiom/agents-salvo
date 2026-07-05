@@ -6,10 +6,13 @@
 
 在线版本：https://agent-axiom.github.io/agents-salvo/
 
+![纸上海战棋棋盘插图](src/assets/salvo-board-action.png)
+
 ## 功能
 
 - 无框架静态前端：`src/index.html`、`src/app.js`、`src/styles.css`。
 - 规则核心：`src/core/game.js`。
+- 纸面蓝色圆珠笔风格，更接近经典手绘海战棋棋盘。
 - 经典俄式舰队：1x4、2x3、3x2、4x1。
 - 舰船不能边角相邻。
 - 被击沉的舰船会被描边，周围格子自动标记为水域。

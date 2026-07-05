@@ -38,6 +38,7 @@ test("i18n translates result modal, theme, and history labels in every language"
     "history.body",
     "history.body2",
     "history.source",
+    "art.alt",
     "setup.manual",
     "setup.orientation",
     "setup.horizontal",

@@ -6,10 +6,14 @@
   --surface: rgba(255, 252, 236, 0.94);
   --surface-strong: rgba(246, 238, 207, 0.86);
   --line: rgba(28, 86, 184, 0.42);
+  --board-paper: #f7f2e6;
+  --board-fiber: rgba(88, 77, 56, 0.1);
+  --pen-line: rgba(17, 54, 154, 0.72);
+  --pen-line-soft: rgba(17, 54, 154, 0.23);
   --water: rgba(38, 103, 203, 0.045);
   --water-dark: rgba(28, 86, 184, 0.2);
   --ship: rgba(21, 63, 134, 0.72);
-  --ship-stroke: rgba(21, 63, 134, 0.22);
+  --ship-stroke: rgba(21, 63, 134, 0.32);
   --hit: #c7352d;
   --miss: #164d9c;
   --sunk: #98281f;
@@ -21,6 +25,7 @@
   --panel-light: rgba(255, 252, 236, 0.9);
   --scan-light: rgba(255, 255, 255, 0.36);
   --shadow: 5px 6px 0 rgba(21, 63, 134, 0.12);
+  --hand-font: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -33,6 +38,10 @@
   --surface: rgba(11, 21, 38, 0.96);
   --surface-strong: rgba(24, 43, 70, 0.95);
   --line: rgba(151, 201, 255, 0.68);
+  --board-paper: #142238;
+  --board-fiber: rgba(234, 243, 255, 0.05);
+  --pen-line: rgba(162, 204, 255, 0.78);
+  --pen-line-soft: rgba(162, 204, 255, 0.28);
   --water: rgba(96, 165, 250, 0.22);
   --water-dark: rgba(147, 197, 253, 0.42);
   --ship: rgba(224, 239, 255, 0.92);
@@ -543,62 +552,20 @@ input {
   display: grid;
   place-items: center;
   min-height: 360px;
-  padding: 28px;
+  padding: 0;
+  margin: 0;
+  overflow: hidden;
+  background: var(--board-paper);
 }
 
-.sea-grid {
-  display: grid;
-  width: min(100%, 340px);
-  aspect-ratio: 1;
-  grid-template-columns: repeat(10, 1fr);
-  gap: 0;
-  border: 2px solid var(--accent);
-  background:
-    linear-gradient(90deg, var(--line) 1px, transparent 1px),
-    linear-gradient(var(--line) 1px, transparent 1px),
-    var(--surface);
-  background-size: 10% 10%;
-}
-
-.sea-grid span {
-  min-width: 0;
-  background: transparent;
-  border-right: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-}
-
-.sea-grid .preview-ship {
-  background: repeating-linear-gradient(-12deg, transparent 0 6px, var(--ship-stroke) 7px 9px);
-}
-
-.sea-grid .preview-hit {
-  position: relative;
-  background: transparent;
-}
-
-.sea-grid .preview-hit::before {
-  content: "×";
-  display: grid;
+.fleet-visual img {
+  display: block;
+  width: 100%;
   height: 100%;
-  place-items: center;
-  color: var(--hit);
-  font-size: 28px;
-  font-weight: 800;
-}
-
-.sea-grid .preview-miss {
-  position: relative;
-  background: transparent;
-}
-
-.sea-grid .preview-miss::before {
-  content: "•";
-  display: grid;
-  height: 100%;
-  place-items: center;
-  color: var(--miss);
-  font-size: 22px;
-  font-weight: 800;
+  min-height: 360px;
+  object-fit: cover;
+  object-position: center;
+  filter: saturate(0.98) contrast(1.04);
 }
 
 .play-layout {
@@ -812,8 +779,9 @@ input {
 .column-headers,
 .row-headers {
   display: grid;
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--pen-line);
+  font-family: var(--hand-font);
+  font-size: 14px;
   font-weight: 700;
   line-height: 1;
 }
@@ -846,10 +814,19 @@ input {
   gap: 0;
   aspect-ratio: 1;
   overflow: hidden;
-  background: var(--surface);
-  border: 2px solid var(--accent);
+  background:
+    radial-gradient(circle at 14% 18%, var(--board-fiber) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 82% 68%, var(--board-fiber) 0 1px, transparent 1.5px),
+    linear-gradient(105deg, transparent 0 42%, rgba(255, 255, 255, 0.18) 44% 48%, transparent 52%),
+    var(--board-paper);
+  background-size:
+    37px 31px,
+    43px 39px,
+    100% 100%,
+    auto;
+  border: 2px solid var(--pen-line);
   box-shadow:
-    inset 0 0 0 1px rgba(21, 63, 134, 0.08),
+    inset 0 0 0 1px var(--pen-line-soft),
     0 0 28px rgba(28, 86, 184, 0.08);
 }
 
@@ -862,20 +839,23 @@ input {
   padding: 0;
   border-radius: 0;
   color: var(--ink);
-  font-size: clamp(12px, 2.2vw, 22px);
+  font-family: var(--hand-font);
+  font-size: clamp(14px, 2.4vw, 25px);
   font-weight: 800;
   line-height: 1;
-  background: var(--water);
+  background: transparent;
   border: 0;
-  border-right: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  box-shadow: none;
+  border-right: 1px solid var(--pen-line);
+  border-bottom: 1px solid var(--pen-line);
+  box-shadow:
+    inset 1px 0 0 var(--pen-line-soft),
+    inset 0 1px 0 var(--pen-line-soft);
 }
 
 .cell.has-ship {
   background:
-    repeating-linear-gradient(-10deg, transparent 0 6px, var(--ship-stroke) 7px 9px),
-    var(--water);
+    repeating-linear-gradient(-10deg, transparent 0 7px, var(--ship-stroke) 8px 11px),
+    rgba(28, 86, 184, 0.035);
   color: var(--ship);
 }
 
@@ -911,7 +891,7 @@ input {
 
 .cell.miss {
   color: var(--miss);
-  background: var(--water);
+  background: transparent;
 }
 
 .cell.mine,

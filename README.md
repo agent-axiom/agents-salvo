@@ -6,10 +6,13 @@ Salvo is a browser Battleship game for GitHub Pages with three localizations, sa
 
 Live build: https://agent-axiom.github.io/agents-salvo/
 
+![Salvo paper board artwork](src/assets/salvo-board-action.png)
+
 ## Features
 
 - Static frontend without a framework: `src/index.html`, `src/app.js`, `src/styles.css`.
 - Rule engine in `src/core/game.js`.
+- Paper-and-blue-pen board styling inspired by handwritten Battleship grids.
 - Classic Russian fleet: 1x4, 2x3, 3x2, 4x1.
 - Ships cannot touch by sides or corners.
 - Sunk ships are outlined and surrounding cells are marked as water.

@@ -194,11 +194,9 @@ function renderMenu() {
           <a href="${translate("history.sourceUrl")}" target="_blank" rel="noreferrer">${translate("history.source")}</a>
         </section>
       </div>
-      <div class="fleet-visual" aria-hidden="true">
-        <div class="sea-grid">
-          ${Array.from({ length: 100 }, (_, index) => `<span class="${previewClass(index)}"></span>`).join("")}
-        </div>
-      </div>
+      <figure class="fleet-visual">
+        <img src="./assets/salvo-board-action.png" alt="${translate("art.alt")}" loading="lazy" decoding="async">
+      </figure>
     </section>
   `;
 }
@@ -1068,15 +1066,6 @@ function readCoordinate(button) {
     row: Number(button.dataset.row),
     col: Number(button.dataset.col),
   };
-}
-
-function previewClass(index) {
-  const shipCells = new Set([12, 13, 14, 15, 16, 42, 52, 62, 66, 67, 68, 84, 85]);
-  const hitCells = new Set([13, 52, 68]);
-  if (hitCells.has(index)) return "preview-hit";
-  if (shipCells.has(index)) return "preview-ship";
-  if ([6, 27, 73].includes(index)) return "preview-miss";
-  return "";
 }
 
 function onlineStatusText(status) {
