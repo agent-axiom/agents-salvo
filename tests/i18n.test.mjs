@@ -26,6 +26,12 @@ test("i18n labels menu exit actions as main menu", () => {
   assert.equal(t("zh-CN", "nav.mainMenu"), "主菜单");
 });
 
+test("i18n labels the setup ready action as a battle CTA", () => {
+  assert.equal(t("en", "setup.ready"), "To battle!");
+  assert.equal(t("ru", "setup.ready"), "В бой!");
+  assert.equal(t("zh-CN", "setup.ready"), "开战！");
+});
+
 test("i18n translates result modal, theme, and history labels in every language", () => {
   const keys = [
     "result.title",
