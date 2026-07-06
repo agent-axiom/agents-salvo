@@ -134,6 +134,10 @@ function setupPlayerTitle(playerId) {
   return translate("setup.player", { player: playerId === "p1" ? "1" : "2" });
 }
 
+function isOnlineAuthReady() {
+  return Boolean(state.auth.user && state.auth.token && state.online.workerUrl);
+}
+
 function gameStatusText(game) {
   if (game.phase === "finished") {
     return translate("game.winner", { player: playerName(game.winnerId) });
@@ -802,6 +806,8 @@ function renderOnline() {
 }
 
 function renderOnlineLobby() {
+  const onlineDisabled = isOnlineAuthReady() ? "" : "disabled";
+
   return `
     <section class="play-layout online-screen">
       <aside class="control-panel online-lobby">
@@ -809,7 +815,7 @@ function renderOnlineLobby() {
         <div class="section-heading">
           <span>${translate("mode.online")}</span>
           <h2>${translate("online.title")}</h2>
-          <p>${state.auth.user ? translate("online.authReady") : translate("online.authHint")}</p>
+          <p>${isOnlineAuthReady() ? translate("online.authReady") : translate("online.authHint")}</p>
         </div>
         <p class="status-line">${translate(`preset.${state.presetId}.name`)}</p>
         <div class="setup-primary-actions">
@@ -818,13 +824,14 @@ function renderOnlineLobby() {
         </div>
         ${renderSetupProgress()}
         ${renderSetupTools()}
+        ${renderOnlineAuthGate()}
         <div class="online-actions">
-          <button class="primary-button" data-action="online-create">${translate("online.create")}</button>
+          <button class="primary-button" data-action="online-create" ${onlineDisabled}>${translate("online.create")}</button>
           <label class="stacked-field">
             <span>${translate("online.roomCode")}</span>
-            <input data-action="room-code" value="${escapeHtml(state.online.roomCodeInput)}" />
+            <input data-action="room-code" value="${escapeHtml(state.online.roomCodeInput)}" ${onlineDisabled} />
           </label>
-          <button data-action="online-join">${translate("online.join")}</button>
+          <button data-action="online-join" ${onlineDisabled}>${translate("online.join")}</button>
         </div>
         ${state.online.error ? `<p class="error-line">${translate("online.error", { message: state.online.error })}</p>` : ""}
       </aside>
@@ -832,6 +839,18 @@ function renderOnlineLobby() {
         ${renderBoard(state.setupBoard, { kind: "setup", title: translate("game.yourFleet") })}
       </section>
     </section>
+  `;
+}
+
+function renderOnlineAuthGate() {
+  if (isOnlineAuthReady()) {
+    return "";
+  }
+  return `
+    <div class="online-auth-gate">
+      <p>${translate("online.authRequired")}</p>
+      <button class="secondary-button" data-action="toggle-settings">${translate("auth.telegram")}</button>
+    </div>
   `;
 }
 
@@ -1409,6 +1428,11 @@ function runAgentTurns(game) {
 
 async function onlineCreate() {
   await withOnlineError(async () => {
+    if (!isOnlineAuthReady()) {
+      state.online.error = translate("online.authRequired");
+      render();
+      return;
+    }
     if (!hasFullFleet(state.setupBoard)) {
       throw new Error(translate("setup.needFleet"));
     }
@@ -1422,6 +1446,11 @@ async function onlineCreate() {
 
 async function onlineJoin() {
   await withOnlineError(async () => {
+    if (!isOnlineAuthReady()) {
+      state.online.error = translate("online.authRequired");
+      render();
+      return;
+    }
     if (!hasFullFleet(state.setupBoard)) {
       throw new Error(translate("setup.needFleet"));
     }

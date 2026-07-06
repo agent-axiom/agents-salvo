@@ -50,3 +50,12 @@ test("online client sends auth tokens and does not submit online results directl
   assert.match(app, /refreshProfile\(/);
   assert.doesNotMatch(app, /recordCompletedBattle\(\s*completedBattleMatch\(\{\s*key:\s*onlineResultKey/s);
 });
+
+test("online room actions require a registered Telegram player in the UI", () => {
+  assert.match(app, /function isOnlineAuthReady\(\)/);
+  assert.match(app, /function renderOnlineAuthGate\(\)/);
+  assert.match(app, /online\.authRequired/);
+  assert.match(app, /data-action="online-create"[^>]*\$\{onlineDisabled\}/);
+  assert.match(app, /data-action="online-join"[^>]*\$\{onlineDisabled\}/);
+  assert.match(app, /if \(!isOnlineAuthReady\(\)\) \{\s*state\.online\.error = translate\("online\.authRequired"\);/s);
+});

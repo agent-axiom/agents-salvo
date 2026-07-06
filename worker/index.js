@@ -104,7 +104,7 @@ export class BattleRoom {
     if (existing) {
       return json({ error: "Room already exists" }, 409);
     }
-    const user = await optionalUser(request, this.env);
+    const user = publicUser(await requireUser(request, this.env));
 
     const room = {
       code: roomCode,
@@ -130,7 +130,7 @@ export class BattleRoom {
       return json({ error: "Room is full" }, 409);
     }
 
-    room.players.p2 = { token: createToken(), board: null, user: await optionalUser(request, this.env) };
+    room.players.p2 = { token: createToken(), board: null, user: publicUser(await requireUser(request, this.env)) };
     await this.saveRoom(room);
     await this.broadcast(room);
 
@@ -450,14 +450,6 @@ async function requireUser(request, env) {
     throw new Error("Authentication required");
   }
   return verifySessionToken(token, env.SESSION_SECRET);
-}
-
-async function optionalUser(request, env) {
-  const token = parseBearerToken(request);
-  if (!token) {
-    return null;
-  }
-  return publicUser(await verifySessionToken(token, env.SESSION_SECRET));
 }
 
 function authErrorStatus(error) {

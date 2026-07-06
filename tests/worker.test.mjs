@@ -4,6 +4,7 @@ import { webcrypto } from "node:crypto";
 
 import { createBoard, createGameFromBoards, fireAt, placeShip, randomlyPlaceSetup } from "../src/core/game.js";
 import { gamePresets } from "../src/core/presets.js";
+import { createSessionToken } from "../worker/auth.js";
 import worker, { BattleRoom, createPlayerSnapshot } from "../worker/index.js";
 
 const cryptoApi = globalThis.crypto ?? webcrypto;
@@ -223,11 +224,57 @@ test("BattleRoom rejects invalid room auth tokens as unauthorized responses", as
   assert.deepEqual(await response.json(), { error: "Session token is invalid" });
 });
 
+test("BattleRoom requires Telegram sessions to create and join rooms", async () => {
+  const env = { SESSION_SECRET: "session-secret" };
+  const room = new BattleRoom({ storage: new MemoryStorage() }, env);
+
+  const anonymousCreate = await room.fetch(new Request("https://worker.test/rooms?code=ROOM01", { method: "POST" }));
+  assert.equal(anonymousCreate.status, 401);
+  assert.deepEqual(await anonymousCreate.json(), { error: "Authentication required" });
+
+  const p1Headers = await authHeaders(
+    { provider: "telegram", id: "1", name: "One", username: "one", photoUrl: "" },
+    env,
+  );
+  const created = await room.fetch(
+    new Request("https://worker.test/rooms?code=ROOM01", { method: "POST", headers: p1Headers }),
+  );
+  assert.equal(created.status, 200);
+
+  const anonymousJoin = await room.fetch(new Request("https://worker.test/rooms/ROOM01/join", { method: "POST" }));
+  assert.equal(anonymousJoin.status, 401);
+  assert.deepEqual(await anonymousJoin.json(), { error: "Authentication required" });
+
+  const p2Headers = await authHeaders(
+    { provider: "telegram", id: "2", name: "Two", username: "two", photoUrl: "" },
+    env,
+  );
+  const joined = await room.fetch(
+    new Request("https://worker.test/rooms/ROOM01/join", { method: "POST", headers: p2Headers }),
+  );
+  assert.equal(joined.status, 200);
+
+  const savedRoom = await room.state.storage.get("room");
+  assert.equal(savedRoom.players.p1.user.id, "1");
+  assert.equal(savedRoom.players.p2.user.id, "2");
+});
+
 test("BattleRoom creates, joins, and rejects duplicate or full rooms", async () => {
   const storage = new MemoryStorage();
-  const room = new BattleRoom({ storage });
+  const env = { SESSION_SECRET: "session-secret" };
+  const room = new BattleRoom({ storage }, env);
+  const p1Headers = await authHeaders(
+    { provider: "telegram", id: "1", name: "One", username: "one", photoUrl: "" },
+    env,
+  );
+  const p2Headers = await authHeaders(
+    { provider: "telegram", id: "2", name: "Two", username: "two", photoUrl: "" },
+    env,
+  );
 
-  const created = await room.fetch(new Request("https://worker.test/rooms?code=ROOM01", { method: "POST" }));
+  const created = await room.fetch(
+    new Request("https://worker.test/rooms?code=ROOM01", { method: "POST", headers: p1Headers }),
+  );
   assert.equal(created.status, 200);
   const createdPayload = await created.json();
   assert.deepEqual(
@@ -235,7 +282,9 @@ test("BattleRoom creates, joins, and rejects duplicate or full rooms", async () 
     ["playerId", "playerToken", "roomCode"].sort(),
   );
 
-  const duplicate = await room.fetch(new Request("https://worker.test/rooms?code=ROOM01", { method: "POST" }));
+  const duplicate = await room.fetch(
+    new Request("https://worker.test/rooms?code=ROOM01", { method: "POST", headers: p1Headers }),
+  );
   assert.equal(duplicate.status, 409);
   assert.deepEqual(await duplicate.json(), { error: "Room already exists" });
 
@@ -252,7 +301,9 @@ test("BattleRoom creates, joins, and rejects duplicate or full rooms", async () 
         },
       },
     });
-    const joined = await room.fetch(new Request("https://worker.test/rooms/ROOM01/join", { method: "POST" }));
+    const joined = await room.fetch(
+      new Request("https://worker.test/rooms/ROOM01/join", { method: "POST", headers: p2Headers }),
+    );
     assert.equal(joined.status, 200);
     assert.equal((await joined.json()).playerId, "p2");
   } finally {
@@ -260,7 +311,9 @@ test("BattleRoom creates, joins, and rejects duplicate or full rooms", async () 
   }
 
   assert.equal(sent.at(-1)?.type, "snapshot");
-  const full = await room.fetch(new Request("https://worker.test/rooms/ROOM01/join", { method: "POST" }));
+  const full = await room.fetch(
+    new Request("https://worker.test/rooms/ROOM01/join", { method: "POST", headers: p2Headers }),
+  );
   assert.equal(full.status, 409);
   assert.deepEqual(await full.json(), { error: "Room is full" });
 });
@@ -540,6 +593,10 @@ async function signTelegramPayload(payload, botToken) {
   );
   const signature = await cryptoApi.subtle.sign("HMAC", key, textEncoder.encode(dataCheckString));
   return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function authHeaders(user, env) {
+  return { Authorization: `Bearer ${await createSessionToken(user, env.SESSION_SECRET)}` };
 }
 
 class MemoryStorage {
