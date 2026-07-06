@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 
-import { createBoard, createGameFromBoards, placeShip, randomlyPlaceSetup } from "../src/core/game.js";
+import { createBoard, createGameFromBoards, fireAt, placeShip, randomlyPlaceSetup } from "../src/core/game.js";
 import { gamePresets } from "../src/core/presets.js";
 import worker, { BattleRoom, createPlayerSnapshot } from "../worker/index.js";
 
@@ -58,6 +58,36 @@ test("createPlayerSnapshot exposes preset rules and salvo state", () => {
   assert.equal(snapshot.rules.salvo, true);
   assert.equal(snapshot.salvoRemaining, 2);
   assert.equal(snapshot.size, 8);
+});
+
+test("createPlayerSnapshot reveals sunk opponent ship ids without exposing ships", () => {
+  const p1Board = placeShip(createBoard(), { id: "p1-patrol", length: 1 }, { row: 0, col: 0 }, "horizontal");
+  const p2Board = placeShip(createBoard(), { id: "p2-patrol", length: 1 }, { row: 5, col: 5 }, "horizontal");
+  const started = createGameFromBoards(p1Board, p2Board, "p1");
+  const { game } = fireAt(started, "p1", { row: 5, col: 5 });
+
+  const snapshot = createPlayerSnapshot(
+    {
+      code: "ABC123",
+      players: {
+        p1: { board: p1Board },
+        p2: { board: p2Board },
+      },
+      game,
+    },
+    "p1",
+  );
+
+  const sunkShot = snapshot.opponentShots.find(
+    (shot) => shot.row === 5 && shot.col === 5 && shot.result === "sunk",
+  );
+
+  assert.deepEqual(sunkShot, { row: 5, col: 5, result: "sunk", shipId: "p2-patrol" });
+  assert.equal(
+    snapshot.opponentShots.every((shot) => shot.result === "sunk" || !("shipId" in shot)),
+    true,
+  );
+  assert.equal("opponentBoard" in snapshot, false);
 });
 
 test("createPlayerSnapshot uses room preset before game start", () => {

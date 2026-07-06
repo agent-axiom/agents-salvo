@@ -61,6 +61,20 @@ test("render ship sprites crop stray transparent-margin artifacts", () => {
   assert.match(css, /background-position:\s*center bottom/);
 });
 
+test("render target sunk ships reveal one destroyed ship instead of per-cell craters", () => {
+  const app = readText("src/app.js");
+  const css = readText("src/styles.css");
+
+  assert.match(app, /function visibleShipForCell/);
+  assert.match(app, /kind === "target" \|\| kind === "online-target"/);
+  assert.match(app, /cell\.shot === "sunk"/);
+  assert.match(app, /shot-sprite-ship-sunk/);
+  assert.match(app, /shipId:\s*shot\?\.result === "sunk" \? shot\.shipId \?\? null : null/);
+  assert.match(css, /\.shot-sprite-ship-sunk/);
+  assert.match(css, /\.shot-sprite-ship-h/);
+  assert.match(css, /\.shot-sprite-ship-v/);
+});
+
 test("muted audio icon uses a dedicated slash instead of warping the sound arc", () => {
   const css = readText("src/styles.css");
 

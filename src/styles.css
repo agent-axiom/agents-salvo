@@ -2054,6 +2054,24 @@ input {
   background-size: cover;
 }
 
+:root[data-visual-style="render"] .shot-sprite-ship-sunk {
+  inset: 0 auto auto 0;
+  opacity: 0.72;
+  background-size: 100% 100%;
+  transform: scale(1.16);
+  transform-origin: center;
+}
+
+:root[data-visual-style="render"] .shot-sprite-ship-h {
+  width: calc(var(--ship-cells) * 100%);
+  height: 100%;
+}
+
+:root[data-visual-style="render"] .shot-sprite-ship-v {
+  width: 100%;
+  height: calc(var(--ship-cells) * 100%);
+}
+
 :root[data-visual-style="render"] .cell.miss,
 :root[data-visual-style="render"] .cell.hit,
 :root[data-visual-style="render"] .cell.sunk,

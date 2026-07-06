@@ -1799,7 +1799,7 @@ function isPiecePlaced(board, pieceId) {
 function getTargetCell(board, coordinate) {
   const shot = board.shots.find((entry) => entry.row === coordinate.row && entry.col === coordinate.col);
   return {
-    shipId: null,
+    shipId: shot?.result === "sunk" ? shot.shipId ?? null : null,
     markerId: null,
     markerType: null,
     shot: shot?.result ?? null,
@@ -1850,7 +1850,7 @@ function cellContents(cell, kind, board, coordinate) {
   return `
     ${shipSprite(cell, kind, board, coordinate)}
     ${markerSprite(cell, kind)}
-    ${shotSprite(cell)}
+    ${shotSprite(cell, kind, board, coordinate)}
     ${text ? `<span class="cell-symbol">${text}</span>` : ""}
   `;
 }
@@ -1868,11 +1868,11 @@ function cellText(cell, kind) {
 }
 
 function shipSprite(cell, kind, board, coordinate) {
-  if ((kind !== "own" && kind !== "setup") || !cell.shipId) {
+  const ship = visibleShipForCell(cell, kind, board, coordinate);
+  if (!ship) {
     return "";
   }
-  const ship = findShipForCoordinate(board, coordinate);
-  if (!ship || !isShipSpriteAnchor(board, coordinate)) {
+  if (!sameCoordinate(shipStartCell(ship), coordinate)) {
     return "";
   }
   const orientation = shipOrientation(ship);
@@ -1880,6 +1880,33 @@ function shipSprite(cell, kind, board, coordinate) {
   const direction = orientation === "horizontal" ? "h" : "v";
   const path = `./assets/images/ships/ship-${ship.length}-${direction}-${state}.png`;
   return `<span class="ship-sprite ship-sprite-${direction}" style="--ship-cells: ${ship.length}; --ship-image: url('${path}')" aria-hidden="true"></span>`;
+}
+
+function visibleShipForCell(cell, kind, board, coordinate) {
+  if ((kind === "own" || kind === "setup") && cell.shipId) {
+    return findShipForCoordinate(board, coordinate);
+  }
+  if ((kind === "target" || kind === "online-target") && cell.shot === "sunk" && cell.shipId) {
+    return findShipForCoordinate(board, coordinate) ?? findRevealedSunkShip(board, cell.shipId, coordinate);
+  }
+  return null;
+}
+
+function findRevealedSunkShip(board, shipId, coordinate) {
+  const cells = (board.shots ?? [])
+    .filter((shot) => shot.result === "sunk" && shot.shipId === shipId)
+    .map(({ row, col }) => ({ row, col }));
+
+  if (!cells.some((cell) => sameCoordinate(cell, coordinate))) {
+    return null;
+  }
+
+  return {
+    id: shipId,
+    length: cells.length,
+    cells,
+    hits: cells.map((cell) => ({ ...cell })),
+  };
 }
 
 function markerSprite(cell, kind) {
@@ -1893,7 +1920,7 @@ function markerSprite(cell, kind) {
   return `<span class="marker-sprite marker-sprite-${cell.markerType}" style="--marker-image: url('${path}')" aria-hidden="true"></span>`;
 }
 
-function shotSprite(cell) {
+function shotSprite(cell, kind, board, coordinate) {
   const paths = {
     miss: "./assets/images/markers/miss-blue-dot.png",
     hit: "./assets/images/effects/hit-explosion-smoke.png",
@@ -1904,6 +1931,16 @@ function shotSprite(cell) {
   const path = paths[cell.shot];
   if (!path) {
     return "";
+  }
+  if (cell.shot === "sunk") {
+    const ship = visibleShipForCell(cell, kind, board, coordinate);
+    if (ship) {
+      if (!sameCoordinate(shipStartCell(ship), coordinate)) {
+        return "";
+      }
+      const direction = shipOrientation(ship) === "horizontal" ? "h" : "v";
+      return `<span class="shot-sprite shot-sprite-sunk shot-sprite-ship-sunk shot-sprite-ship-${direction}" style="--ship-cells: ${ship.length}; --shot-image: url('${path}')" aria-hidden="true"></span>`;
+    }
   }
   return `<span class="shot-sprite shot-sprite-${cell.shot}" style="--shot-image: url('${path}')" aria-hidden="true"></span>`;
 }

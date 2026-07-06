@@ -333,7 +333,12 @@ export function createPlayerSnapshot(room, playerId) {
     winnerId: room.game.winnerId,
     you: { board: ownBoard, user: ownRoomPlayer?.user ?? null },
     opponentUser: room.players[opponentId]?.user ?? null,
-    opponentShots: opponentView.shots.map(({ row, col, result }) => ({ row, col, result })),
+    opponentShots: opponentView.shots.map(({ row, col, result, shipId }) => ({
+      row,
+      col,
+      result,
+      ...(result === "sunk" && shipId ? { shipId } : {}),
+    })),
     log: room.game.log.map(({ playerId: shooterId, targetPlayerId, coordinate, result }) => ({
       playerId: shooterId,
       targetPlayerId,
