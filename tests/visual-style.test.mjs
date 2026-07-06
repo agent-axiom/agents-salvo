@@ -52,3 +52,19 @@ test("render visual style uses render-pack assets in css", () => {
   assert.match(css, /sunk-destruction-smoke\.png/);
   assert.match(css, /mine\.png/);
 });
+
+test("render ship sprites crop stray transparent-margin artifacts", () => {
+  const css = readText("src/styles.css");
+
+  assert.match(css, /data-visual-style="render"\] \.ship-sprite-h/);
+  assert.match(css, /clip-path:\s*inset\(20% 0 0 0\)/);
+  assert.match(css, /background-position:\s*center bottom/);
+});
+
+test("muted audio icon uses a dedicated slash instead of warping the sound arc", () => {
+  const css = readText("src/styles.css");
+
+  assert.match(css, /\.audio-toggle:not\(\.is-on\) \.audio-toggle-icon::before/);
+  assert.match(css, /\.audio-toggle:not\(\.is-on\) \.audio-toggle-icon \.audio-toggle-slash/);
+  assert.doesNotMatch(css, /\.audio-toggle:not\(\.is-on\) \.audio-toggle-icon::after\s*\{[^}]*background:\s*var\(--sunk\)/s);
+});

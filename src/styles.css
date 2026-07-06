@@ -497,15 +497,30 @@ input {
   border-radius: 50%;
 }
 
-.audio-toggle:not(.is-on) .audio-toggle-icon::after {
-  right: 0;
-  top: 8px;
+.audio-toggle-slash {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  display: block;
   width: 13px;
-  height: 2px;
+  height: 3px;
   background: var(--sunk);
-  border: 0;
-  border-radius: 2px;
-  transform: rotate(-38deg);
+  border-radius: 999px;
+  opacity: 0;
+  transform: translate(-50%, -50%) rotate(-38deg);
+  transform-origin: center;
+}
+
+.audio-toggle:not(.is-on) .audio-toggle-icon::after {
+  opacity: 0.22;
+}
+
+.audio-toggle:not(.is-on) .audio-toggle-icon::before {
+  background: var(--accent);
+}
+
+.audio-toggle:not(.is-on) .audio-toggle-icon .audio-toggle-slash {
+  opacity: 1;
 }
 
 .theme-toggle strong,
@@ -1944,6 +1959,8 @@ input {
 :root[data-visual-style="render"] .ship-sprite-h {
   width: calc(var(--ship-cells) * 100%);
   height: 100%;
+  background-position: center bottom;
+  clip-path: inset(20% 0 0 0);
 }
 
 :root[data-visual-style="render"] .ship-sprite-v {

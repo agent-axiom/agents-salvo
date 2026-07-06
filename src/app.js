@@ -207,7 +207,9 @@ function renderSettingsPanel() {
           aria-pressed="${state.audioEnabled}"
           aria-label="${translate("audio.label")}: ${translate(state.audioEnabled ? "audio.on" : "audio.off")}"
         >
-          <span class="audio-toggle-icon" aria-hidden="true"></span>
+          <span class="audio-toggle-icon" aria-hidden="true">
+            <span class="audio-toggle-slash"></span>
+          </span>
           <strong>${translate(state.audioEnabled ? "audio.on" : "audio.off")}</strong>
         </button>
       </div>
