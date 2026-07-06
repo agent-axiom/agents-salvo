@@ -32,6 +32,10 @@ test("i18n labels the setup ready action as a battle CTA", () => {
   assert.equal(t("zh-CN", "setup.ready"), "开战！");
 });
 
+test("Russian online room invite names the Salvo game clearly", () => {
+  assert.equal(t("ru", "online.shareText", { code: "ABC123" }), "Присоединяйся к моей комнате в игре Залп: ABC123");
+});
+
 test("i18n translates result modal, theme, and history labels in every language", () => {
   const keys = [
     "result.title",

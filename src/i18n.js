@@ -320,7 +320,7 @@ const dictionaries = {
     "online.join": "Войти",
     "online.copyCode": "Скопировать код",
     "online.shareTelegram": "Поделиться в Telegram",
-    "online.shareText": "Присоединяйся к моей комнате Залпа: {code}",
+    "online.shareText": "Присоединяйся к моей комнате в игре Залп: {code}",
     "online.authHint": "Войдите через Telegram, чтобы создавать онлайн-комнаты или входить в них.",
     "online.authRequired": "Онлайн-бои доступны только зарегистрированным игрокам Telegram.",
     "online.authReady": "Telegram подтверждён. Онлайн-результаты сохраняются в профиль.",
