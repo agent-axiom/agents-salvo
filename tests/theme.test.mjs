@@ -57,6 +57,27 @@ test("dark theme does not draw a bright diagonal sheen over the board", () => {
   assert.doesNotMatch(boardRule, /rgba\(255,\s*255,\s*255,\s*0\.18\)/);
 });
 
+test("dark misses are visible in every visual style", () => {
+  const missRule = cssRule(".cell.miss::after");
+  const darkMissRule = cssRule(':root[data-theme="dark"] .cell.miss::after');
+
+  assert.match(missRule, /width:\s*clamp\(7px,\s*1\.15vw,\s*12px\)/);
+  assert.match(missRule, /box-shadow:/);
+  assert.match(darkMissRule, /background:\s*#b9ecff/);
+  assert.match(darkMissRule, /box-shadow:/);
+});
+
+test("render dark misses draw a larger high contrast marker", () => {
+  const renderMissRule = cssRule(':root[data-visual-style="render"] .cell.miss::after');
+  const darkMissRule = cssRule(':root[data-visual-style="render"][data-theme="dark"] .cell.miss::after');
+
+  assert.match(renderMissRule, /width:\s*clamp\(7px,\s*1\.15vw,\s*12px\)/);
+  assert.match(renderMissRule, /box-shadow:/);
+  assert.match(darkMissRule, /width:\s*clamp\(9px,\s*1\.45vw,\s*14px\)/);
+  assert.match(darkMissRule, /background:\s*#b9ecff/);
+  assert.match(darkMissRule, /box-shadow:/);
+});
+
 function themeVariables(theme) {
   const pattern =
     theme === "dark"

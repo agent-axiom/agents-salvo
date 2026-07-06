@@ -64,3 +64,10 @@ test("board cells expose localized state in aria labels", () => {
   assert.match(i18n, /"board\.state\.hit"/);
   assert.match(i18n, /"board\.state\.sunk"/);
 });
+
+test("mobile setup controls use compact topbar and full-width actions", () => {
+  assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.topbar-controls\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\) auto;/);
+  assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.settings-button strong\s*\{[\s\S]*?display:\s*none;/);
+  assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.setup-primary-actions\s*\{[\s\S]*?grid-template-columns:\s*1fr;/);
+  assert.match(css, /\.setup-primary-actions \[data-action="ready"\]:not\(:disabled\)/);
+});
