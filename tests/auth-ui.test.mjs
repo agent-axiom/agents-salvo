@@ -33,6 +33,15 @@ test("frontend exposes player profile and completed battle recording hooks", () 
   assert.match(app, /data-action="refresh-profile"/);
 });
 
+test("authenticated local player labels use the Telegram display name safely", () => {
+  assert.match(app, /function localPlayerName\(\)/);
+  assert.match(app, /function setupPlayerTitle\(playerId\)/);
+  assert.match(app, /state\.auth\.user\?\.name/);
+  assert.match(app, /escapeHtml\((?:name|state\.auth\.user\.name)\)/);
+  assert.match(app, /if \(playerId === "p1"\) \{\s*return localPlayerName\(\);\s*\}/s);
+  assert.match(app, /:\s*setupPlayerTitle\(state\.setupPlayerId\)/);
+});
+
 test("online client sends auth tokens and does not submit online results directly", () => {
   assert.match(remote, /authToken/);
   assert.match(remote, /Authorization/);

@@ -100,14 +100,33 @@ function translate(key, params) {
   return t(state.language, key, params);
 }
 
+function localPlayerName() {
+  const name = state.auth.user?.name?.trim();
+  if (name) {
+    return escapeHtml(name);
+  }
+  const username = state.auth.user?.username?.trim();
+  if (username) {
+    return `@${escapeHtml(username)}`;
+  }
+  return translate("game.player1");
+}
+
 function playerName(playerId) {
   if (playerId === "p1") {
-    return translate("game.player1");
+    return localPlayerName();
   }
   if (state.mode === "agent" && playerId === "p2") {
     return translate("game.agent");
   }
   return translate("game.player2");
+}
+
+function setupPlayerTitle(playerId) {
+  if (playerId === "p1" && state.auth.user) {
+    return localPlayerName();
+  }
+  return translate("setup.player", { player: playerId === "p1" ? "1" : "2" });
 }
 
 function gameStatusText(game) {
@@ -559,7 +578,7 @@ function renderSetup() {
   const title =
     state.mode === "agent"
       ? translate("setup.agent")
-      : translate("setup.player", { player: state.setupPlayerId === "p1" ? "1" : "2" });
+      : setupPlayerTitle(state.setupPlayerId);
   const readyDisabled = hasFullFleet(state.setupBoard) ? "" : "disabled";
 
   return `
