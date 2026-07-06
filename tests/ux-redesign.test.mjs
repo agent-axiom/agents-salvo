@@ -37,6 +37,23 @@ test("battlefield prioritizes the opponent board and keeps own fleet/log seconda
   assert.match(css, /\.own-minimap/);
 });
 
+test("agent battles keep the human fleet as own board after the agent wins", () => {
+  assert.match(app, /function localPerspectivePlayerId/);
+  assert.match(app, /state\.mode === "agent" \? "p1" : state\.game\.currentPlayerId/);
+  assert.match(app, /const perspectivePlayerId = localPerspectivePlayerId\(\)/);
+  assert.match(app, /const ownBoard = state\.game\.players\[perspectivePlayerId\]\.board/);
+});
+
+test("main menu exposes a public leaderboard", () => {
+  assert.match(app, /leaderboard:\s*\{/);
+  assert.match(app, /renderPublicLeaderboard/);
+  assert.match(app, /refreshLeaderboard/);
+  assert.match(app, /\/leaderboard/);
+  assert.match(app, /class="public-leaderboard"/);
+  assert.match(css, /\.public-leaderboard/);
+  assert.match(i18n, /"leaderboard\.title"/);
+});
+
 test("manual setup has random-first actions, progress, and placement preview states", () => {
   assert.match(app, /class="setup-primary-actions"/);
   assert.match(app, /class="setup-progress"/);

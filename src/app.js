@@ -61,6 +61,11 @@ const state = {
     saveMessage: "",
     savedMatchKeys: new Set(),
   },
+  leaderboard: {
+    data: null,
+    loading: false,
+    error: "",
+  },
   online: {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     roomCodeInput: "",
@@ -140,6 +145,10 @@ function gameStatusText(game) {
     });
   }
   return translate("game.turn", { player: playerName(game.currentPlayerId) });
+}
+
+function localPerspectivePlayerId() {
+  return state.mode === "agent" ? "p1" : state.game.currentPlayerId;
 }
 
 function render() {
@@ -364,6 +373,7 @@ function renderMenu() {
           ${renderPresetSelector()}
         </details>
         ${renderCompactProfile()}
+        ${renderPublicLeaderboard()}
         <details class="rules-panel">
           <summary>${translate("history.title")}</summary>
           <div class="history-panel">
@@ -377,6 +387,42 @@ function renderMenu() {
       <figure class="fleet-visual hub-art">
         <img src="${menuArtworkSource()}" alt="${translate("art.alt")}" loading="lazy" decoding="async">
       </figure>
+    </section>
+  `;
+}
+
+function renderPublicLeaderboard() {
+  const leaderboard = state.leaderboard.data ?? state.profile.data?.leaderboard;
+  const entries = leaderboard?.entries ?? [];
+  return `
+    <section class="public-leaderboard">
+      <div class="public-leaderboard-header">
+        <div>
+          <span>${translate("leaderboard.title")}</span>
+          <p>${translate("leaderboard.subtitle")}</p>
+        </div>
+        <button data-action="refresh-leaderboard">${translate("leaderboard.refresh")}</button>
+      </div>
+      ${state.leaderboard.loading ? `<p class="status-line">${translate("leaderboard.loading")}</p>` : ""}
+      ${state.leaderboard.error ? `<p class="error-line">${translate("leaderboard.error", { message: state.leaderboard.error })}</p>` : ""}
+      ${
+        entries.length === 0
+          ? `<p>${translate("profile.noLeaderboard")}</p>`
+          : `<ol>
+              ${entries
+                .slice(0, 5)
+                .map(
+                  (entry) => `
+                    <li>
+                      <strong>#${entry.rank}</strong>
+                      <span>${escapeHtml(entry.name)}</span>
+                      <small>${entry.rating} · ${entry.onlineWins}-${entry.onlineLosses}</small>
+                    </li>
+                  `,
+                )
+                .join("")}
+            </ol>`
+      }
     </section>
   `;
 }
@@ -717,9 +763,9 @@ function renderPass() {
 }
 
 function renderGame() {
-  const currentPlayerId = state.game.currentPlayerId;
-  const opponentId = currentPlayerId === "p1" ? "p2" : "p1";
-  const ownBoard = state.game.players[currentPlayerId].board;
+  const perspectivePlayerId = localPerspectivePlayerId();
+  const opponentId = perspectivePlayerId === "p1" ? "p2" : "p1";
+  const ownBoard = state.game.players[perspectivePlayerId].board;
   const targetBoard = state.game.players[opponentId].board;
   const status = gameStatusText(state.game);
 
@@ -1064,6 +1110,7 @@ root.addEventListener("click", async (event) => {
   if (action === "battle-tab") selectBattleTab(button.dataset.tab);
   if (action === "auth-logout") await logoutAuth();
   if (action === "refresh-profile") await refreshProfile();
+  if (action === "refresh-leaderboard") await refreshLeaderboard();
 });
 
 root.addEventListener("mouseover", (event) => {
@@ -1567,6 +1614,7 @@ async function refreshProfile({ renderWhenDone = true } = {}) {
     });
     const payload = await readAuthJson(response);
     state.profile.data = payload.profile;
+    state.leaderboard.data = payload.profile?.leaderboard ?? state.leaderboard.data;
   } catch (error) {
     state.profile.error = error.message;
   } finally {
@@ -1597,11 +1645,36 @@ async function recordCompletedBattle(match) {
     });
     const payload = await readAuthJson(response);
     state.profile.data = payload.profile;
+    state.leaderboard.data = payload.profile?.leaderboard ?? state.leaderboard.data;
     state.profile.saveMessage = translate("profile.saved");
   } catch (error) {
     state.profile.error = translate("profile.saveError", { message: error.message });
   }
   render();
+}
+
+async function refreshLeaderboard({ renderWhenDone = true } = {}) {
+  const workerUrl = state.online.workerUrl || state.auth.workerUrl;
+  if (!workerUrl) {
+    return;
+  }
+  state.leaderboard.loading = true;
+  state.leaderboard.error = "";
+  if (renderWhenDone) {
+    render();
+  }
+  try {
+    const response = await fetch(`${workerUrl}/leaderboard`);
+    const payload = await readAuthJson(response);
+    state.leaderboard.data = payload.leaderboard;
+  } catch (error) {
+    state.leaderboard.error = error.message;
+  } finally {
+    state.leaderboard.loading = false;
+    if (renderWhenDone) {
+      render();
+    }
+  }
 }
 
 function resetProfile() {
@@ -2133,3 +2206,4 @@ function escapeHtml(value) {
 
 render();
 void refreshAuth();
+void refreshLeaderboard();

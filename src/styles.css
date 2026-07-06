@@ -698,6 +698,70 @@ input {
   line-height: 1.4;
 }
 
+.public-leaderboard {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.public-leaderboard-header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.public-leaderboard span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.public-leaderboard p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.public-leaderboard ol {
+  display: grid;
+  gap: 6px;
+  max-height: 170px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.public-leaderboard li {
+  display: grid;
+  grid-template-columns: minmax(52px, auto) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.public-leaderboard li span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.public-leaderboard li small {
+  color: var(--muted);
+  font-weight: 700;
+}
+
 .profile-panel {
   display: grid;
   gap: 12px;
@@ -2283,6 +2347,19 @@ input {
   .settings-row,
   .profile-compact {
     grid-template-columns: 1fr;
+  }
+
+  .public-leaderboard-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .public-leaderboard li {
+    grid-template-columns: minmax(42px, auto) minmax(0, 1fr);
+  }
+
+  .public-leaderboard li small {
+    grid-column: 2;
   }
 
   .settings-row {
