@@ -277,12 +277,18 @@ export class BattleRoom {
       return;
     }
 
-    await Promise.all(
-      players.map(([playerId, player]) =>
-        recordCompletedMatch(this.env.DB, player.user, onlineMatchPayload(room, playerId), {
+    const recordedMatches = await Promise.all(
+      players.map(async ([playerId, player]) => [
+        playerId,
+        await recordCompletedMatch(this.env.DB, player.user, onlineMatchPayload(room, playerId), {
           source: "server",
         }),
-      ),
+      ]),
+    );
+    room.ratingChanges = Object.fromEntries(
+      recordedMatches
+        .filter(([, match]) => match.rating)
+        .map(([playerId, match]) => [playerId, match.rating]),
     );
     room.profileRecordedAt = room.finishedAt;
     await this.saveRoom(room);
@@ -314,6 +320,7 @@ export function createPlayerSnapshot(room, playerId) {
       opponentUser: room.players[opponentId]?.user ?? null,
       opponentShots: [],
       log: [],
+      ratingChange: null,
     };
   }
 
@@ -345,6 +352,7 @@ export function createPlayerSnapshot(room, playerId) {
       coordinate,
       result,
     })),
+    ratingChange: room.ratingChanges?.[playerId] ?? null,
   };
 }
 

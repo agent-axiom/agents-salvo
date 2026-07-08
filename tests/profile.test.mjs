@@ -238,6 +238,47 @@ test("server-side online match recording can generate ids and timestamps", async
   assert.equal(db.matches.length, 1);
 });
 
+test("server-side online match recording returns rating movement", async () => {
+  const db = new MemoryD1();
+  await recordCompletedMatch(
+    db,
+    profileUser,
+    {
+      ...completedMatchPayload(),
+      id: "rating-before-win",
+      mode: "online",
+      result: "win",
+      playedAt: "2026-07-02T12:00:00.000Z",
+    },
+    { source: "server" },
+  );
+
+  const match = await recordCompletedMatch(
+    db,
+    profileUser,
+    {
+      ...completedMatchPayload(),
+      id: "rating-loss",
+      mode: "online",
+      result: "loss",
+      playedAt: "2026-07-03T12:00:00.000Z",
+    },
+    { source: "server" },
+  );
+
+  assert.deepEqual(match.rating, {
+    before: 1024,
+    after: 1008,
+    delta: -16,
+    label: "cadet",
+    onlineMatches: 2,
+    onlineWins: 1,
+    onlineLosses: 1,
+    onlineWinRate: 50,
+    currentOnlineWinStreak: 0,
+  });
+});
+
 test("player profiles include online rating and season stats", async () => {
   const db = new MemoryD1();
   await recordCompletedMatch(db, profileUser, {

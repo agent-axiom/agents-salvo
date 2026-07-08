@@ -139,7 +139,10 @@ export async function getLeaderboard(db, { now = new Date(), limit = 20 } = {}) 
 export async function recordCompletedMatch(db, user, payload, { source = "client" } = {}) {
   assertProfileDb(db);
   const match = normalizeMatch(payload, { source });
+  const userKey = userSubject(user);
   await upsertUser(db, user);
+  const beforeRating =
+    match.mode === "online" ? summarizeOnlineRating(await onlineRatingRows(db, userKey), new Date(match.playedAt)) : null;
   await db
     .prepare(
       `INSERT OR IGNORE INTO matches (
@@ -150,7 +153,7 @@ export async function recordCompletedMatch(db, user, payload, { source = "client
     )
     .bind(
       match.id,
-      userSubject(user),
+      userKey,
       match.mode,
       match.presetId,
       match.result,
@@ -166,6 +169,14 @@ export async function recordCompletedMatch(db, user, payload, { source = "client
       match.playedAt,
     )
     .run();
+
+  if (match.mode === "online") {
+    const afterRating = summarizeOnlineRating(await onlineRatingRows(db, userKey), new Date(match.playedAt));
+    return {
+      ...match,
+      rating: ratingMovement(beforeRating, afterRating),
+    };
+  }
 
   return match;
 }
@@ -308,6 +319,33 @@ function summarizeOnlineRating(rows, now) {
     onlineLosses,
     onlineWinRate: onlineMatches === 0 ? 0 : Math.round((onlineWins / onlineMatches) * 100),
     currentOnlineWinStreak: currentWinStreak([...rows].reverse()),
+  };
+}
+
+async function onlineRatingRows(db, userKey) {
+  const rows = await db
+    .prepare(
+      `SELECT result, played_at
+      FROM matches
+      WHERE user_key = ? AND mode = 'online'
+      ORDER BY played_at ASC`,
+    )
+    .bind(userKey)
+    .all();
+  return rows.results ?? [];
+}
+
+function ratingMovement(before, after) {
+  return {
+    before: before.mmr,
+    after: after.mmr,
+    delta: after.mmr - before.mmr,
+    label: after.label,
+    onlineMatches: after.onlineMatches,
+    onlineWins: after.onlineWins,
+    onlineLosses: after.onlineLosses,
+    onlineWinRate: after.onlineWinRate,
+    currentOnlineWinStreak: after.currentOnlineWinStreak,
   };
 }
 

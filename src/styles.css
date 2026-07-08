@@ -1868,6 +1868,37 @@ input {
   line-height: 1;
 }
 
+.online-rating-change {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  color: var(--text);
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.online-rating-change span {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.online-rating-change strong {
+  color: var(--accent-strong);
+  font-size: clamp(26px, 7vw, 44px);
+  line-height: 1;
+}
+
+.online-rating-change.is-negative strong {
+  color: var(--sunk);
+}
+
+.online-rating-change small {
+  color: var(--muted);
+}
+
 :root[data-visual-style="render"] {
   --paper: #ece3d2;
   --ink: #133a86;

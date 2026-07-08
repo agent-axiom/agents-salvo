@@ -514,6 +514,30 @@ test("BattleRoom records completed authenticated online matches in profile stora
   const savedRoom = await storage.get("room");
   assert.equal(savedRoom.game.phase, "finished");
   assert.equal(savedRoom.profileRecordedAt, savedRoom.finishedAt);
+  assert.deepEqual(savedRoom.ratingChanges.p1, {
+    before: 1000,
+    after: 1024,
+    delta: 24,
+    label: "lieutenant",
+    onlineMatches: 1,
+    onlineWins: 1,
+    onlineLosses: 0,
+    onlineWinRate: 100,
+    currentOnlineWinStreak: 1,
+  });
+  assert.deepEqual(savedRoom.ratingChanges.p2, {
+    before: 1000,
+    after: 984,
+    delta: -16,
+    label: "cadet",
+    onlineMatches: 1,
+    onlineWins: 0,
+    onlineLosses: 1,
+    onlineWinRate: 0,
+    currentOnlineWinStreak: 0,
+  });
+  assert.equal(createPlayerSnapshot(savedRoom, "p1").ratingChange.delta, 24);
+  assert.equal(createPlayerSnapshot(savedRoom, "p2").ratingChange.delta, -16);
   assert.equal(db.matches.length, 2);
   assert.deepEqual(
     db.matches.map((match) => [match.user_key, match.result, match.player_shots, match.player_hits]),
@@ -779,5 +803,19 @@ class RecordingStatement {
       return { success: true };
     }
     throw new Error(`Unsupported run SQL: ${this.sql}`);
+  }
+
+  async all() {
+    if (this.sql.startsWith("SELECT result, played_at")) {
+      const [userKey] = this.params;
+      return {
+        success: true,
+        results: this.db.matches
+          .filter((match) => match.user_key === userKey && match.mode === "online")
+          .sort((first, second) => first.played_at.localeCompare(second.played_at))
+          .map((match) => ({ result: match.result, played_at: match.played_at })),
+      };
+    }
+    throw new Error(`Unsupported all SQL: ${this.sql}`);
   }
 }

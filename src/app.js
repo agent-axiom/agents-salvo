@@ -964,10 +964,12 @@ function renderOnlineResultModal(snapshot) {
     winnerId: snapshot.winnerId,
     log: snapshot.log ?? [],
     newGameAction: "online-new-game",
+    ratingChange: snapshot.ratingChange,
+    onlineActions: true,
   });
 }
 
-function renderResultModal({ winnerId, log, newGameAction }) {
+function renderResultModal({ winnerId, log, newGameAction, ratingChange = null, onlineActions = false }) {
   const summary = summarizeBattleLog(log, winnerId);
   const stats = summary.winner;
   return `
@@ -983,11 +985,33 @@ function renderResultModal({ winnerId, log, newGameAction }) {
           ${renderResultStat("result.sunk", stats.sunk)}
           ${renderResultStat("result.accuracy", `${stats.accuracy}%`)}
         </div>
+        ${renderOnlineRatingChange(ratingChange)}
         <div class="button-row">
           <button data-action="close-result">${translate("result.inspect")}</button>
-          <button class="primary-button" data-action="${newGameAction}">${translate("game.restart")}</button>
+          ${
+            onlineActions
+              ? `<button data-action="share-telegram">${translate("online.shareTelegram")}</button>
+                <button class="primary-button" data-action="${newGameAction}" aria-label="${translate("online.newRoom")}">${translate("online.rematch")}</button>`
+              : `<button class="primary-button" data-action="${newGameAction}">${translate("game.restart")}</button>`
+          }
         </div>
       </section>
+    </div>
+  `;
+}
+
+function renderOnlineRatingChange(ratingChange) {
+  if (!ratingChange) {
+    return "";
+  }
+  const delta = Number(ratingChange.delta);
+  const signedDelta = delta > 0 ? `+${delta}` : String(delta);
+  const tone = delta >= 0 ? "is-positive" : "is-negative";
+  return `
+    <div class="online-rating-change ${tone}">
+      <span>${translate("result.ratingChange")}</span>
+      <strong>${signedDelta}</strong>
+      <small>${ratingChange.before} → ${ratingChange.after} · ${translate(`profile.ratingLabel.${ratingChange.label}`)}</small>
     </div>
   `;
 }

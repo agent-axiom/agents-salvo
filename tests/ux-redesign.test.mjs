@@ -73,6 +73,15 @@ test("online mode separates lobby controls from the active room state", () => {
   assert.match(app, /data-action="share-telegram"/);
 });
 
+test("online result modal highlights rating movement and next match actions", () => {
+  assert.match(app, /function renderOnlineRatingChange/);
+  assert.match(app, /snapshot\.ratingChange/);
+  assert.match(app, /result\.ratingChange/);
+  assert.match(app, /online\.newRoom/);
+  assert.match(app, /online\.rematch/);
+  assert.match(app, /data-action="share-telegram"/);
+});
+
 test("board cells expose localized state in aria labels", () => {
   assert.match(app, /function cellAriaLabel/);
   assert.match(app, /board\.state\./);
