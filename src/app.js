@@ -963,7 +963,7 @@ function renderOnlineResultModal(snapshot) {
   return renderResultModal({
     winnerId: snapshot.winnerId,
     log: snapshot.log ?? [],
-    newGameAction: "online-new-game",
+    newGameAction: "online-rematch",
     ratingChange: snapshot.ratingChange,
     onlineActions: true,
   });
@@ -991,7 +991,7 @@ function renderResultModal({ winnerId, log, newGameAction, ratingChange = null, 
           ${
             onlineActions
               ? `<button data-action="share-telegram">${translate("online.shareTelegram")}</button>
-                <button class="primary-button" data-action="${newGameAction}" aria-label="${translate("online.newRoom")}">${translate("online.rematch")}</button>`
+                <button class="primary-button" data-action="online-rematch">${translate("online.rematch")}</button>`
               : `<button class="primary-button" data-action="${newGameAction}">${translate("game.restart")}</button>`
           }
         </div>
@@ -1148,6 +1148,7 @@ root.addEventListener("click", async (event) => {
   if (action === "online-shot") handleOnlineShot(readCoordinate(button));
   if (action === "online-create") await onlineCreate();
   if (action === "online-join") await onlineJoin();
+  if (action === "online-rematch") await onlineRematch();
   if (action === "copy-room-code") await copyRoomCode();
   if (action === "share-telegram") shareRoomInTelegram();
   if (action === "battle-tab") selectBattleTab(button.dataset.tab);
@@ -1486,6 +1487,22 @@ async function onlineJoin() {
       state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
     }
     await state.online.client.send("placeFleet", { board: state.setupBoard, presetId: state.presetId });
+    render();
+  });
+}
+
+async function onlineRematch() {
+  await withOnlineError(async () => {
+    const snapshot = state.online.snapshot;
+    if (!state.online.client || !snapshot || snapshot.phase !== "finished") {
+      throw new Error(translate("online.rematchUnavailable"));
+    }
+    const preset = getGamePreset(snapshot.presetId || state.presetId);
+    state.presetId = preset.id;
+    state.setupBoard = randomlyPlaceSetup(preset);
+    state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+    state.resultModalDismissed = onlineResultKey(snapshot);
+    await state.online.client.send("requestRematch", { board: state.setupBoard, presetId: preset.id });
     render();
   });
 }
@@ -2152,6 +2169,12 @@ function renderOnlineStatus(snapshot) {
     }
     if (snapshot.phase === "finished") {
       lines.push(translate("game.winner", { player: playerName(snapshot.winnerId) }));
+      if (snapshot.rematch?.requestedByYou && !snapshot.rematch?.opponentRequested) {
+        lines.push(translate("online.rematchWaiting"));
+      }
+      if (!snapshot.rematch?.requestedByYou && snapshot.rematch?.opponentRequested) {
+        lines.push(translate("online.rematchOffered"));
+      }
     }
   }
 

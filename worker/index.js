@@ -193,6 +193,28 @@ export class BattleRoom {
         return;
       }
 
+      if (message.type === "requestRematch") {
+        if (room.game?.phase !== "finished") {
+          throw new Error("Rematch is available after a finished game");
+        }
+        const preset = roomPreset(room, message.presetId || room.game.presetId || room.presetId);
+        room.rematch = {
+          requests: {
+            ...(room.rematch?.requests ?? {}),
+            [session.playerId]: {
+              board: sanitizeBoard(message.board, preset),
+              requestedAt: new Date().toISOString(),
+            },
+          },
+        };
+        if (room.rematch.requests.p1?.board && room.rematch.requests.p2?.board) {
+          room = startRematch(room, preset);
+        }
+        await this.saveRoom(room);
+        await this.broadcast(room);
+        return;
+      }
+
       if (message.type === "fire") {
         if (!room.game) {
           throw new Error("Game has not started");
@@ -321,6 +343,8 @@ export function createPlayerSnapshot(room, playerId) {
       opponentShots: [],
       log: [],
       ratingChange: null,
+      rematch: null,
+      rematchRound: room.rematchRound ?? 0,
     };
   }
 
@@ -353,7 +377,46 @@ export function createPlayerSnapshot(room, playerId) {
       result,
     })),
     ratingChange: room.ratingChanges?.[playerId] ?? null,
+    rematch: rematchSnapshot(room, playerId),
+    rematchRound: room.rematchRound ?? 0,
   };
+}
+
+function rematchSnapshot(room, playerId) {
+  const requests = room.rematch?.requests;
+  if (!requests) {
+    return null;
+  }
+  const opponentId = playerId === "p1" ? "p2" : "p1";
+  const readyCount = ["p1", "p2"].filter((id) => requests[id]?.board).length;
+  return {
+    requestedByYou: Boolean(requests[playerId]?.board),
+    opponentRequested: Boolean(requests[opponentId]?.board),
+    readyCount,
+    needed: 2,
+  };
+}
+
+function startRematch(room, preset) {
+  const next = { ...room };
+  const p1Board = cloneBoard(room.rematch.requests.p1.board);
+  const p2Board = cloneBoard(room.rematch.requests.p2.board);
+  next.players = {
+    p1: { ...room.players.p1, board: p1Board },
+    p2: { ...room.players.p2, board: p2Board },
+  };
+  next.presetId = preset.id;
+  next.game = createGameFromBoards(p1Board, p2Board, "p1", {
+    presetId: preset.id,
+    rules: preset.rules,
+  });
+  next.rematchRound = (room.rematchRound ?? 0) + 1;
+  delete next.finishedAt;
+  delete next.profileRecordedAt;
+  delete next.profileRecordErrorAt;
+  delete next.ratingChanges;
+  delete next.rematch;
+  return next;
 }
 
 function routeRequest(url) {

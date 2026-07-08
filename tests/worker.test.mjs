@@ -463,6 +463,84 @@ test("BattleRoom places fleets, starts games, and reports setup message errors",
   assert.equal(errorSent[2].message, "Game has not started");
 });
 
+test("BattleRoom restarts a finished online room when both players request a rematch", async () => {
+  const firstP1Board = randomlyPlaceSetup(gamePresets.quick, () => 0.12);
+  const firstP2Board = randomlyPlaceSetup(gamePresets.quick, () => 0.72);
+  const nextP1Board = randomlyPlaceSetup(gamePresets.quick, () => 0.21);
+  const nextP2Board = randomlyPlaceSetup(gamePresets.quick, () => 0.64);
+  const firstGame = createGameFromBoards(firstP1Board, firstP2Board, "p1", {
+    presetId: "quick",
+    rules: gamePresets.quick.rules,
+  });
+  const storage = new MemoryStorage({
+    room: {
+      code: "REMATCH",
+      players: {
+        p1: { token: "p1-token", board: firstP1Board, user: null },
+        p2: { token: "p2-token", board: firstP2Board, user: null },
+      },
+      presetId: "quick",
+      game: { ...firstGame, phase: "finished", winnerId: "p1" },
+      finishedAt: "2026-07-09T10:00:00.000Z",
+      profileRecordedAt: "2026-07-09T10:00:00.000Z",
+      ratingChanges: { p1: { delta: 24 }, p2: { delta: -16 } },
+    },
+  });
+  const room = new BattleRoom({ storage });
+  const sent = [];
+  const previousWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = { OPEN: 1 };
+
+  try {
+    room.sessions.set("p1-session", { playerId: "p1", socket: recordingSocket(sent) });
+    room.sessions.set("p2-session", { playerId: "p2", socket: recordingSocket(sent) });
+    await room.handleMessage(
+      "p1-session",
+      JSON.stringify({ type: "requestRematch", board: nextP1Board, presetId: "quick" }),
+    );
+
+    const pending = await storage.get("room");
+    assert.equal(pending.game.phase, "finished");
+    assert.equal(pending.rematch.requests.p1.board.ships.length, gamePresets.quick.fleet.length);
+    assert.deepEqual(createPlayerSnapshot(pending, "p1").rematch, {
+      requestedByYou: true,
+      opponentRequested: false,
+      readyCount: 1,
+      needed: 2,
+    });
+    assert.deepEqual(createPlayerSnapshot(pending, "p2").rematch, {
+      requestedByYou: false,
+      opponentRequested: true,
+      readyCount: 1,
+      needed: 2,
+    });
+
+    await room.handleMessage(
+      "p2-session",
+      JSON.stringify({ type: "requestRematch", board: nextP2Board, presetId: "quick" }),
+    );
+  } finally {
+    globalThis.WebSocket = previousWebSocket;
+  }
+
+  const restarted = await storage.get("room");
+  assert.equal(restarted.code, "REMATCH");
+  assert.equal(restarted.players.p1.token, "p1-token");
+  assert.equal(restarted.players.p2.token, "p2-token");
+  assert.equal(restarted.players.p1.board.ships.length, gamePresets.quick.fleet.length);
+  assert.equal(restarted.players.p2.board.ships.length, gamePresets.quick.fleet.length);
+  assert.equal(restarted.game.phase, "playing");
+  assert.equal(restarted.game.log.length, 0);
+  assert.equal(restarted.finishedAt, undefined);
+  assert.equal(restarted.profileRecordedAt, undefined);
+  assert.equal(restarted.ratingChanges, undefined);
+  assert.equal(restarted.rematch, undefined);
+  assert.equal(restarted.rematchRound, 1);
+  assert.equal(createPlayerSnapshot(restarted, "p1").rematchRound, 1);
+  assert.equal(createPlayerSnapshot(restarted, "p1").rematch, null);
+  assert.equal(sent.some((message) => message.type === "snapshot" && message.snapshot.phase === "playing"), true);
+});
+
 test("BattleRoom skips profile recording when online match data is not recordable", async () => {
   const room = new BattleRoom({ storage: new MemoryStorage() });
   await room.recordFinishedOnlineBattle({ game: null });

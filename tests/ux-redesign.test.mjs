@@ -75,10 +75,14 @@ test("online mode separates lobby controls from the active room state", () => {
 
 test("online result modal highlights rating movement and next match actions", () => {
   assert.match(app, /function renderOnlineRatingChange/);
+  assert.match(app, /function onlineRematch/);
   assert.match(app, /snapshot\.ratingChange/);
+  assert.match(app, /requestRematch/);
   assert.match(app, /result\.ratingChange/);
-  assert.match(app, /online\.newRoom/);
+  assert.match(app, /data-action="online-rematch"/);
   assert.match(app, /online\.rematch/);
+  assert.match(app, /online\.rematchWaiting/);
+  assert.match(app, /online\.rematchOffered/);
   assert.match(app, /data-action="share-telegram"/);
 });
 
