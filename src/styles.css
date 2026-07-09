@@ -1130,6 +1130,25 @@ input {
   background: var(--accent);
 }
 
+.target-icon::before,
+.target-icon::after {
+  content: "";
+  position: absolute;
+}
+
+.target-icon::before {
+  inset: 12px;
+  border: 3px solid var(--accent);
+  border-radius: 50%;
+}
+
+.target-icon::after {
+  inset: 9px;
+  background:
+    linear-gradient(var(--accent), var(--accent)) center / 100% 3px no-repeat,
+    linear-gradient(var(--accent), var(--accent)) center / 3px 100% no-repeat;
+}
+
 .fleet-visual {
   display: grid;
   place-items: center;
@@ -1199,6 +1218,143 @@ input {
   display: grid;
   gap: 14px;
   padding: 18px;
+}
+
+.training-screen {
+  grid-template-columns: 320px minmax(0, 1fr);
+}
+
+.training-panel {
+  align-content: start;
+}
+
+.training-score {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.training-score div {
+  display: grid;
+  gap: 4px;
+  min-height: 62px;
+  align-content: center;
+  padding: 10px;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.training-score span,
+.training-scenarios > span,
+.training-result > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.training-score strong {
+  color: var(--accent-strong);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.training-scenarios,
+.training-result,
+.training-log {
+  display: grid;
+  gap: 10px;
+}
+
+.training-card {
+  display: grid;
+  gap: 4px;
+  min-height: 72px;
+  justify-items: start;
+  padding: 11px 12px;
+  text-align: left;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+}
+
+.training-card.is-selected {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--glow);
+}
+
+.training-card strong {
+  color: var(--accent-strong);
+}
+
+.training-card small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.training-result {
+  padding: 12px;
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+  border-radius: 8px;
+}
+
+.training-result strong {
+  color: var(--accent-strong);
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.training-log {
+  max-height: 230px;
+  overflow: auto;
+  padding: 12px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.training-log h3,
+.training-log p,
+.training-log ol {
+  margin: 0;
+}
+
+.training-log ol {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.training-log li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.training-log li.strong {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--line));
+}
+
+.training-log li.weak {
+  border-color: color-mix(in srgb, var(--sunk) 46%, var(--line));
+}
+
+.training-log span {
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.training-log small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  line-height: 1.35;
 }
 
 .button-row {

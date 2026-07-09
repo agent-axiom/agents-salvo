@@ -121,6 +121,20 @@ test("smart battle adds hard agent difficulty and post-battle coaching", () => {
   assert.match(i18n, /"coaching\.title"/);
 });
 
+test("training mode exposes focused drills from the main game hub", () => {
+  assert.match(app, /trainingScenarios/);
+  assert.match(app, /data-action="start-training"/);
+  assert.match(app, /function renderTraining/);
+  assert.match(app, /data-action="select-training-scenario"/);
+  assert.match(app, /training-shot/);
+  assert.match(app, /applyTrainingShot/);
+  assert.match(app, /training-screen/);
+  assert.match(css, /\.training-screen/);
+  assert.match(css, /\.training-card/);
+  assert.match(i18n, /"mode\.training"/);
+  assert.match(i18n, /"training\.scenario\.checkerboard\.name"/);
+});
+
 test("board cells expose localized state in aria labels", () => {
   assert.match(app, /function cellAriaLabel/);
   assert.match(app, /board\.state\./);

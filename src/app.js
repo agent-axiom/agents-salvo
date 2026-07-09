@@ -16,6 +16,12 @@ import {
 import { visibleBattleLog } from "./core/log.js";
 import { gamePresets, getGamePreset } from "./core/presets.js";
 import { buildBattleReport, summarizeBattleLog } from "./core/stats.js";
+import {
+  applyTrainingShot,
+  createTrainingSession,
+  trainingScenarios,
+  trainingSummary,
+} from "./core/training.js";
 import { coordinateColumnLabel, getInitialLanguage, languages, t } from "./i18n.js";
 import { RemoteClient } from "./remote.js";
 
@@ -74,6 +80,10 @@ const state = {
     session: null,
     snapshot: null,
     client: null,
+  },
+  training: {
+    scenarioId: "checkerboard",
+    session: null,
   },
 };
 
@@ -343,6 +353,9 @@ function renderScreen() {
   if (state.screen === "online") {
     return renderOnline();
   }
+  if (state.screen === "training") {
+    return renderTraining();
+  }
   return renderMenu();
 }
 
@@ -363,6 +376,10 @@ function renderMenu() {
           <button class="hub-cta" data-action="show-online">
             <span class="mode-icon signal-icon" aria-hidden="true"></span>
             <strong>${translate("mode.online")}</strong>
+          </button>
+          <button class="hub-cta" data-action="start-training">
+            <span class="mode-icon target-icon" aria-hidden="true"></span>
+            <strong>${translate("mode.training")}</strong>
           </button>
           <button class="hub-cta" data-action="start-hotseat">
             <span class="mode-icon ship-icon" aria-hidden="true"></span>
@@ -897,6 +914,109 @@ function renderGame() {
   `;
 }
 
+function renderTraining() {
+  const session = state.training.session ?? createTrainingSession(state.training.scenarioId);
+  const summary = trainingSummary(session);
+  return `
+    <section class="play-layout training-screen">
+      <aside class="control-panel training-panel">
+        <button class="ghost-button" data-action="menu">${translate("nav.mainMenu")}</button>
+        <div class="section-heading">
+          <span>${translate("mode.training")}</span>
+          <h2>${translate("training.title")}</h2>
+          <p>${translate("training.subtitle")}</p>
+        </div>
+        <div class="training-score">
+          ${renderTrainingStat("training.score", summary.score)}
+          ${renderTrainingStat("training.shots", `${summary.shots}/${session.shotLimit}`)}
+          ${renderTrainingStat("result.accuracy", `${summary.accuracy}%`)}
+        </div>
+        ${renderTrainingScenarios(session.scenarioId)}
+        ${renderTrainingResult(session, summary)}
+        ${renderTrainingLog(session)}
+      </aside>
+      <section class="board-stage">
+        ${renderBoard(session.board, {
+          kind: "training-target",
+          title: translate(`training.scenario.${session.scenarioId}.name`),
+          disabled: session.phase !== "playing",
+        })}
+      </section>
+    </section>
+  `;
+}
+
+function renderTrainingStat(key, value) {
+  return `
+    <div>
+      <span>${translate(key)}</span>
+      <strong>${value}</strong>
+    </div>
+  `;
+}
+
+function renderTrainingScenarios(activeScenarioId) {
+  return `
+    <section class="training-scenarios">
+      <span>${translate("training.choose")}</span>
+      ${trainingScenarios
+        .map(
+          (scenario) => `
+            <button
+              class="training-card ${scenario.id === activeScenarioId ? "is-selected" : ""}"
+              data-action="select-training-scenario"
+              data-scenario-id="${scenario.id}"
+              aria-pressed="${scenario.id === activeScenarioId}"
+            >
+              <strong>${translate(`training.scenario.${scenario.id}.name`)}</strong>
+              <small>${translate(`training.scenario.${scenario.id}.desc`)}</small>
+            </button>
+          `,
+        )
+        .join("")}
+    </section>
+  `;
+}
+
+function renderTrainingResult(session, summary) {
+  if (session.phase !== "finished") {
+    return "";
+  }
+  return `
+    <section class="training-result">
+      <span>${translate("training.resultTitle")}</span>
+      <strong>${translate(`training.rating.${summary.ratingId}`)}</strong>
+      <button class="primary-button" data-action="restart-training">${translate("training.restart")}</button>
+    </section>
+  `;
+}
+
+function renderTrainingLog(session) {
+  return `
+    <section class="training-log">
+      <h3>${translate("log.title")}</h3>
+      ${
+        session.log.length === 0
+          ? `<p>${translate("log.empty")}</p>`
+          : `<ol>
+              ${[...session.log]
+                .reverse()
+                .map(
+                  (entry) => `
+                    <li class="${entry.quality}">
+                      <strong>${translate(`shot.${entry.result}`)}</strong>
+                      <span>${coordinateColumnLabel(state.language, entry.coordinate.col)}${entry.coordinate.row + 1}</span>
+                      <small>${translate(`training.feedback.${entry.feedbackId}`)}</small>
+                    </li>
+                  `,
+                )
+                .join("")}
+            </ol>`
+      }
+    </section>
+  `;
+}
+
 function renderOnline() {
   const snapshot = state.online.snapshot;
   if (state.online.session || snapshot) {
@@ -1215,7 +1335,7 @@ function renderBoard(board, { kind, title, disabled = false }) {
             const buttonDisabled = disabled || kind === "own" || cell.shot;
             return `<button
               class="cell ${cellClass(cell, kind, board, coordinate)}"
-              data-action="${kind === "target" ? "shot" : kind === "online-target" ? "online-shot" : kind === "setup" ? "setup-cell" : ""}"
+              data-action="${kind === "target" ? "shot" : kind === "online-target" ? "online-shot" : kind === "training-target" ? "training-shot" : kind === "setup" ? "setup-cell" : ""}"
               data-row="${row}"
               data-col="${col}"
               aria-label="${label}"
@@ -1291,6 +1411,7 @@ root.addEventListener("click", async (event) => {
   if (action === "toggle-settings") toggleSettings();
   if (action === "start-hotseat") startSetup("hotseat");
   if (action === "start-agent") startSetup("agent");
+  if (action === "start-training") startTraining();
   if (action === "show-online") showOnline();
   if (action === "select-preset") selectPreset(button.dataset.presetId);
   if (action === "audio-toggle") toggleAudio();
@@ -1305,8 +1426,11 @@ root.addEventListener("click", async (event) => {
   if (action === "randomize") randomizeSetup();
   if (action === "reset") resetSetup();
   if (action === "ready") readySetup();
+  if (action === "select-training-scenario") startTraining(button.dataset.scenarioId);
+  if (action === "restart-training") startTraining(state.training.scenarioId);
   if (action === "continue-pass") continueAfterPass();
   if (action === "setup-cell") handleSetupCell(readCoordinate(button));
+  if (action === "training-shot") handleTrainingShot(readCoordinate(button));
   if (action === "shot") handleLocalShot(readCoordinate(button));
   if (action === "online-shot") handleOnlineShot(readCoordinate(button));
   if (action === "online-create") await onlineCreate();
@@ -1385,12 +1509,24 @@ function showOnline() {
   render();
 }
 
+function startTraining(scenarioId = state.training.scenarioId) {
+  closeRemote();
+  state.settingsOpen = false;
+  state.mode = "training";
+  state.screen = "training";
+  state.training.scenarioId = scenarioId || "checkerboard";
+  state.training.session = createTrainingSession(state.training.scenarioId);
+  state.resultModalDismissed = null;
+  render();
+}
+
 function goToMenu() {
   closeRemote();
   state.settingsOpen = false;
   state.screen = "menu";
   state.mode = null;
   state.game = null;
+  state.training.session = null;
   state.online.error = "";
   state.online.status = "";
   state.resultModalDismissed = null;
@@ -1597,6 +1733,25 @@ function handleLocalShot(coordinate) {
     }
   }
 
+  render();
+}
+
+function handleTrainingShot(coordinate) {
+  const session = state.training.session;
+  if (!session || session.phase !== "playing") {
+    return;
+  }
+
+  playSound("shot");
+  try {
+    state.training.session = applyTrainingShot(session, coordinate);
+    playShotOutcome(state.training.session.log.at(-1).result);
+    if (state.training.session.phase === "finished") {
+      playSound("victory");
+    }
+  } catch {
+    return;
+  }
   render();
 }
 
@@ -2192,7 +2347,7 @@ function visibleShipForCell(cell, kind, board, coordinate) {
   if ((kind === "own" || kind === "setup") && cell.shipId) {
     return findShipForCoordinate(board, coordinate);
   }
-  if ((kind === "target" || kind === "online-target") && cell.shot === "sunk" && cell.shipId) {
+  if ((kind === "target" || kind === "online-target" || kind === "training-target") && cell.shot === "sunk" && cell.shipId) {
     return findShipForCoordinate(board, coordinate) ?? findRevealedSunkShip(board, cell.shipId, coordinate);
   }
   return null;
