@@ -782,7 +782,9 @@ input {
 .profile-panel span,
 .profile-recent h4,
 .profile-leaderboard h4,
-.profile-achievements h4 {
+.profile-achievements h4,
+.competition-card h4,
+.rating-history h4 {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
@@ -831,13 +833,61 @@ input {
 
 .profile-recent,
 .profile-leaderboard,
-.profile-achievements {
+.profile-achievements,
+.competition-card,
+.rating-history {
   display: grid;
   gap: 8px;
 }
 
+.competition-card {
+  padding: 12px;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.competition-card-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.competition-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.competition-stats div {
+  display: grid;
+  gap: 4px;
+  min-height: 64px;
+  align-content: center;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.competition-stats strong {
+  color: var(--accent-strong);
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.competition-series {
+  padding: 8px 10px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 8px;
+}
+
 .profile-recent ol,
-.profile-leaderboard ol {
+.profile-leaderboard ol,
+.rating-history ol {
   display: grid;
   gap: 6px;
   max-height: 170px;
@@ -848,7 +898,8 @@ input {
 }
 
 .profile-recent li,
-.profile-leaderboard li {
+.profile-leaderboard li,
+.rating-history li {
   display: grid;
   grid-template-columns: minmax(72px, auto) minmax(0, 1fr) auto;
   gap: 8px;
@@ -858,7 +909,8 @@ input {
 }
 
 .profile-recent li span,
-.profile-leaderboard li span {
+.profile-leaderboard li span,
+.rating-history li span {
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
@@ -869,9 +921,18 @@ input {
 }
 
 .profile-recent li small,
-.profile-leaderboard li small {
+.profile-leaderboard li small,
+.rating-history li small {
   color: var(--muted);
   font-weight: 700;
+}
+
+.rating-history li.is-positive strong {
+  color: var(--accent-strong);
+}
+
+.rating-history li.is-negative strong {
+  color: var(--sunk);
 }
 
 .history-panel {
@@ -2524,11 +2585,13 @@ input {
   }
 
   .battle-report-grid,
-  .achievement-list {
+  .achievement-list,
+  .competition-stats {
     grid-template-columns: 1fr;
   }
 
-  .profile-recent li {
+  .profile-recent li,
+  .rating-history li {
     grid-template-columns: 1fr;
   }
 

@@ -369,6 +369,106 @@ test("player profiles include online rating and season stats", async () => {
   });
 });
 
+test("player profiles include competition rank, rating history, and best-of-three series", async () => {
+  const db = new MemoryD1();
+  await recordCompletedMatch(
+    db,
+    rivalUser,
+    {
+      ...completedMatchPayload(),
+      id: "rival-online-win-1",
+      mode: "online",
+      result: "win",
+      opponent: "Captain Test",
+      playedAt: "2026-07-01T12:00:00.000Z",
+    },
+    { source: "server" },
+  );
+  await recordCompletedMatch(
+    db,
+    rivalUser,
+    {
+      ...completedMatchPayload(),
+      id: "rival-online-win-2",
+      mode: "online",
+      result: "win",
+      opponent: "Captain Test",
+      playedAt: "2026-07-02T12:00:00.000Z",
+    },
+    { source: "server" },
+  );
+  await recordCompletedMatch(
+    db,
+    profileUser,
+    {
+      ...completedMatchPayload(),
+      id: "series-win-1",
+      mode: "online",
+      result: "win",
+      opponent: "Rival Captain",
+      playedAt: "2026-07-03T12:00:00.000Z",
+    },
+    { source: "server" },
+  );
+  await recordCompletedMatch(
+    db,
+    profileUser,
+    {
+      ...completedMatchPayload(),
+      id: "series-loss",
+      mode: "online",
+      result: "loss",
+      opponent: "Rival Captain",
+      playedAt: "2026-07-04T12:00:00.000Z",
+    },
+    { source: "server" },
+  );
+  await recordCompletedMatch(
+    db,
+    profileUser,
+    {
+      ...completedMatchPayload(),
+      id: "series-win-2",
+      mode: "online",
+      result: "win",
+      opponent: "Rival Captain",
+      playedAt: "2026-07-05T12:00:00.000Z",
+    },
+    { source: "server" },
+  );
+
+  const profile = await getPlayerProfile(db, profileUser, { now: new Date("2026-07-06T00:00:00.000Z") });
+
+  assert.deepEqual(profile.competition.rank, {
+    global: 2,
+    season: 2,
+    totalPlayers: 2,
+    seasonPlayers: 2,
+  });
+  assert.deepEqual(profile.competition.bestOfThree, {
+    opponent: "Rival Captain",
+    wins: 2,
+    losses: 1,
+    games: 3,
+    neededWins: 2,
+    status: "won",
+  });
+  assert.deepEqual(
+    profile.competition.ratingHistory.map((entry) => [
+      entry.id,
+      entry.result,
+      entry.before,
+      entry.after,
+      entry.delta,
+    ]),
+    [
+      ["series-win-2", "win", 1008, 1032, 24],
+      ["series-loss", "loss", 1024, 1008, -16],
+      ["series-win-1", "win", 1000, 1024, 24],
+    ],
+  );
+});
+
 test("leaderboard endpoint ranks online players by rating", async () => {
   const db = new MemoryD1();
   await recordCompletedMatch(db, profileUser, {
@@ -578,6 +678,18 @@ class MemoryStatement {
         .map((match) => ({ result: match.result, played_at: match.played_at }));
     }
 
+    if (this.sql.startsWith("SELECT id, result, opponent, played_at")) {
+      return this.matchesForUser()
+        .filter((match) => match.mode === "online")
+        .sort((first, second) => first.played_at.localeCompare(second.played_at))
+        .map((match) => ({
+          id: match.id,
+          result: match.result,
+          opponent: match.opponent,
+          played_at: match.played_at,
+        }));
+    }
+
     if (this.sql.startsWith("SELECT result, player_shots")) {
       return this.matchesForUser()
         .sort((first, second) => first.played_at.localeCompare(second.played_at))
@@ -588,6 +700,21 @@ class MemoryStatement {
           player_misses: match.player_misses,
           player_sunk: match.player_sunk,
           accuracy: match.accuracy,
+          played_at: match.played_at,
+        }));
+    }
+
+    if (this.sql.startsWith("SELECT user_key, result, played_at")) {
+      return this.db.matches
+        .filter((match) => match.mode === "online")
+        .sort(
+          (first, second) =>
+            first.user_key.localeCompare(second.user_key) ||
+            first.played_at.localeCompare(second.played_at),
+        )
+        .map((match) => ({
+          user_key: match.user_key,
+          result: match.result,
           played_at: match.played_at,
         }));
     }

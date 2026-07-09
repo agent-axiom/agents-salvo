@@ -10,7 +10,7 @@ export async function getPlayerProfile(db, user, { now = new Date() } = {}) {
   assertProfileDb(db);
   await upsertUser(db, user);
   const userKey = userSubject(user);
-  const [summaryRow, modeRows, streakRows, recentRows, onlineRows, achievementRows] = await Promise.all([
+  const [summaryRow, modeRows, streakRows, recentRows, onlineRows, achievementRows, competitionRows] = await Promise.all([
     db
       .prepare(
         `SELECT COUNT(*) AS total_matches,
@@ -59,7 +59,7 @@ export async function getPlayerProfile(db, user, { now = new Date() } = {}) {
       .all(),
     db
       .prepare(
-        `SELECT result, played_at
+        `SELECT id, result, opponent, played_at
         FROM matches
         WHERE user_key = ? AND mode = 'online'
         ORDER BY played_at ASC`,
@@ -75,6 +75,14 @@ export async function getPlayerProfile(db, user, { now = new Date() } = {}) {
       )
       .bind(userKey)
       .all(),
+    db
+      .prepare(
+        `SELECT user_key, result, played_at
+        FROM matches
+        WHERE mode = 'online'
+        ORDER BY user_key ASC, played_at ASC`,
+      )
+      .all(),
   ]);
 
   return {
@@ -82,6 +90,12 @@ export async function getPlayerProfile(db, user, { now = new Date() } = {}) {
     rating: summarizeOnlineRating(onlineRows.results ?? [], now),
     season: summarizeSeason(onlineRows.results ?? [], now),
     achievements: summarizeAchievements(achievementRows.results ?? []),
+    competition: summarizeCompetition({
+      userKey,
+      onlineRows: onlineRows.results ?? [],
+      competitionRows: competitionRows.results ?? [],
+      now,
+    }),
     recentMatches: (recentRows.results ?? []).map(publicMatch),
   };
 }
@@ -364,6 +378,114 @@ function summarizeOnlineRating(rows, now) {
     onlineLosses,
     onlineWinRate: onlineMatches === 0 ? 0 : Math.round((onlineWins / onlineMatches) * 100),
     currentOnlineWinStreak: currentWinStreak([...rows].reverse()),
+  };
+}
+
+function summarizeCompetition({ userKey, onlineRows, competitionRows, now }) {
+  const globalRanking = rankedCompetitionPlayers(competitionRows, now);
+  const seasonId = seasonKey(now);
+  const seasonRanking = rankedCompetitionPlayers(
+    competitionRows.filter((row) => seasonKey(new Date(row.played_at)) === seasonId),
+    now,
+  );
+  return {
+    rank: {
+      global: rankForUser(globalRanking, userKey),
+      season: rankForUser(seasonRanking, userKey),
+      totalPlayers: globalRanking.length,
+      seasonPlayers: seasonRanking.length,
+    },
+    ratingHistory: ratingHistory(onlineRows),
+    bestOfThree: bestOfThreeSeries(onlineRows),
+  };
+}
+
+function rankedCompetitionPlayers(rows, now) {
+  const players = new Map();
+  for (const row of rows) {
+    const userKey = row.user_key;
+    if (!players.has(userKey)) {
+      players.set(userKey, []);
+    }
+    players.get(userKey).push(row);
+  }
+  return [...players.entries()]
+    .map(([userKey, matches]) => {
+      const rating = summarizeOnlineRating(matches, now);
+      return {
+        userKey,
+        rating: rating.mmr,
+        wins: rating.onlineWins,
+        matches: rating.onlineMatches,
+      };
+    })
+    .sort(
+      (first, second) =>
+        second.rating - first.rating ||
+        second.wins - first.wins ||
+        first.matches - second.matches ||
+        first.userKey.localeCompare(second.userKey),
+    )
+    .map((entry, index) => ({ ...entry, rank: index + 1 }));
+}
+
+function rankForUser(ranking, userKey) {
+  return ranking.find((entry) => entry.userKey === userKey)?.rank ?? null;
+}
+
+function ratingHistory(rows) {
+  const orderedRows = [...rows].sort((first, second) => String(first.played_at).localeCompare(second.played_at));
+  const seen = [];
+  const history = [];
+  for (const row of orderedRows) {
+    const before = summarizeOnlineRating(seen, new Date(row.played_at));
+    seen.push(row);
+    const after = summarizeOnlineRating(seen, new Date(row.played_at));
+    history.push({
+      id: row.id,
+      result: row.result,
+      opponent: row.opponent || "online",
+      playedAt: row.played_at,
+      before: before.mmr,
+      after: after.mmr,
+      delta: after.mmr - before.mmr,
+      label: after.label,
+    });
+  }
+  return history.reverse().slice(0, 8);
+}
+
+function bestOfThreeSeries(rows) {
+  const orderedRows = [...rows].sort((first, second) => String(second.played_at).localeCompare(first.played_at));
+  const latestOpponent = orderedRows[0]?.opponent;
+  if (!latestOpponent) {
+    return {
+      opponent: "",
+      wins: 0,
+      losses: 0,
+      games: 0,
+      neededWins: 2,
+      status: "none",
+    };
+  }
+
+  const games = [];
+  for (const row of orderedRows) {
+    if (row.opponent !== latestOpponent || games.length >= 3) {
+      break;
+    }
+    games.push(row);
+  }
+
+  const wins = games.filter((row) => row.result === "win").length;
+  const losses = games.filter((row) => row.result === "loss").length;
+  return {
+    opponent: latestOpponent,
+    wins,
+    losses,
+    games: games.length,
+    neededWins: 2,
+    status: wins >= 2 ? "won" : losses >= 2 ? "lost" : "active",
   };
 }
 

@@ -517,6 +517,7 @@ function renderProfilePanel() {
               ${renderProfileStat("profile.season", season?.id ?? "—")}
               ${renderProfileStat("profile.seasonRecord", `${season?.wins ?? 0}-${season?.losses ?? 0}`)}
             </div>
+            ${renderCompetitionProfile(profile.competition)}
             ${renderProfileAchievements(profile.achievements ?? [])}
             ${renderRecentMatches(profile.recentMatches ?? [])}
             ${renderLeaderboard(profile.leaderboard)}
@@ -525,6 +526,79 @@ function renderProfilePanel() {
       }
     </section>
   `;
+}
+
+function renderCompetitionProfile(competition) {
+  const rank = competition?.rank ?? {};
+  const bestOfThree = competition?.bestOfThree ?? {};
+  const history = competition?.ratingHistory ?? [];
+  return `
+    <div class="competition-card">
+      <div class="competition-card-header">
+        <div>
+          <h4>${translate("competition.title")}</h4>
+          <p>${translate("competition.subtitle")}</p>
+        </div>
+      </div>
+      <div class="competition-stats">
+        ${renderCompetitionStat("competition.globalRank", formatRank(rank.global, rank.totalPlayers))}
+        ${renderCompetitionStat("competition.seasonRank", formatRank(rank.season, rank.seasonPlayers))}
+        ${renderCompetitionStat(
+          "competition.bestOfThree",
+          translate("competition.seriesScore", {
+            wins: bestOfThree.wins ?? 0,
+            losses: bestOfThree.losses ?? 0,
+          }),
+        )}
+      </div>
+      <p class="competition-series">
+        ${translate(`competition.seriesStatus.${bestOfThree.status ?? "none"}`, {
+          opponent: bestOfThree.opponent || "—",
+        })}
+      </p>
+      <div class="rating-history">
+        <h4>${translate("competition.ratingHistory")}</h4>
+        ${
+          history.length
+            ? `<ol>
+                ${history
+                  .map(
+                    (entry) => `
+                      <li class="${entry.delta >= 0 ? "is-positive" : "is-negative"}">
+                        <strong>${signedNumber(entry.delta)}</strong>
+                        <span>${escapeHtml(entry.opponent || "online")}</span>
+                        <small>${translate("competition.ratingDelta", {
+                          before: entry.before,
+                          after: entry.after,
+                        })}</small>
+                      </li>
+                    `,
+                  )
+                  .join("")}
+              </ol>`
+            : `<p>${translate("competition.noRatingHistory")}</p>`
+        }
+      </div>
+    </div>
+  `;
+}
+
+function renderCompetitionStat(key, value) {
+  return `
+    <div>
+      <span>${translate(key)}</span>
+      <strong>${value}</strong>
+    </div>
+  `;
+}
+
+function formatRank(rank, total) {
+  return rank ? `#${rank} / ${total}` : translate("competition.noRank");
+}
+
+function signedNumber(value) {
+  const number = Number(value);
+  return number > 0 ? `+${number}` : String(number);
 }
 
 function renderProfileAchievements(achievements) {

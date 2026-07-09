@@ -98,6 +98,18 @@ test("result modal includes a player battle report with achievements", () => {
   assert.match(i18n, /"achievement\.sharpshooter\.title"/);
 });
 
+test("profile exposes online competition rank, best-of-three, and rating history", () => {
+  assert.match(app, /function renderCompetitionProfile/);
+  assert.match(app, /profile\.competition/);
+  assert.match(app, /class="competition-card"/);
+  assert.match(app, /class="rating-history"/);
+  assert.match(app, /competition\.bestOfThree/);
+  assert.match(css, /\.competition-card/);
+  assert.match(css, /\.rating-history/);
+  assert.match(i18n, /"competition\.title"/);
+  assert.match(i18n, /"competition\.ratingHistory"/);
+});
+
 test("board cells expose localized state in aria labels", () => {
   assert.match(app, /function cellAriaLabel/);
   assert.match(app, /board\.state\./);
