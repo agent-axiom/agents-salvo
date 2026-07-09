@@ -1246,6 +1246,7 @@ input {
 }
 
 .training-score span,
+.training-progress > span,
 .training-scenarios > span,
 .training-result > span {
   color: var(--muted);
@@ -1258,6 +1259,46 @@ input {
 .training-score strong {
   color: var(--accent-strong);
   font-size: 22px;
+  line-height: 1;
+}
+
+.training-progress {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--line));
+  border-radius: 8px;
+}
+
+.training-progress > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.training-progress > div > div {
+  display: grid;
+  gap: 4px;
+  align-content: center;
+  min-height: 58px;
+  padding: 9px;
+  background: color-mix(in srgb, var(--surface-strong) 84%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.training-progress > div > div span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.training-progress > div > div strong {
+  color: var(--accent-strong);
+  font-size: 20px;
   line-height: 1;
 }
 
@@ -2795,6 +2836,11 @@ input {
   }
 
   .setup-primary-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .training-score,
+  .training-progress > div {
     grid-template-columns: 1fr;
   }
 

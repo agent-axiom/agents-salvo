@@ -86,6 +86,22 @@ export function trainingSummary(session) {
   };
 }
 
+export function updateTrainingProgress(progress = {}, session, playedAt = new Date().toISOString()) {
+  const summary = trainingSummary(session);
+  const previousProgress = progress?.[session.scenarioId] ?? {};
+
+  return {
+    ...(progress ?? {}),
+    [session.scenarioId]: {
+      completions: safeNumber(previousProgress.completions) + 1,
+      bestScore: Math.max(safeNumber(previousProgress.bestScore), summary.score),
+      bestAccuracy: Math.max(safeNumber(previousProgress.bestAccuracy), summary.accuracy),
+      bestRatingId: strongerTrainingRating(previousProgress.bestRatingId, summary.ratingId),
+      lastPlayedAt: playedAt,
+    },
+  };
+}
+
 function scenarioById(scenarioId) {
   const scenario = trainingScenarios.find((candidate) => candidate.id === scenarioId);
   if (!scenario) {
@@ -150,4 +166,21 @@ function trainingRating({ phase, shots, accuracy, score }) {
     return "steady";
   }
   return "needsWork";
+}
+
+const trainingRatingRank = {
+  needsWork: 0,
+  steady: 1,
+  excellent: 2,
+};
+
+function strongerTrainingRating(previousRatingId, nextRatingId) {
+  const previousRank = trainingRatingRank[previousRatingId] ?? -1;
+  const nextRank = trainingRatingRank[nextRatingId] ?? -1;
+  return previousRank >= nextRank ? previousRatingId : nextRatingId;
+}
+
+function safeNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
 }

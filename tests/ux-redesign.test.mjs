@@ -139,6 +139,15 @@ test("training mode exposes focused drills from the main game hub", () => {
   assert.match(i18n, /"training\.scenario\.checkerboard\.name"/);
 });
 
+test("training mode saves and displays local drill progress", () => {
+  assert.match(app, /trainingProgressStorageKey/);
+  assert.match(app, /updateTrainingProgress/);
+  assert.match(app, /function renderTrainingProgress/);
+  assert.match(app, /localStorage\.setItem\(trainingProgressStorageKey/);
+  assert.match(css, /\.training-progress/);
+  assert.match(i18n, /"training\.bestScore"/);
+});
+
 test("board cells expose localized state in aria labels", () => {
   assert.match(app, /function cellAriaLabel/);
   assert.match(app, /board\.state\./);

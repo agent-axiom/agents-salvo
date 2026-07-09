@@ -8,6 +8,7 @@ import {
   trainingScenarios,
   trainingScenarioForDrill,
   trainingSummary,
+  updateTrainingProgress,
 } from "../src/core/training.js";
 
 test("training scenarios expose search, finishing, and endgame drills", () => {
@@ -25,6 +26,39 @@ test("trainingScenarioForDrill maps coaching drills to playable scenarios", () =
   assert.equal(trainingScenarioForDrill("salvoControl"), "endgame");
   assert.equal(trainingScenarioForDrill("openingMap"), "checkerboard");
   assert.equal(trainingScenarioForDrill("unknown"), "checkerboard");
+});
+
+test("updateTrainingProgress records completions and keeps best results", () => {
+  let session = createTrainingSession("endgame");
+  session = applyTrainingShot(session, { row: 1, col: 1 });
+  session = applyTrainingShot(session, { row: 3, col: 4 });
+  session = applyTrainingShot(session, { row: 5, col: 2 });
+
+  const firstProgress = updateTrainingProgress({}, session, "2026-07-09T18:30:00.000Z");
+  let weakerSession = createTrainingSession("endgame");
+  for (const coordinate of [
+    { row: 0, col: 0 },
+    { row: 0, col: 1 },
+    { row: 0, col: 2 },
+    { row: 0, col: 3 },
+    { row: 0, col: 4 },
+    { row: 0, col: 5 },
+    { row: 2, col: 0 },
+    { row: 2, col: 2 },
+    { row: 1, col: 1 },
+  ]) {
+    weakerSession = applyTrainingShot(weakerSession, coordinate);
+  }
+  const nextProgress = updateTrainingProgress(firstProgress, weakerSession, "2026-07-09T18:31:00.000Z");
+
+  assert.equal(weakerSession.phase, "finished");
+  assert.deepEqual(nextProgress.endgame, {
+    completions: 2,
+    bestScore: 12,
+    bestAccuracy: 100,
+    bestRatingId: "excellent",
+    lastPlayedAt: "2026-07-09T18:31:00.000Z",
+  });
 });
 
 test("checkerboard training rewards patterned search before random water shots", () => {

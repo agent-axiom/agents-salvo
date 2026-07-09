@@ -22,6 +22,7 @@ import {
   trainingScenarios,
   trainingScenarioForDrill,
   trainingSummary,
+  updateTrainingProgress,
 } from "./core/training.js";
 import { coordinateColumnLabel, getInitialLanguage, languages, t } from "./i18n.js";
 import { RemoteClient } from "./remote.js";
@@ -29,6 +30,7 @@ import { RemoteClient } from "./remote.js";
 const root = document.querySelector("#app");
 const audio = createAudioController();
 const authTokenStorageKey = "salvo.authToken";
+const trainingProgressStorageKey = "salvo.trainingProgress";
 let telegramWidgetScheduled = false;
 
 const state = {
@@ -85,6 +87,7 @@ const state = {
   training: {
     scenarioId: "checkerboard",
     session: null,
+    progress: getInitialTrainingProgress(),
   },
 };
 
@@ -110,6 +113,15 @@ function getInitialAudioEnabled() {
 
 function getInitialAuthToken() {
   return localStorage.getItem(authTokenStorageKey) || "";
+}
+
+function getInitialTrainingProgress() {
+  try {
+    const savedProgress = JSON.parse(localStorage.getItem(trainingProgressStorageKey) || "{}");
+    return savedProgress && typeof savedProgress === "object" ? savedProgress : {};
+  } catch {
+    return {};
+  }
 }
 
 function translate(key, params) {
@@ -932,6 +944,7 @@ function renderTraining() {
           ${renderTrainingStat("training.shots", `${summary.shots}/${session.shotLimit}`)}
           ${renderTrainingStat("result.accuracy", `${summary.accuracy}%`)}
         </div>
+        ${renderTrainingProgress(session.scenarioId)}
         ${renderTrainingScenarios(session.scenarioId)}
         ${renderTrainingResult(session, summary)}
         ${renderTrainingLog(session)}
@@ -943,6 +956,20 @@ function renderTraining() {
           disabled: session.phase !== "playing",
         })}
       </section>
+    </section>
+  `;
+}
+
+function renderTrainingProgress(scenarioId) {
+  const progress = state.training.progress?.[scenarioId] ?? {};
+  return `
+    <section class="training-progress">
+      <span>${translate("training.progress")}</span>
+      <div>
+        ${renderTrainingStat("training.completed", progress.completions ?? 0)}
+        ${renderTrainingStat("training.bestScore", progress.bestScore ?? 0)}
+        ${renderTrainingStat("training.bestAccuracy", `${progress.bestAccuracy ?? 0}%`)}
+      </div>
     </section>
   `;
 }
@@ -1754,12 +1781,22 @@ function handleTrainingShot(coordinate) {
     state.training.session = applyTrainingShot(session, coordinate);
     playShotOutcome(state.training.session.log.at(-1).result);
     if (state.training.session.phase === "finished") {
+      saveTrainingProgress(state.training.session);
       playSound("victory");
     }
   } catch {
     return;
   }
   render();
+}
+
+function saveTrainingProgress(session) {
+  state.training.progress = updateTrainingProgress(state.training.progress, session);
+  try {
+    localStorage.setItem(trainingProgressStorageKey, JSON.stringify(state.training.progress));
+  } catch {
+    // Training should continue even when local storage is blocked.
+  }
 }
 
 function runAgentTurns(game) {
