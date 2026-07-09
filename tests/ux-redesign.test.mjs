@@ -114,14 +114,19 @@ test("smart battle adds hard agent difficulty and post-battle coaching", () => {
   assert.match(app, /value="hard"/);
   assert.match(app, /function renderBattleCoaching/);
   assert.match(app, /class="battle-coaching"/);
+  assert.match(app, /class="training-plan"/);
+  assert.match(app, /trainingPlan\.steps/);
   assert.match(app, /data-action="start-coaching-training"/);
   assert.match(app, /data-drill-id/);
   assert.match(app, /trainingScenarioForDrill/);
   assert.match(app, /coaching\.diagnosis/);
   assert.match(app, /coaching\.drill/);
+  assert.match(app, /report\.trainingPlan/);
   assert.match(css, /\.battle-coaching/);
+  assert.match(css, /\.training-plan/);
   assert.match(i18n, /"agent\.hard"/);
   assert.match(i18n, /"coaching\.title"/);
+  assert.match(i18n, /"coaching\.plan"/);
   assert.match(i18n, /"coaching\.startTraining"/);
 });
 

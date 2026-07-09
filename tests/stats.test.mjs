@@ -79,6 +79,26 @@ test("buildBattleReport recommends a training drill after low-accuracy losses", 
   });
 });
 
+test("buildBattleReport creates a personalized multi-step training plan", () => {
+  const log = [
+    { playerId: "p1", result: "miss" },
+    { playerId: "p2", result: "hit" },
+    { playerId: "p1", result: "hit" },
+    { playerId: "p1", result: "miss" },
+    { playerId: "p2", result: "sunk" },
+    { playerId: "p1", result: "miss" },
+    { playerId: "p2", result: "sunk" },
+  ];
+
+  const report = buildBattleReport(log, "p2", "p1");
+
+  assert.deepEqual(report.trainingPlan.steps, [
+    { drillId: "checkerboard", focusId: "searchPattern", reasonId: "lowAccuracy" },
+    { drillId: "lineFinish", focusId: "targetDiscipline", reasonId: "finishShips" },
+    { drillId: "salvoControl", focusId: "endgame", reasonId: "steady" },
+  ]);
+});
+
 test("achievementsForBattleStats derives durable medals from saved match statistics", () => {
   assert.deepEqual(
     achievementsForBattleStats({

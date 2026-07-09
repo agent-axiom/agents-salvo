@@ -1306,15 +1306,19 @@ function renderBattleReport(report, ratingChange = null) {
             : `<p>${translate("result.noAchievements")}</p>`
         }
       </div>
-      ${renderBattleCoaching(report.coaching)}
+      ${renderBattleCoaching(report.coaching, report.trainingPlan)}
     </section>
   `;
 }
 
-function renderBattleCoaching(coaching) {
+function renderBattleCoaching(coaching, trainingPlan) {
   if (!coaching) {
     return "";
   }
+  const trainingPlanSteps =
+    Array.isArray(trainingPlan?.steps) && trainingPlan.steps.length
+      ? trainingPlan.steps
+      : [{ drillId: coaching.drillId, focusId: coaching.focusId, reasonId: coaching.diagnosisId }];
   return `
     <section class="battle-coaching">
       <span>${translate("coaching.title")}</span>
@@ -1329,11 +1333,32 @@ function renderBattleCoaching(coaching) {
           <strong>${translate(`coaching.drill.${coaching.drillId}`)}</strong>
         </div>
       </div>
-      <button
-        class="training-link"
-        data-action="start-coaching-training"
-        data-drill-id="${escapeHtml(coaching.drillId)}"
-      >${translate("coaching.startTraining")}</button>
+      <div class="training-plan">
+        <span>${translate("coaching.plan")}</span>
+        <ol>
+          ${trainingPlanSteps
+            .map(
+              (step, index) => `
+                <li>
+                  <span>${index + 1}</span>
+                  <div>
+                    <strong>${translate(`coaching.drill.${step.drillId}`)}</strong>
+                    <small>
+                      ${translate(`coaching.focus.${step.focusId}`)} ·
+                      ${translate(`coaching.diagnosis.${step.reasonId}`)}
+                    </small>
+                  </div>
+                  <button
+                    class="training-link"
+                    data-action="start-coaching-training"
+                    data-drill-id="${escapeHtml(step.drillId)}"
+                  >${translate("coaching.startTraining")}</button>
+                </li>
+              `,
+            )
+            .join("")}
+        </ol>
+      </div>
     </section>
   `;
 }

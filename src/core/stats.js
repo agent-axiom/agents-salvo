@@ -39,6 +39,7 @@ export function buildBattleReport(log, winnerId, playerId = winnerId) {
   const opponent = opponentId ? statsForPlayer(summary.players, opponentId) : withAccuracy(createPlayerStats("opponent"));
   const result = winnerId === playerId ? "win" : "loss";
   const finalShot = log.at(-1);
+  const coaching = coachingForBattle(result, player);
 
   return {
     result,
@@ -54,7 +55,8 @@ export function buildBattleReport(log, winnerId, playerId = winnerId) {
       accuracy: player.accuracy,
       finalShotByPlayer: finalShot?.playerId === playerId && finalShot?.result === "sunk",
     }),
-    coaching: coachingForBattle(result, player),
+    coaching,
+    trainingPlan: trainingPlanForBattle(result, player, coaching),
   };
 }
 
@@ -153,6 +155,54 @@ function coachingForBattle(result, player) {
     focusId: "endgame",
     drillId: "openingMap",
   };
+}
+
+function trainingPlanForBattle(result, player, primaryCoaching) {
+  const steps = [];
+  addTrainingPlanStep(steps, {
+    drillId: primaryCoaching.drillId,
+    focusId: primaryCoaching.focusId,
+    reasonId: primaryCoaching.diagnosisId,
+  });
+
+  if (player.accuracy < 50 || player.misses >= Math.max(3, player.hits + 1)) {
+    addTrainingPlanStep(steps, {
+      drillId: "checkerboard",
+      focusId: "searchPattern",
+      reasonId: "lowAccuracy",
+    });
+  }
+  if (result === "loss" || player.hits > player.sunk) {
+    addTrainingPlanStep(steps, {
+      drillId: "lineFinish",
+      focusId: "targetDiscipline",
+      reasonId: "finishShips",
+    });
+  }
+  if (result === "win" && player.accuracy >= 70) {
+    addTrainingPlanStep(steps, {
+      drillId: "salvoControl",
+      focusId: "pressure",
+      reasonId: "precision",
+    });
+  }
+
+  for (const fallbackStep of [
+    { drillId: "checkerboard", focusId: "searchPattern", reasonId: "lowAccuracy" },
+    { drillId: "lineFinish", focusId: "targetDiscipline", reasonId: "finishShips" },
+    { drillId: "salvoControl", focusId: "endgame", reasonId: "steady" },
+  ]) {
+    addTrainingPlanStep(steps, fallbackStep);
+  }
+
+  return { steps: steps.slice(0, 3) };
+}
+
+function addTrainingPlanStep(steps, step) {
+  if (steps.some((candidate) => candidate.drillId === step.drillId)) {
+    return;
+  }
+  steps.push(step);
 }
 
 function numberValue(value) {

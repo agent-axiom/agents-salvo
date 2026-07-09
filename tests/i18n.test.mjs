@@ -121,6 +121,7 @@ test("i18n translates result modal, theme, and history labels in every language"
     "coaching.title",
     "coaching.focus",
     "coaching.drill",
+    "coaching.plan",
     "coaching.startTraining",
     "coaching.diagnosis.precision",
     "coaching.diagnosis.lowAccuracy",

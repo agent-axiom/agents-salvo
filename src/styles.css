@@ -2345,6 +2345,66 @@ input {
   line-height: 1.2;
 }
 
+.training-plan {
+  display: grid;
+  gap: 8px;
+}
+
+.training-plan > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.training-plan ol {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.training-plan li {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.training-plan li > span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: var(--primary-ink);
+  background: var(--accent);
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.training-plan li div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.training-plan li strong {
+  color: var(--accent-strong);
+  line-height: 1.15;
+}
+
+.training-plan li small {
+  color: var(--muted);
+  line-height: 1.3;
+}
+
 .battle-coaching .training-link {
   justify-self: start;
   min-height: 38px;
@@ -2941,6 +3001,15 @@ input {
   .competition-stats,
   .coaching-grid {
     grid-template-columns: 1fr;
+  }
+
+  .training-plan li {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .training-plan .training-link {
+    grid-column: 1 / -1;
+    justify-self: stretch;
   }
 
   .profile-recent li,
