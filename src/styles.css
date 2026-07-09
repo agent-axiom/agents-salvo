@@ -1247,6 +1247,7 @@ input {
 
 .training-score span,
 .training-progress > span,
+.training-program-header span,
 .training-scenarios > span,
 .training-result > span {
   color: var(--muted);
@@ -1260,6 +1261,92 @@ input {
   color: var(--accent-strong);
   font-size: 22px;
   line-height: 1;
+}
+
+.training-program {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 58%),
+    var(--surface);
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 8px;
+}
+
+.training-program-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.training-program-header strong {
+  color: var(--accent-strong);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.training-program-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.training-program-grid > div {
+  display: grid;
+  gap: 4px;
+  min-height: 58px;
+  align-content: center;
+  padding: 9px;
+  background: color-mix(in srgb, var(--surface-strong) 86%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.training-program-grid span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.training-program-grid strong {
+  color: var(--accent-strong);
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.training-awards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.training-awards span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 5px 8px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface-strong) 76%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.training-awards span.is-earned {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+  box-shadow: 0 0 0 2px var(--glow);
+}
+
+.training-awards span.is-locked {
+  opacity: 0.58;
 }
 
 .training-progress {
@@ -2840,6 +2927,7 @@ input {
   }
 
   .training-score,
+  .training-program-grid,
   .training-progress > div {
     grid-template-columns: 1fr;
   }

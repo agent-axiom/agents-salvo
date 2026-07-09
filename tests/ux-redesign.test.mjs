@@ -148,6 +148,17 @@ test("training mode saves and displays local drill progress", () => {
   assert.match(i18n, /"training\.bestScore"/);
 });
 
+test("training mode exposes a daily chain, streak, and award shelf", () => {
+  assert.match(app, /trainingProgramSummary/);
+  assert.match(app, /function renderTrainingProgram/);
+  assert.match(app, /class="training-program"/);
+  assert.match(app, /class="training-awards"/);
+  assert.match(css, /\.training-program/);
+  assert.match(css, /\.training-awards/);
+  assert.match(i18n, /"training\.dailyGoal"/);
+  assert.match(i18n, /"training\.award\.threeDayStreak"/);
+});
+
 test("board cells expose localized state in aria labels", () => {
   assert.match(app, /function cellAriaLabel/);
   assert.match(app, /board\.state\./);

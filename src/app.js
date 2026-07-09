@@ -21,6 +21,7 @@ import {
   createTrainingSession,
   trainingScenarios,
   trainingScenarioForDrill,
+  trainingProgramSummary,
   trainingSummary,
   updateTrainingProgress,
 } from "./core/training.js";
@@ -939,6 +940,7 @@ function renderTraining() {
           <h2>${translate("training.title")}</h2>
           <p>${translate("training.subtitle")}</p>
         </div>
+        ${renderTrainingProgram()}
         <div class="training-score">
           ${renderTrainingStat("training.score", summary.score)}
           ${renderTrainingStat("training.shots", `${summary.shots}/${session.shotLimit}`)}
@@ -956,6 +958,35 @@ function renderTraining() {
           disabled: session.phase !== "playing",
         })}
       </section>
+    </section>
+  `;
+}
+
+function renderTrainingProgram() {
+  const program = trainingProgramSummary(state.training.progress);
+  return `
+    <section class="training-program">
+      <div class="training-program-header">
+        <span>${translate("training.program")}</span>
+        <strong>${program.completed}/${program.target}</strong>
+      </div>
+      <div class="training-program-grid">
+        ${renderTrainingStat("training.dailyGoal", `${program.completed}/${program.target}`)}
+        ${renderTrainingStat("training.streak", program.streak)}
+        ${renderTrainingStat("training.bestStreak", program.bestStreak)}
+        ${renderTrainingStat("training.nextDrill", translate(`training.scenario.${program.nextScenarioId}.name`))}
+      </div>
+      <div class="training-awards" aria-label="${translate("training.awards")}">
+        ${program.awards
+          .map(
+            (award) => `
+              <span class="${award.earned ? "is-earned" : "is-locked"}">
+                ${translate(`training.award.${award.id}`)}
+              </span>
+            `,
+          )
+          .join("")}
+      </div>
     </section>
   `;
 }

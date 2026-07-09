@@ -18,6 +18,9 @@ export const trainingScenarios = [
   },
 ];
 
+export const trainingProgramScenarioIds = ["checkerboard", "lineFinish", "endgame"];
+export const trainingProgramAwardIds = ["firstWatch", "chainComplete", "threeDayStreak", "sevenDayStreak"];
+
 export function createTrainingSession(scenarioId = "checkerboard") {
   const scenario = scenarioById(scenarioId);
   return {
@@ -89,6 +92,7 @@ export function trainingSummary(session) {
 export function updateTrainingProgress(progress = {}, session, playedAt = new Date().toISOString()) {
   const summary = trainingSummary(session);
   const previousProgress = progress?.[session.scenarioId] ?? {};
+  const playedDate = dateKey(playedAt);
 
   return {
     ...(progress ?? {}),
@@ -99,6 +103,29 @@ export function updateTrainingProgress(progress = {}, session, playedAt = new Da
       bestRatingId: strongerTrainingRating(previousProgress.bestRatingId, summary.ratingId),
       lastPlayedAt: playedAt,
     },
+    daily: updateDailyTrainingProgress(progress?.daily, session.scenarioId, playedDate),
+  };
+}
+
+export function trainingProgramSummary(progress = {}, today = new Date().toISOString()) {
+  const currentDate = dateKey(today);
+  const daily = progress?.daily ?? {};
+  const completedScenarioIds = daily.date === currentDate ? normalizedScenarioIds(daily.completedScenarioIds) : [];
+  const completed = Math.min(completedScenarioIds.length, trainingProgramScenarioIds.length);
+  const nextScenarioId =
+    trainingProgramScenarioIds.find((scenarioId) => !completedScenarioIds.includes(scenarioId)) ??
+    trainingProgramScenarioIds[0];
+  const earnedAwards = normalizedAwardIds(daily.awards);
+
+  return {
+    target: trainingProgramScenarioIds.length,
+    completed,
+    remaining: Math.max(0, trainingProgramScenarioIds.length - completed),
+    completedToday: completed >= trainingProgramScenarioIds.length,
+    nextScenarioId,
+    streak: safeNumber(daily.streak),
+    bestStreak: safeNumber(daily.bestStreak),
+    awards: trainingProgramAwardIds.map((id) => ({ id, earned: earnedAwards.includes(id) })),
   };
 }
 
@@ -178,6 +205,86 @@ function strongerTrainingRating(previousRatingId, nextRatingId) {
   const previousRank = trainingRatingRank[previousRatingId] ?? -1;
   const nextRank = trainingRatingRank[nextRatingId] ?? -1;
   return previousRank >= nextRank ? previousRatingId : nextRatingId;
+}
+
+function updateDailyTrainingProgress(previousDaily = {}, scenarioId, playedDate) {
+  const sameDay = previousDaily?.date === playedDate;
+  const completedScenarioIds = sameDay ? normalizedScenarioIds(previousDaily.completedScenarioIds) : [];
+  const awards = normalizedAwardIds(previousDaily.awards);
+  const nextDaily = {
+    date: playedDate,
+    completions: (sameDay ? safeNumber(previousDaily.completions) : 0) + 1,
+    completedScenarioIds: addUniqueScenarioId(completedScenarioIds, scenarioId),
+    goalCompletedDate: previousDaily?.goalCompletedDate ?? "",
+    streak: safeNumber(previousDaily?.streak),
+    bestStreak: safeNumber(previousDaily?.bestStreak),
+    awards,
+  };
+
+  const goalCompleted =
+    nextDaily.completedScenarioIds.length >= trainingProgramScenarioIds.length &&
+    nextDaily.goalCompletedDate !== playedDate;
+
+  if (!goalCompleted) {
+    return nextDaily;
+  }
+
+  const streak = isPreviousDate(nextDaily.goalCompletedDate, playedDate) ? nextDaily.streak + 1 : 1;
+  nextDaily.goalCompletedDate = playedDate;
+  nextDaily.streak = streak;
+  nextDaily.bestStreak = Math.max(nextDaily.bestStreak, streak);
+  nextDaily.awards = earnedTrainingAwards(awards, streak);
+  return nextDaily;
+}
+
+function earnedTrainingAwards(previousAwards, streak) {
+  const awards = [...previousAwards];
+  addUniqueAwardId(awards, "firstWatch");
+  addUniqueAwardId(awards, "chainComplete");
+  if (streak >= 3) {
+    addUniqueAwardId(awards, "threeDayStreak");
+  }
+  if (streak >= 7) {
+    addUniqueAwardId(awards, "sevenDayStreak");
+  }
+  return awards;
+}
+
+function addUniqueScenarioId(scenarioIds, scenarioId) {
+  if (!trainingProgramScenarioIds.includes(scenarioId) || scenarioIds.includes(scenarioId)) {
+    return scenarioIds;
+  }
+  return [...scenarioIds, scenarioId];
+}
+
+function addUniqueAwardId(awards, awardId) {
+  if (trainingProgramAwardIds.includes(awardId) && !awards.includes(awardId)) {
+    awards.push(awardId);
+  }
+}
+
+function normalizedScenarioIds(scenarioIds) {
+  return Array.isArray(scenarioIds)
+    ? scenarioIds.filter((scenarioId) => trainingProgramScenarioIds.includes(scenarioId))
+    : [];
+}
+
+function normalizedAwardIds(awardIds) {
+  return Array.isArray(awardIds) ? awardIds.filter((awardId) => trainingProgramAwardIds.includes(awardId)) : [];
+}
+
+function isPreviousDate(previousDate, nextDate) {
+  if (!previousDate) {
+    return false;
+  }
+  const previousTime = Date.parse(`${previousDate}T00:00:00.000Z`);
+  const nextTime = Date.parse(`${nextDate}T00:00:00.000Z`);
+  return Number.isFinite(previousTime) && Number.isFinite(nextTime) && nextTime - previousTime === 86_400_000;
+}
+
+function dateKey(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? new Date().toISOString().slice(0, 10) : date.toISOString().slice(0, 10);
 }
 
 function safeNumber(value) {
