@@ -53,6 +53,30 @@ test("buildBattleReport returns player-focused result, opponent stats, and earne
     report.achievements.map((achievement) => achievement.id),
     ["victory", "flawlessAim", "sharpshooter", "finalBlow"],
   );
+  assert.equal(report.coaching.diagnosisId, "precision");
+  assert.equal(report.coaching.drillId, "salvoControl");
+});
+
+test("buildBattleReport recommends a training drill after low-accuracy losses", () => {
+  const log = [
+    { playerId: "p1", result: "miss" },
+    { playerId: "p2", result: "hit" },
+    { playerId: "p2", result: "sunk" },
+    { playerId: "p1", result: "miss" },
+    { playerId: "p2", result: "hit" },
+    { playerId: "p2", result: "sunk" },
+    { playerId: "p1", result: "miss" },
+    { playerId: "p2", result: "sunk" },
+  ];
+
+  const report = buildBattleReport(log, "p2", "p1");
+
+  assert.equal(report.result, "loss");
+  assert.deepEqual(report.coaching, {
+    diagnosisId: "lowAccuracy",
+    focusId: "searchPattern",
+    drillId: "checkerboard",
+  });
 });
 
 test("achievementsForBattleStats derives durable medals from saved match statistics", () => {

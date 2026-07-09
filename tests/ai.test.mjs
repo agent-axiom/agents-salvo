@@ -63,6 +63,34 @@ test("normal agent falls back to unknown cells when there are no unresolved hits
   assert.deepEqual(shot, { row: 0, col: 1 });
 });
 
+test("hard agent uses checkerboard search before plain random search", () => {
+  const shot = chooseAgentShot({
+    size: 4,
+    shots: [
+      { row: 0, col: 0, result: "miss" },
+      { row: 0, col: 2, result: "miss" },
+    ],
+    difficulty: "hard",
+    rng: () => 0,
+  });
+
+  assert.deepEqual(shot, { row: 1, col: 1 });
+});
+
+test("hard agent falls back to any unknown cell when checkerboard cells are exhausted", () => {
+  const shot = chooseAgentShot({
+    size: 2,
+    shots: [
+      { row: 0, col: 0, result: "miss" },
+      { row: 1, col: 1, result: "miss" },
+    ],
+    difficulty: "hard",
+    rng: () => 0,
+  });
+
+  assert.deepEqual(shot, { row: 0, col: 1 });
+});
+
 test("agent throws when there are no cells left to shoot", () => {
   assert.throws(
     () =>

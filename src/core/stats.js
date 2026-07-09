@@ -54,6 +54,7 @@ export function buildBattleReport(log, winnerId, playerId = winnerId) {
       accuracy: player.accuracy,
       finalShotByPlayer: finalShot?.playerId === playerId && finalShot?.result === "sunk",
     }),
+    coaching: coachingForBattle(result, player),
   };
 }
 
@@ -112,6 +113,46 @@ function withAccuracy(stats) {
 
 function achievement(id) {
   return battleAchievementDefinitions.find((definition) => definition.id === id) ?? { id };
+}
+
+function coachingForBattle(result, player) {
+  if (player.shots === 0) {
+    return {
+      diagnosisId: "steady",
+      focusId: "endgame",
+      drillId: "openingMap",
+    };
+  }
+
+  if (player.accuracy < 35 || player.misses >= Math.max(3, player.hits * 2 + 1)) {
+    return {
+      diagnosisId: "lowAccuracy",
+      focusId: "searchPattern",
+      drillId: "checkerboard",
+    };
+  }
+
+  if (result === "loss" && player.sunk < 2) {
+    return {
+      diagnosisId: "finishShips",
+      focusId: "targetDiscipline",
+      drillId: "lineFinish",
+    };
+  }
+
+  if (result === "win" && player.accuracy >= 70) {
+    return {
+      diagnosisId: "precision",
+      focusId: "pressure",
+      drillId: "salvoControl",
+    };
+  }
+
+  return {
+    diagnosisId: "steady",
+    focusId: "endgame",
+    drillId: "openingMap",
+  };
 }
 
 function numberValue(value) {

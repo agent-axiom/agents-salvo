@@ -110,6 +110,17 @@ test("profile exposes online competition rank, best-of-three, and rating history
   assert.match(i18n, /"competition\.ratingHistory"/);
 });
 
+test("smart battle adds hard agent difficulty and post-battle coaching", () => {
+  assert.match(app, /value="hard"/);
+  assert.match(app, /function renderBattleCoaching/);
+  assert.match(app, /class="battle-coaching"/);
+  assert.match(app, /coaching\.diagnosis/);
+  assert.match(app, /coaching\.drill/);
+  assert.match(css, /\.battle-coaching/);
+  assert.match(i18n, /"agent\.hard"/);
+  assert.match(i18n, /"coaching\.title"/);
+});
+
 test("board cells expose localized state in aria labels", () => {
   assert.match(app, /function cellAriaLabel/);
   assert.match(app, /board\.state\./);

@@ -1,7 +1,11 @@
 export function chooseAgentShot({ size, shots = [], difficulty = "normal", rng = Math.random }) {
-  const candidates =
-    difficulty === "easy" ? [] : targetedCandidates(size, shots);
-  const unknownCells = candidates.length > 0 ? candidates : allUnknownCells(size, shots);
+  const candidates = difficulty === "easy" ? [] : targetedCandidates(size, shots);
+  const unknownCells =
+    candidates.length > 0
+      ? candidates
+      : difficulty === "hard"
+        ? strategicUnknownCells(size, shots)
+        : allUnknownCells(size, shots);
 
   if (unknownCells.length === 0) {
     throw new Error("No cells left to shoot");
@@ -9,6 +13,12 @@ export function chooseAgentShot({ size, shots = [], difficulty = "normal", rng =
 
   const index = Math.min(unknownCells.length - 1, Math.floor(rng() * unknownCells.length));
   return unknownCells[index];
+}
+
+function strategicUnknownCells(size, shots) {
+  const unknownCells = allUnknownCells(size, shots);
+  const checkerboard = unknownCells.filter((coordinate) => (coordinate.row + coordinate.col) % 2 === 0);
+  return checkerboard.length > 0 ? checkerboard : unknownCells;
 }
 
 function targetedCandidates(size, shots) {

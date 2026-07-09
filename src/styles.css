@@ -2012,6 +2012,55 @@ input {
   line-height: 1.35;
 }
 
+.battle-coaching {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 8px;
+}
+
+.battle-coaching > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.battle-coaching p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.coaching-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.coaching-grid div {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.coaching-grid small {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.coaching-grid strong {
+  color: var(--accent-strong);
+  line-height: 1.2;
+}
+
 .online-rating-change {
   display: grid;
   gap: 4px;
@@ -2586,7 +2635,8 @@ input {
 
   .battle-report-grid,
   .achievement-list,
-  .competition-stats {
+  .competition-stats,
+  .coaching-grid {
     grid-template-columns: 1fr;
   }
 

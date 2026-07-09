@@ -747,6 +747,7 @@ function renderSetup() {
                 <select data-action="agent-difficulty">
                   <option value="easy" ${state.agentDifficulty === "easy" ? "selected" : ""}>${translate("agent.easy")}</option>
                   <option value="normal" ${state.agentDifficulty === "normal" ? "selected" : ""}>${translate("agent.normal")}</option>
+                  <option value="hard" ${state.agentDifficulty === "hard" ? "selected" : ""}>${translate("agent.hard")}</option>
                 </select>
               </label>`
             : ""
@@ -1125,6 +1126,29 @@ function renderBattleReport(report, ratingChange = null) {
               </div>`
             : `<p>${translate("result.noAchievements")}</p>`
         }
+      </div>
+      ${renderBattleCoaching(report.coaching)}
+    </section>
+  `;
+}
+
+function renderBattleCoaching(coaching) {
+  if (!coaching) {
+    return "";
+  }
+  return `
+    <section class="battle-coaching">
+      <span>${translate("coaching.title")}</span>
+      <p>${translate(`coaching.diagnosis.${coaching.diagnosisId}`)}</p>
+      <div class="coaching-grid">
+        <div>
+          <small>${translate("coaching.focus")}</small>
+          <strong>${translate(`coaching.focus.${coaching.focusId}`)}</strong>
+        </div>
+        <div>
+          <small>${translate("coaching.drill")}</small>
+          <strong>${translate(`coaching.drill.${coaching.drillId}`)}</strong>
+        </div>
       </div>
     </section>
   `;
