@@ -86,6 +86,18 @@ test("online result modal highlights rating movement and next match actions", ()
   assert.match(app, /data-action="share-telegram"/);
 });
 
+test("result modal includes a player battle report with achievements", () => {
+  assert.match(app, /function renderBattleReport/);
+  assert.match(app, /buildBattleReport/);
+  assert.match(app, /class="battle-report"/);
+  assert.match(app, /class="achievement-list"/);
+  assert.match(app, /achievement\./);
+  assert.match(css, /\.battle-report/);
+  assert.match(css, /\.achievement-list/);
+  assert.match(i18n, /"result\.report"/);
+  assert.match(i18n, /"achievement\.sharpshooter\.title"/);
+});
+
 test("board cells expose localized state in aria labels", () => {
   assert.match(app, /function cellAriaLabel/);
   assert.match(app, /board\.state\./);

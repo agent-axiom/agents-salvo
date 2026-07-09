@@ -15,7 +15,7 @@ import {
 } from "./core/game.js";
 import { visibleBattleLog } from "./core/log.js";
 import { gamePresets, getGamePreset } from "./core/presets.js";
-import { summarizeBattleLog } from "./core/stats.js";
+import { buildBattleReport, summarizeBattleLog } from "./core/stats.js";
 import { coordinateColumnLabel, getInitialLanguage, languages, t } from "./i18n.js";
 import { RemoteClient } from "./remote.js";
 
@@ -517,12 +517,37 @@ function renderProfilePanel() {
               ${renderProfileStat("profile.season", season?.id ?? "—")}
               ${renderProfileStat("profile.seasonRecord", `${season?.wins ?? 0}-${season?.losses ?? 0}`)}
             </div>
+            ${renderProfileAchievements(profile.achievements ?? [])}
             ${renderRecentMatches(profile.recentMatches ?? [])}
             ${renderLeaderboard(profile.leaderboard)}
           `
           : `<p>${translate("profile.empty")}</p>`
       }
     </section>
+  `;
+}
+
+function renderProfileAchievements(achievements) {
+  return `
+    <div class="profile-achievements">
+      <h4>${translate("profile.achievements")}</h4>
+      ${
+        achievements.length
+          ? `<div class="achievement-list">
+              ${achievements
+                .map(
+                  (achievement) => `
+                    <article class="achievement-card">
+                      <strong>${translate(`achievement.${achievement.id}.title`)}</strong>
+                      <small>${translate("profile.achievementCount", { count: achievement.count })}</small>
+                    </article>
+                  `,
+                )
+                .join("")}
+            </div>`
+          : `<p>${translate("result.noAchievements")}</p>`
+      }
+    </div>
   `;
 }
 
@@ -947,6 +972,7 @@ function renderLocalResultModal() {
   }
   return renderResultModal({
     winnerId: state.game.winnerId,
+    playerId: state.mode === "agent" ? "p1" : state.game.winnerId,
     log: state.game.log,
     newGameAction: "new-game",
   });
@@ -962,6 +988,7 @@ function renderOnlineResultModal(snapshot) {
   }
   return renderResultModal({
     winnerId: snapshot.winnerId,
+    playerId: snapshot.playerId,
     log: snapshot.log ?? [],
     newGameAction: "online-rematch",
     ratingChange: snapshot.ratingChange,
@@ -969,9 +996,10 @@ function renderOnlineResultModal(snapshot) {
   });
 }
 
-function renderResultModal({ winnerId, log, newGameAction, ratingChange = null, onlineActions = false }) {
-  const summary = summarizeBattleLog(log, winnerId);
-  const stats = summary.winner;
+function renderResultModal({ winnerId, playerId = winnerId, log, newGameAction, ratingChange = null, onlineActions = false }) {
+  const report = buildBattleReport(log, winnerId, playerId);
+  const summary = report.summary;
+  const stats = report.player;
   return `
     <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="result-title">
       <section class="result-modal">
@@ -985,6 +1013,7 @@ function renderResultModal({ winnerId, log, newGameAction, ratingChange = null, 
           ${renderResultStat("result.sunk", stats.sunk)}
           ${renderResultStat("result.accuracy", `${stats.accuracy}%`)}
         </div>
+        ${renderBattleReport(report, ratingChange)}
         ${renderOnlineRatingChange(ratingChange)}
         <div class="button-row">
           <button data-action="close-result">${translate("result.inspect")}</button>
@@ -997,6 +1026,42 @@ function renderResultModal({ winnerId, log, newGameAction, ratingChange = null, 
         </div>
       </section>
     </div>
+  `;
+}
+
+function renderBattleReport(report, ratingChange = null) {
+  const streak = ratingChange?.currentOnlineWinStreak ?? state.profile.data?.summary?.currentWinStreak ?? "—";
+  return `
+    <section class="battle-report">
+      <div class="battle-report-header">
+        <span>${translate("result.report")}</span>
+        <strong>${translate(`profile.result.${report.result}`)}</strong>
+      </div>
+      <div class="battle-report-grid">
+        ${renderResultStat("result.you", `${report.player.hits}/${report.player.shots}`)}
+        ${renderResultStat("result.opponent", `${report.opponent.hits}/${report.opponent.shots}`)}
+        ${renderResultStat("result.streak", streak)}
+      </div>
+      <div class="achievement-block">
+        <span>${translate("result.achievements")}</span>
+        ${
+          report.achievements.length
+            ? `<div class="achievement-list">
+                ${report.achievements.map(renderAchievement).join("")}
+              </div>`
+            : `<p>${translate("result.noAchievements")}</p>`
+        }
+      </div>
+    </section>
+  `;
+}
+
+function renderAchievement(achievement) {
+  return `
+    <article class="achievement-card">
+      <strong>${translate(`achievement.${achievement.id}.title`)}</strong>
+      <small>${translate(`achievement.${achievement.id}.desc`)}</small>
+    </article>
   `;
 }
 

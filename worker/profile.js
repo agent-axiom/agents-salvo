@@ -1,3 +1,5 @@
+import { achievementsForBattleStats, battleAchievementDefinitions } from "../src/core/stats.js";
+
 const profileModes = new Set(["agent", "online", "hotseat"]);
 const matchResults = new Set(["win", "loss"]);
 const ratingBase = 1000;
@@ -8,7 +10,7 @@ export async function getPlayerProfile(db, user, { now = new Date() } = {}) {
   assertProfileDb(db);
   await upsertUser(db, user);
   const userKey = userSubject(user);
-  const [summaryRow, modeRows, streakRows, recentRows, onlineRows] = await Promise.all([
+  const [summaryRow, modeRows, streakRows, recentRows, onlineRows, achievementRows] = await Promise.all([
     db
       .prepare(
         `SELECT COUNT(*) AS total_matches,
@@ -64,12 +66,22 @@ export async function getPlayerProfile(db, user, { now = new Date() } = {}) {
       )
       .bind(userKey)
       .all(),
+    db
+      .prepare(
+        `SELECT result, player_shots, player_hits, player_misses, player_sunk, accuracy, played_at
+        FROM matches
+        WHERE user_key = ?
+        ORDER BY played_at ASC`,
+      )
+      .bind(userKey)
+      .all(),
   ]);
 
   return {
     summary: summarizeProfile(summaryRow ?? {}, modeRows.results ?? [], streakRows.results ?? []),
     rating: summarizeOnlineRating(onlineRows.results ?? [], now),
     season: summarizeSeason(onlineRows.results ?? [], now),
+    achievements: summarizeAchievements(achievementRows.results ?? []),
     recentMatches: (recentRows.results ?? []).map(publicMatch),
   };
 }
@@ -170,15 +182,17 @@ export async function recordCompletedMatch(db, user, payload, { source = "client
     )
     .run();
 
+  const recordedMatch = withAchievements(match);
+
   if (match.mode === "online") {
     const afterRating = summarizeOnlineRating(await onlineRatingRows(db, userKey), new Date(match.playedAt));
     return {
-      ...match,
+      ...recordedMatch,
       rating: ratingMovement(beforeRating, afterRating),
     };
   }
 
-  return match;
+  return recordedMatch;
 }
 
 export function userSubject(user) {
@@ -277,7 +291,7 @@ function normalizeMatch(payload, { source }) {
 }
 
 function publicMatch(row) {
-  return {
+  return withAchievements({
     id: row.id,
     mode: row.mode,
     presetId: row.preset_id,
@@ -292,7 +306,38 @@ function publicMatch(row) {
     turns: number(row.turns),
     winnerId: row.winner_id,
     playedAt: row.played_at,
+  });
+}
+
+function withAchievements(match) {
+  return {
+    ...match,
+    achievements: achievementsForBattleStats(match),
   };
+}
+
+function summarizeAchievements(rows) {
+  const achievements = new Map();
+  for (const row of rows) {
+    const playedAt = row.played_at || row.playedAt || "";
+    for (const achievement of achievementsForBattleStats(row)) {
+      const current = achievements.get(achievement.id) ?? {
+        id: achievement.id,
+        count: 0,
+        lastEarnedAt: "",
+      };
+      current.count += 1;
+      current.lastEarnedAt =
+        !current.lastEarnedAt || String(playedAt).localeCompare(current.lastEarnedAt) > 0
+          ? playedAt
+          : current.lastEarnedAt;
+      achievements.set(achievement.id, current);
+    }
+  }
+
+  return battleAchievementDefinitions
+    .map((definition) => achievements.get(definition.id))
+    .filter(Boolean);
 }
 
 function currentWinStreak(rows) {

@@ -89,6 +89,50 @@ test("profile endpoints save completed matches and return player statistics", as
   assert.equal(profilePayload.profile.recentMatches[0].opponent, "agent");
 });
 
+test("player profiles derive achievement totals from saved match statistics", async () => {
+  const db = new MemoryD1();
+
+  const firstMatch = await recordCompletedMatch(db, profileUser, {
+    ...completedMatchPayload(),
+    id: "achievement-win",
+    result: "win",
+    playerShots: 18,
+    playerHits: 13,
+    playerMisses: 5,
+    playerSunk: 10,
+    accuracy: 72,
+    playedAt: "2026-07-06T12:00:00.000Z",
+  });
+  await recordCompletedMatch(db, profileUser, {
+    ...completedMatchPayload(),
+    id: "achievement-loss",
+    result: "loss",
+    playerShots: 6,
+    playerHits: 1,
+    playerMisses: 5,
+    playerSunk: 0,
+    accuracy: 17,
+    playedAt: "2026-07-07T12:00:00.000Z",
+  });
+
+  const profile = await getPlayerProfile(db, profileUser, { now: new Date("2026-07-08T00:00:00.000Z") });
+
+  assert.deepEqual(
+    firstMatch.achievements.map((achievement) => achievement.id),
+    ["victory", "sharpshooter", "fleetHunter"],
+  );
+  assert.deepEqual(profile.achievements, [
+    { id: "victory", count: 1, lastEarnedAt: "2026-07-06T12:00:00.000Z" },
+    { id: "sharpshooter", count: 1, lastEarnedAt: "2026-07-06T12:00:00.000Z" },
+    { id: "fleetHunter", count: 1, lastEarnedAt: "2026-07-06T12:00:00.000Z" },
+  ]);
+  assert.deepEqual(profile.recentMatches[1].achievements.map((achievement) => achievement.id), [
+    "victory",
+    "sharpshooter",
+    "fleetHunter",
+  ]);
+});
+
 test("profile endpoints require a signed session token", async () => {
   const response = await worker.fetch(new Request("https://worker.test/profile/me"), {
     SESSION_SECRET: sessionSecret,
@@ -532,6 +576,20 @@ class MemoryStatement {
         .filter((match) => match.mode === "online")
         .sort((first, second) => first.played_at.localeCompare(second.played_at))
         .map((match) => ({ result: match.result, played_at: match.played_at }));
+    }
+
+    if (this.sql.startsWith("SELECT result, player_shots")) {
+      return this.matchesForUser()
+        .sort((first, second) => first.played_at.localeCompare(second.played_at))
+        .map((match) => ({
+          result: match.result,
+          player_shots: match.player_shots,
+          player_hits: match.player_hits,
+          player_misses: match.player_misses,
+          player_sunk: match.player_sunk,
+          accuracy: match.accuracy,
+          played_at: match.played_at,
+        }));
     }
 
     if (this.sql.startsWith("SELECT id, mode")) {

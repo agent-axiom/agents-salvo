@@ -1,3 +1,11 @@
+export const battleAchievementDefinitions = [
+  { id: "victory" },
+  { id: "flawlessAim" },
+  { id: "sharpshooter" },
+  { id: "fleetHunter" },
+  { id: "finalBlow" },
+];
+
 export function summarizeBattleLog(log, winnerId) {
   const players = new Map();
 
@@ -24,6 +32,63 @@ export function summarizeBattleLog(log, winnerId) {
   };
 }
 
+export function buildBattleReport(log, winnerId, playerId = winnerId) {
+  const summary = summarizeBattleLog(log, winnerId);
+  const player = statsForPlayer(summary.players, playerId);
+  const opponentId = summary.players.find((stats) => stats.playerId !== playerId)?.playerId ?? "";
+  const opponent = opponentId ? statsForPlayer(summary.players, opponentId) : withAccuracy(createPlayerStats("opponent"));
+  const result = winnerId === playerId ? "win" : "loss";
+  const finalShot = log.at(-1);
+
+  return {
+    result,
+    summary,
+    player,
+    opponent,
+    achievements: achievementsForBattleStats({
+      result,
+      playerShots: player.shots,
+      playerHits: player.hits,
+      playerMisses: player.misses,
+      playerSunk: player.sunk,
+      accuracy: player.accuracy,
+      finalShotByPlayer: finalShot?.playerId === playerId && finalShot?.result === "sunk",
+    }),
+  };
+}
+
+export function achievementsForBattleStats(stats) {
+  const result = stats.result;
+  const playerShots = numberValue(stats.playerShots ?? stats.shots ?? stats.player_shots);
+  const playerHits = numberValue(stats.playerHits ?? stats.hits ?? stats.player_hits);
+  const playerMisses = numberValue(stats.playerMisses ?? stats.misses ?? stats.player_misses);
+  const playerSunk = numberValue(stats.playerSunk ?? stats.sunk ?? stats.player_sunk);
+  const accuracy =
+    stats.accuracy === undefined && playerShots > 0
+      ? Math.round((playerHits / playerShots) * 100)
+      : numberValue(stats.accuracy);
+  const finalShotByPlayer = Boolean(stats.finalShotByPlayer);
+  const achievements = [];
+
+  if (result === "win") {
+    achievements.push(achievement("victory"));
+  }
+  if (playerShots >= 3 && playerMisses === 0) {
+    achievements.push(achievement("flawlessAim"));
+  }
+  if (playerShots >= 5 && accuracy >= 70) {
+    achievements.push(achievement("sharpshooter"));
+  }
+  if (playerSunk >= 5) {
+    achievements.push(achievement("fleetHunter"));
+  }
+  if (finalShotByPlayer) {
+    achievements.push(achievement("finalBlow"));
+  }
+
+  return achievements;
+}
+
 function createPlayerStats(playerId) {
   return {
     playerId,
@@ -34,9 +99,22 @@ function createPlayerStats(playerId) {
   };
 }
 
+function statsForPlayer(players, playerId) {
+  return players.find((stats) => stats.playerId === playerId) ?? withAccuracy(createPlayerStats(playerId));
+}
+
 function withAccuracy(stats) {
   return {
     ...stats,
     accuracy: stats.shots === 0 ? 0 : Math.round((stats.hits / stats.shots) * 100),
   };
+}
+
+function achievement(id) {
+  return battleAchievementDefinitions.find((definition) => definition.id === id) ?? { id };
+}
+
+function numberValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
 }

@@ -781,7 +781,8 @@ input {
 
 .profile-panel span,
 .profile-recent h4,
-.profile-leaderboard h4 {
+.profile-leaderboard h4,
+.profile-achievements h4 {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
@@ -829,7 +830,8 @@ input {
 }
 
 .profile-recent,
-.profile-leaderboard {
+.profile-leaderboard,
+.profile-achievements {
   display: grid;
   gap: 8px;
 }
@@ -1868,6 +1870,87 @@ input {
   line-height: 1;
 }
 
+.battle-report {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.battle-report-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.battle-report-header span,
+.achievement-block > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.battle-report-header strong {
+  color: var(--accent-strong);
+}
+
+.battle-report-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.battle-report-grid .result-stats div,
+.battle-report-grid div {
+  min-height: 58px;
+  padding: 9px;
+  background: color-mix(in srgb, var(--surface) 74%, transparent);
+}
+
+.achievement-block,
+.profile-achievements {
+  display: grid;
+  gap: 10px;
+}
+
+.achievement-block p,
+.profile-achievements p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.achievement-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.achievement-card {
+  display: grid;
+  gap: 4px;
+  min-height: 70px;
+  align-content: start;
+  padding: 10px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: 8px;
+}
+
+.achievement-card strong {
+  color: var(--accent-strong);
+  font-size: 14px;
+}
+
+.achievement-card small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
 .online-rating-change {
   display: grid;
   gap: 4px;
@@ -2438,6 +2521,11 @@ input {
 
   .result-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .battle-report-grid,
+  .achievement-list {
+    grid-template-columns: 1fr;
   }
 
   .profile-recent li {
