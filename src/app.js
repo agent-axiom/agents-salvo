@@ -20,6 +20,7 @@ import {
   applyTrainingShot,
   createTrainingSession,
   trainingScenarios,
+  trainingScenarioForDrill,
   trainingSummary,
 } from "./core/training.js";
 import { coordinateColumnLabel, getInitialLanguage, languages, t } from "./i18n.js";
@@ -1270,6 +1271,11 @@ function renderBattleCoaching(coaching) {
           <strong>${translate(`coaching.drill.${coaching.drillId}`)}</strong>
         </div>
       </div>
+      <button
+        class="training-link"
+        data-action="start-coaching-training"
+        data-drill-id="${escapeHtml(coaching.drillId)}"
+      >${translate("coaching.startTraining")}</button>
     </section>
   `;
 }
@@ -1412,6 +1418,7 @@ root.addEventListener("click", async (event) => {
   if (action === "start-hotseat") startSetup("hotseat");
   if (action === "start-agent") startSetup("agent");
   if (action === "start-training") startTraining();
+  if (action === "start-coaching-training") startTraining(trainingScenarioForDrill(button.dataset.drillId));
   if (action === "show-online") showOnline();
   if (action === "select-preset") selectPreset(button.dataset.presetId);
   if (action === "audio-toggle") toggleAudio();

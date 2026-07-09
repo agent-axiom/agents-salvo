@@ -30,6 +30,16 @@ export function createTrainingSession(scenarioId = "checkerboard") {
   };
 }
 
+export function trainingScenarioForDrill(drillId) {
+  const scenariosByDrill = {
+    checkerboard: "checkerboard",
+    lineFinish: "lineFinish",
+    salvoControl: "endgame",
+    openingMap: "checkerboard",
+  };
+  return scenariosByDrill[drillId] ?? "checkerboard";
+}
+
 export function applyTrainingShot(session, coordinate) {
   if (session.phase !== "playing") {
     throw new Error("Training session is already finished");
@@ -141,4 +151,3 @@ function trainingRating({ phase, shots, accuracy, score }) {
   }
   return "needsWork";
 }
-

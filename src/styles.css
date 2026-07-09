@@ -2217,6 +2217,19 @@ input {
   line-height: 1.2;
 }
 
+.battle-coaching .training-link {
+  justify-self: start;
+  min-height: 38px;
+  padding: 0 14px;
+  color: var(--primary-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.battle-coaching .training-link:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
 .online-rating-change {
   display: grid;
   gap: 4px;

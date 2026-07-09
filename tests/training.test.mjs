@@ -6,6 +6,7 @@ import {
   applyTrainingShot,
   createTrainingSession,
   trainingScenarios,
+  trainingScenarioForDrill,
   trainingSummary,
 } from "../src/core/training.js";
 
@@ -16,6 +17,14 @@ test("training scenarios expose search, finishing, and endgame drills", () => {
   );
   assert.equal(createTrainingSession().scenarioId, "checkerboard");
   assert.throws(() => createTrainingSession("missing"), /Unknown training scenario/);
+});
+
+test("trainingScenarioForDrill maps coaching drills to playable scenarios", () => {
+  assert.equal(trainingScenarioForDrill("checkerboard"), "checkerboard");
+  assert.equal(trainingScenarioForDrill("lineFinish"), "lineFinish");
+  assert.equal(trainingScenarioForDrill("salvoControl"), "endgame");
+  assert.equal(trainingScenarioForDrill("openingMap"), "checkerboard");
+  assert.equal(trainingScenarioForDrill("unknown"), "checkerboard");
 });
 
 test("checkerboard training rewards patterned search before random water shots", () => {
