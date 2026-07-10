@@ -935,6 +935,7 @@ function renderGame() {
           targetDisabled: state.game.phase === "finished",
           log: state.game.log,
           salvoRemaining: state.game.salvoRemaining,
+          playerId: perspectivePlayerId,
         })}
       </section>
       ${renderLocalResultModal()}
@@ -1188,10 +1189,11 @@ function renderOnlineSnapshot(snapshot) {
     targetDisabled: snapshot.phase !== "playing" || !snapshot.isYourTurn,
     log: snapshot.log ?? [],
     salvoRemaining: snapshot.salvoRemaining ?? 1,
+    playerId: snapshot.playerId,
   });
 }
 
-function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, log, salvoRemaining = 1 }) {
+function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, log, salvoRemaining = 1, playerId = "p1" }) {
   const activeTab = state.battleTab || "target";
   const tacticalAnalysis = analyzeTargetBoard(targetBoard, { salvoRemaining });
   const targetAction = targetKind === "online-target" ? "online-shot" : "shot";
@@ -1203,7 +1205,7 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
         ${renderBattleTab("log", "log.title", activeTab)}
       </div>
       <div class="target-primary battle-tab-panel" data-panel="target">
-        ${renderBattlePulse(log, { targetDisabled, salvoRemaining, tacticalAnalysis })}
+        ${renderBattlePulse(log, { targetDisabled, salvoRemaining, tacticalAnalysis, playerId })}
         ${renderTacticalAdvisor(tacticalAnalysis, { disabled: targetDisabled, targetAction })}
         ${renderBoard(targetBoard, {
           kind: targetKind,
@@ -1224,9 +1226,10 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
   `;
 }
 
-function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1, tacticalAnalysis = null } = {}) {
+function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1, tacticalAnalysis = null, playerId = "p1" } = {}) {
   const lastEntry = visibleBattleLog(log)[0];
   const metrics = renderBattlePulseMetrics({ targetDisabled, salvoRemaining, tacticalAnalysis });
+  const liveStats = renderBattleLiveStats(log, playerId);
   if (!lastEntry) {
     return `
       <section class="battle-pulse is-empty" aria-live="polite">
@@ -1235,6 +1238,7 @@ function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1, ta
           <strong>${translate("battle.nextAction")}</strong>
         </div>
         ${metrics}
+        ${liveStats}
       </section>
     `;
   }
@@ -1255,6 +1259,7 @@ function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1, ta
       </div>
       <small>${nextAction}</small>
       ${metrics}
+      ${liveStats}
     </section>
   `;
 }
@@ -1266,6 +1271,23 @@ function renderBattlePulseMetrics({ targetDisabled, salvoRemaining, tacticalAnal
       <span>${translate(targetDisabled ? "battle.paused" : "battle.ready")}</span>
       <span>${translate("game.salvoShots", { count: salvoRemaining })}</span>
       <span>${translate("battle.priorityCount", { count: priorityCount })}</span>
+    </div>
+  `;
+}
+
+function renderBattleLiveStats(log, playerId) {
+  const stats =
+    summarizeBattleLog(log, playerId).players.find((candidate) => candidate.playerId === playerId) ?? {
+      shots: 0,
+      hits: 0,
+      sunk: 0,
+      accuracy: 0,
+  };
+  return `
+    <div class="battle-live-stats" aria-label="${translate("battle.liveStats")}">
+      <span>${translate("battle.accuracy")}: <strong>${stats.accuracy}%</strong></span>
+      <span>${translate("battle.hits")}: <strong>${stats.hits}/${stats.shots}</strong></span>
+      <span>${translate("battle.sunk")}: <strong>${stats.sunk}</strong></span>
     </div>
   `;
 }

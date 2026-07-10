@@ -1934,6 +1934,32 @@ input {
   white-space: nowrap;
 }
 
+.battle-live-stats {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.battle-live-stats span {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface-strong) 74%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--line) 80%, transparent);
+  border-radius: 999px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.battle-live-stats strong {
+  color: var(--accent-strong);
+  font-size: 11px;
+}
+
 .tactical-advisor {
   display: grid;
   grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1.2fr);

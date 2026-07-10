@@ -40,7 +40,7 @@ test("battlefield prioritizes the opponent board and keeps own fleet/log seconda
 
 test("battlefield shows a compact last-shot pulse above the target board", () => {
   assert.match(app, /function renderBattlePulse/);
-  assert.match(app, /renderBattlePulse\(log, \{ targetDisabled, salvoRemaining, tacticalAnalysis \}\)/);
+  assert.match(app, /renderBattlePulse\(log, \{ targetDisabled, salvoRemaining, tacticalAnalysis, playerId \}\)/);
   assert.match(app, /visibleBattleLog\(log\)\[0\]/);
   assert.match(app, /class="battle-pulse/);
   assert.match(app, /class="battle-pulse-result/);
@@ -55,6 +55,21 @@ test("battlefield shows a compact last-shot pulse above the target board", () =>
   assert.match(css, /\.battle-pulse-metrics/);
   assert.match(i18n, /"battle\.lastShot"/);
   assert.match(i18n, /"battle\.awaitingShot"/);
+});
+
+test("battle pulse shows live player accuracy and hit progress", () => {
+  assert.match(app, /function renderBattleLiveStats/);
+  assert.match(app, /summarizeBattleLog\(log, playerId\)/);
+  assert.match(app, /class="battle-live-stats"/);
+  assert.match(app, /battle\.accuracy/);
+  assert.match(app, /battle\.hits/);
+  assert.match(app, /battle\.sunk/);
+  assert.match(app, /playerId:\s*perspectivePlayerId/);
+  assert.match(app, /playerId:\s*snapshot\.playerId/);
+  assert.match(css, /\.battle-live-stats/);
+  assert.match(i18n, /"battle\.accuracy"/);
+  assert.match(i18n, /"battle\.hits"/);
+  assert.match(i18n, /"battle\.sunk"/);
 });
 
 test("agent battles keep the human fleet as own board after the agent wins", () => {
