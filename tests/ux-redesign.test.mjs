@@ -65,12 +65,30 @@ test("topbar exposes the public leaderboard as a popover", () => {
 
 test("manual setup has random-first actions, progress, and placement preview states", () => {
   assert.match(app, /class="setup-primary-actions"/);
+  assert.match(app, /class="setup-action-card setup-action-random"/);
+  assert.match(app, /class="setup-action-card setup-action-ready"/);
   assert.match(app, /class="setup-progress"/);
   assert.match(app, /function setupPreview/);
   assert.match(app, /placement-ok/);
   assert.match(app, /placement-bad/);
   assert.match(css, /\.cell\.placement-ok/);
   assert.match(css, /\.cell\.placement-bad/);
+});
+
+test("desktop controls use a cohesive polished button system", () => {
+  assert.match(cssRule("button"), /--button-bg:/);
+  assert.match(cssRule("button"), /min-height:\s*40px/);
+  assert.match(cssRule("button"), /border-radius:\s*8px/);
+  assert.match(cssRule("button:hover:not(:disabled)"), /translateY\(-2px\)/);
+  assert.match(cssRule("button:focus-visible"), /outline:\s*3px solid/);
+  assert.match(css, /select,\ninput\s*\{[\s\S]*?border-radius:\s*10px/);
+  assert.match(cssRule(".primary-button"), /linear-gradient/);
+  assert.match(cssRule(".secondary-button"), /--button-bg:/);
+  assert.match(cssRule(".ghost-button"), /--button-bg:\s*transparent/);
+  assert.match(cssRule(".setup-primary-actions"), /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(cssRule(".setup-action-card"), /min-height:\s*56px/);
+  assert.match(cssRule(".setup-action-ready"), /grid-column:\s*1 \/ -1/);
+  assert.match(cssRule(".setup-action-ready:not(:disabled)"), /linear-gradient/);
 });
 
 test("online mode separates lobby controls from the active room state", () => {
@@ -254,7 +272,7 @@ test("mobile setup controls use compact topbar and full-width actions", () => {
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.topbar-controls\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\) auto auto;/);
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.settings-button strong\s*\{[\s\S]*?display:\s*none;/);
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.setup-primary-actions\s*\{[\s\S]*?grid-template-columns:\s*1fr;/);
-  assert.match(css, /\.setup-primary-actions \[data-action="ready"\]:not\(:disabled\)/);
+  assert.match(css, /\.setup-action-ready:not\(:disabled\)/);
 });
 
 function combinedCssRule(...selectors) {
@@ -264,5 +282,12 @@ function combinedCssRule(...selectors) {
   const pattern = new RegExp(`${escapedSelectors.join("\\s*,\\s*")}\\s*\\{([\\s\\S]*?)\\}`);
   const match = css.match(pattern);
   assert.ok(match, `Missing CSS rule: ${selectors.join(", ")}`);
+  return match[1];
+}
+
+function cssRule(selector) {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = css.match(new RegExp(`${escapedSelector}\\s*\\{([\\s\\S]*?)\\}`));
+  assert.ok(match, `Missing CSS rule: ${selector}`);
   return match[1];
 }

@@ -795,9 +795,9 @@ function renderSetup() {
             : ""
         }
         <div class="setup-primary-actions">
-          <button class="primary-button" data-action="randomize">${translate("setup.randomize")}</button>
-          <button class="secondary-button" data-action="reset">${translate("setup.reset")}</button>
-          <button data-action="ready" ${readyDisabled}>
+          <button class="setup-action-card setup-action-random" data-action="randomize">${translate("setup.randomize")}</button>
+          <button class="setup-action-card setup-action-reset" data-action="reset">${translate("setup.reset")}</button>
+          <button class="setup-action-card setup-action-ready" data-action="ready" ${readyDisabled}>
             ${readyDisabled ? translate("setup.needFleet") : translate("setup.ready")}
           </button>
         </div>
@@ -1110,8 +1110,8 @@ function renderOnlineLobby() {
         </div>
         <p class="status-line">${translate(`preset.${state.presetId}.name`)}</p>
         <div class="setup-primary-actions">
-          <button class="primary-button" data-action="randomize">${translate("setup.randomize")}</button>
-          <button class="secondary-button" data-action="reset">${translate("setup.reset")}</button>
+          <button class="setup-action-card setup-action-random" data-action="randomize">${translate("setup.randomize")}</button>
+          <button class="setup-action-card setup-action-reset" data-action="reset">${translate("setup.reset")}</button>
         </div>
         ${renderSetupProgress()}
         ${renderSetupTools()}
