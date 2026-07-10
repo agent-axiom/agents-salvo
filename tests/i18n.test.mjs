@@ -50,6 +50,7 @@ test("i18n translates result modal, theme, and history labels in every language"
     "result.noAchievements",
     "result.copySummary",
     "result.copySuccess",
+    "result.shareSummary",
     "result.shareText",
     "achievement.victory.title",
     "achievement.victory.desc",

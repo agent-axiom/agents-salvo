@@ -1423,6 +1423,7 @@ function renderResultModal({ winnerId, playerId = winnerId, log, newGameAction, 
         <div class="result-actions button-row">
           <button data-action="close-result">${translate("result.inspect")}</button>
           <button data-action="copy-battle-summary">${translate("result.copySummary")}</button>
+          <button data-action="share-battle-summary">${translate("result.shareSummary")}</button>
           ${
             onlineActions
               ? `<button data-action="share-telegram">${translate("online.shareTelegram")}</button>
@@ -1787,6 +1788,7 @@ root.addEventListener("click", async (event) => {
   if (action === "online-rematch") await onlineRematch();
   if (action === "copy-room-code") await copyRoomCode();
   if (action === "copy-battle-summary") await copyBattleSummary();
+  if (action === "share-battle-summary") shareBattleSummaryInTelegram();
   if (action === "share-telegram") shareRoomInTelegram();
   if (action === "battle-tab") selectBattleTab(button.dataset.tab);
   if (action === "auth-logout") await logoutAuth();
@@ -2310,6 +2312,19 @@ function buildBattleSummaryText(report, context) {
     accuracy: report.player.accuracy,
     url: window.location.href,
   });
+}
+
+function shareBattleSummaryInTelegram() {
+  const context = currentBattleResultContext();
+  if (!context) {
+    return;
+  }
+  const report = buildBattleReport(context.log, context.winnerId, context.playerId);
+  const summaryText = buildBattleSummaryText(report, context);
+  const url = new URL("https://t.me/share/url");
+  url.searchParams.set("url", window.location.href);
+  url.searchParams.set("text", summaryText);
+  window.open(url.toString(), "_blank", "noopener,noreferrer");
 }
 
 function shareRoomInTelegram() {
