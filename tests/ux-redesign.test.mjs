@@ -192,6 +192,19 @@ test("board cells expose localized state in aria labels", () => {
   assert.match(i18n, /"board\.state\.sunk"/);
 });
 
+test("board grids support keyboard navigation with visible focus", () => {
+  assert.match(app, /root\.addEventListener\("keydown"/);
+  assert.match(app, /function handleBoardKeydown/);
+  assert.match(app, /function moveBoardFocus/);
+  assert.match(app, /function nextBoardCell/);
+  assert.match(app, /tabindex=/);
+  assert.match(app, /ArrowRight/);
+  assert.match(app, /ArrowLeft/);
+  assert.match(app, /ArrowUp/);
+  assert.match(app, /ArrowDown/);
+  assert.match(css, /\.cell:focus-visible/);
+});
+
 test("mobile setup controls use compact topbar and full-width actions", () => {
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.topbar-controls\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\) auto;/);
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.settings-button strong\s*\{[\s\S]*?display:\s*none;/);

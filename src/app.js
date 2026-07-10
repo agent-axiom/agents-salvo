@@ -1437,6 +1437,7 @@ function renderBoard(board, { kind, title, disabled = false, priorityTargets = [
     coordinateColumnLabel(state.language, index),
   );
   const priorityTargetKeys = new Set(priorityTargets.map(coordinateKey));
+  let hasFocusableCell = false;
   return `
     <section class="board-panel">
       <div class="board-title">
@@ -1458,6 +1459,10 @@ function renderBoard(board, { kind, title, disabled = false, priorityTargets = [
             const cell = kind === "own" || kind === "setup" ? getCell(board, coordinate) : getTargetCell(board, coordinate);
             const label = cellAriaLabel(cell, kind, row, columnLabels[col]);
             const buttonDisabled = disabled || kind === "own" || cell.shot;
+            const isFirstFocusableCell = !buttonDisabled && !hasFocusableCell;
+            if (isFirstFocusableCell) {
+              hasFocusableCell = true;
+            }
             const classes = [
               "cell",
               cellClass(cell, kind, board, coordinate),
@@ -1469,6 +1474,7 @@ function renderBoard(board, { kind, title, disabled = false, priorityTargets = [
               data-row="${row}"
               data-col="${col}"
               aria-label="${label}"
+              ${buttonDisabled ? "" : `tabindex="${isFirstFocusableCell ? "0" : "-1"}"`}
               ${buttonDisabled ? "disabled" : ""}
             >${cellContents(cell, kind, board, coordinate)}</button>`;
           }).join("")}
@@ -1524,11 +1530,67 @@ root.addEventListener("change", (event) => {
   updateOnlineInput(event.target);
 });
 
+root.addEventListener("keydown", handleBoardKeydown);
+
 function updateOnlineInput(target) {
   const action = target.dataset.action;
   if (action === "room-code") {
     state.online.roomCodeInput = target.value.trim().toUpperCase();
   }
+}
+
+function handleBoardKeydown(event) {
+  const button = event.target.closest?.(".board-grid .cell[data-row][data-col]");
+  if (!button) {
+    return;
+  }
+
+  const deltas = {
+    ArrowRight: { row: 0, col: 1 },
+    ArrowLeft: { row: 0, col: -1 },
+    ArrowDown: { row: 1, col: 0 },
+    ArrowUp: { row: -1, col: 0 },
+  };
+  const delta = deltas[event.key];
+  if (!delta) {
+    return;
+  }
+
+  event.preventDefault();
+  moveBoardFocus(button, delta);
+}
+
+function moveBoardFocus(button, delta) {
+  const nextCell = nextBoardCell(button, delta);
+  if (!nextCell) {
+    return;
+  }
+
+  button.tabIndex = -1;
+  nextCell.tabIndex = 0;
+  nextCell.focus();
+}
+
+function nextBoardCell(button, delta) {
+  const grid = button.closest(".board-grid");
+  const size = Number.parseInt(grid?.style.getPropertyValue("--board-size"), 10);
+  if (!grid || !Number.isInteger(size)) {
+    return null;
+  }
+
+  let row = Number.parseInt(button.dataset.row, 10) + delta.row;
+  let col = Number.parseInt(button.dataset.col, 10) + delta.col;
+  while (row >= 0 && row < size && col >= 0 && col < size) {
+    const candidate = grid.querySelector(
+      `.cell[data-row="${row}"][data-col="${col}"]:not(:disabled)`,
+    );
+    if (candidate) {
+      return candidate;
+    }
+    row += delta.row;
+    col += delta.col;
+  }
+  return null;
 }
 
 root.addEventListener("click", async (event) => {
