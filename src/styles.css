@@ -2407,13 +2407,14 @@ input {
 }
 
 .result-modal {
+  --result-modal-padding: 22px;
   display: grid;
   width: min(440px, 100%);
   max-height: calc(100dvh - 36px);
   gap: 16px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 22px;
+  padding: var(--result-modal-padding);
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -2461,6 +2462,19 @@ input {
 .result-stats strong {
   font-size: 22px;
   line-height: 1;
+}
+
+.result-actions {
+  position: sticky;
+  bottom: calc(var(--result-modal-padding) * -1);
+  z-index: 2;
+  margin: 0 calc(var(--result-modal-padding) * -1) calc(var(--result-modal-padding) * -1);
+  padding: 12px var(--result-modal-padding) var(--result-modal-padding);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 6%, transparent), var(--surface) 34%),
+    var(--surface);
+  border-top: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
+  box-shadow: 0 -12px 24px color-mix(in srgb, var(--surface) 82%, transparent);
 }
 
 .battle-report {
@@ -3296,9 +3310,12 @@ input {
 
   .control-panel,
   .mode-panel,
-  .board-panel,
-  .result-modal {
+  .board-panel {
     padding: 12px;
+  }
+
+  .result-modal {
+    --result-modal-padding: 12px;
   }
 
   .setup-primary-actions {

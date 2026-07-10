@@ -1314,7 +1314,7 @@ function renderResultModal({ winnerId, playerId = winnerId, log, newGameAction, 
         </div>
         ${renderBattleReport(report, ratingChange)}
         ${renderOnlineRatingChange(ratingChange)}
-        <div class="button-row">
+        <div class="result-actions button-row">
           <button data-action="close-result">${translate("result.inspect")}</button>
           ${
             onlineActions

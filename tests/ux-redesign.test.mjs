@@ -117,9 +117,13 @@ test("result modal includes a player battle report with achievements", () => {
   assert.match(app, /function renderBattleReport/);
   assert.match(app, /buildBattleReport/);
   assert.match(app, /class="battle-report"/);
+  assert.match(app, /class="result-actions button-row"/);
   assert.match(app, /class="achievement-list"/);
   assert.match(app, /achievement\./);
   assert.match(css, /\.battle-report/);
+  assert.match(cssRule(".result-actions"), /position:\s*sticky/);
+  assert.match(cssRule(".result-modal"), /--result-modal-padding:\s*22px/);
+  assert.match(cssRule(".result-actions"), /bottom:\s*calc\(var\(--result-modal-padding\) \* -1\)/);
   assert.match(css, /\.achievement-list/);
   assert.match(i18n, /"result\.report"/);
   assert.match(i18n, /"achievement\.sharpshooter\.title"/);
