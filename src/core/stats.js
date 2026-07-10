@@ -64,6 +64,19 @@ export function fleetIntel(log, playerId, ownBoard) {
   };
 }
 
+export function targetIntel(targetBoard) {
+  const size = Number.isInteger(targetBoard?.size) && targetBoard.size > 0 ? targetBoard.size : 0;
+  const total = size * size;
+  const explored = new Set((targetBoard?.shots ?? []).map((shot) => `${shot.row}:${shot.col}`)).size;
+
+  return {
+    explored,
+    total,
+    coverage: total === 0 ? 0 : Math.round((explored / total) * 100),
+    remaining: Math.max(0, total - explored),
+  };
+}
+
 export function buildBattleReport(log, winnerId, playerId = winnerId) {
   const summary = summarizeBattleLog(log, winnerId);
   const player = statsForPlayer(summary.players, playerId);

@@ -40,7 +40,7 @@ test("battlefield prioritizes the opponent board and keeps own fleet/log seconda
 
 test("battlefield shows a compact last-shot pulse above the target board", () => {
   assert.match(app, /function renderBattlePulse/);
-  assert.match(app, /renderBattlePulse\(log, \{ targetDisabled, salvoRemaining, tacticalAnalysis, playerId, ownBoard \}\)/);
+  assert.match(app, /renderBattlePulse\(log, \{ targetDisabled, salvoRemaining, tacticalAnalysis, playerId, ownBoard, targetBoard \}\)/);
   assert.match(app, /visibleBattleLog\(log\)\[0\]/);
   assert.match(app, /class="battle-pulse/);
   assert.match(app, /class="battle-pulse-result/);
@@ -89,7 +89,7 @@ test("battle pulse shows a live momentum strip from battle pressure", () => {
 });
 
 test("battle pulse shows compact fleet intel for sunk and afloat ships", () => {
-  assert.match(app, /renderBattlePulse\(log, \{ targetDisabled, salvoRemaining, tacticalAnalysis, playerId, ownBoard \}\)/);
+  assert.match(app, /renderBattlePulse\(log, \{ targetDisabled, salvoRemaining, tacticalAnalysis, playerId, ownBoard, targetBoard \}\)/);
   assert.match(app, /function renderFleetIntel/);
   assert.match(app, /fleetIntel\(log, playerId, ownBoard\)/);
   assert.match(app, /class="battle-fleet-intel"/);
@@ -100,6 +100,19 @@ test("battle pulse shows compact fleet intel for sunk and afloat ships", () => {
   assert.match(i18n, /"battle\.fleetIntel"/);
   assert.match(i18n, /"battle\.enemySunk"/);
   assert.match(i18n, /"battle\.ownAfloat"/);
+});
+
+test("battle pulse shows target reconnaissance coverage without revealing ships", () => {
+  assert.match(app, /function renderTargetIntel/);
+  assert.match(app, /targetIntel\(targetBoard\)/);
+  assert.match(app, /class="battle-target-intel"/);
+  assert.match(app, /battle\.targetIntel/);
+  assert.match(app, /battle\.scouted/);
+  assert.match(app, /battle\.remainingCells/);
+  assert.match(css, /\.battle-target-intel/);
+  assert.match(i18n, /"battle\.targetIntel"/);
+  assert.match(i18n, /"battle\.scouted"/);
+  assert.match(i18n, /"battle\.remainingCells"/);
 });
 
 test("agent battles keep the human fleet as own board after the agent wins", () => {

@@ -7,6 +7,7 @@ import {
   buildBattleReport,
   fleetIntel,
   summarizeBattleLog,
+  targetIntel,
 } from "../src/core/stats.js";
 
 test("summarizeBattleLog counts winner shots, hits, misses, sunk ships, and accuracy", () => {
@@ -108,6 +109,31 @@ test("fleetIntel reports visible enemy sunk ships and own fleet afloat", () => {
     enemySunk: 2,
     ownAfloat: 2,
     ownTotal: 3,
+  });
+});
+
+test("targetIntel reports explored coverage from visible target shots", () => {
+  const board = {
+    size: 8,
+    shots: [
+      { row: 0, col: 0, result: "miss" },
+      { row: 0, col: 1, result: "hit" },
+      { row: 0, col: 1, result: "hit" },
+      { row: 7, col: 7, result: "sunk" },
+    ],
+  };
+
+  assert.deepEqual(targetIntel(board), {
+    explored: 3,
+    total: 64,
+    coverage: 5,
+    remaining: 61,
+  });
+  assert.deepEqual(targetIntel({ size: 0, shots: [] }), {
+    explored: 0,
+    total: 0,
+    coverage: 0,
+    remaining: 0,
   });
 });
 

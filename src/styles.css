@@ -1988,6 +1988,32 @@ input {
   font-size: 11px;
 }
 
+.battle-target-intel {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.battle-target-intel span {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+  border-radius: 999px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.battle-target-intel strong {
+  color: var(--accent-strong);
+  font-size: 11px;
+}
+
 .battle-momentum {
   grid-column: 1 / -1;
   display: grid;
