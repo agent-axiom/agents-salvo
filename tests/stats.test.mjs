@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { achievementsForBattleStats, buildBattleReport, summarizeBattleLog } from "../src/core/stats.js";
+import { achievementsForBattleStats, battleMomentum, buildBattleReport, summarizeBattleLog } from "../src/core/stats.js";
 
 test("summarizeBattleLog counts winner shots, hits, misses, sunk ships, and accuracy", () => {
   const summary = summarizeBattleLog(
@@ -26,6 +26,38 @@ test("summarizeBattleLog counts winner shots, hits, misses, sunk ships, and accu
     misses: 2,
     sunk: 2,
     accuracy: 60,
+  });
+});
+
+test("battleMomentum scores live pressure from hits and sunk ships", () => {
+  const log = [
+    { playerId: "p1", result: "hit" },
+    { playerId: "p2", result: "miss" },
+    { playerId: "p1", result: "sunk" },
+    { playerId: "p2", result: "hit" },
+    { playerId: "p1", result: "hit" },
+  ];
+
+  assert.deepEqual(battleMomentum(log, "p1"), {
+    playerScore: 5,
+    opponentScore: 1,
+    lead: 4,
+    playerShare: 83,
+    state: "ahead",
+  });
+  assert.deepEqual(battleMomentum(log, "p2"), {
+    playerScore: 1,
+    opponentScore: 5,
+    lead: -4,
+    playerShare: 17,
+    state: "behind",
+  });
+  assert.deepEqual(battleMomentum([], "p1"), {
+    playerScore: 0,
+    opponentScore: 0,
+    lead: 0,
+    playerShare: 50,
+    state: "even",
   });
 });
 

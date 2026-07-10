@@ -15,7 +15,7 @@ import {
 } from "./core/game.js";
 import { visibleBattleLog } from "./core/log.js";
 import { gamePresets, getGamePreset } from "./core/presets.js";
-import { buildBattleReport, summarizeBattleLog } from "./core/stats.js";
+import { battleMomentum, buildBattleReport, summarizeBattleLog } from "./core/stats.js";
 import { analyzeTargetBoard } from "./core/tactics.js";
 import {
   applyTrainingShot,
@@ -1230,6 +1230,7 @@ function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1, ta
   const lastEntry = visibleBattleLog(log)[0];
   const metrics = renderBattlePulseMetrics({ targetDisabled, salvoRemaining, tacticalAnalysis });
   const liveStats = renderBattleLiveStats(log, playerId);
+  const momentum = renderBattleMomentum(log, playerId);
   if (!lastEntry) {
     return `
       <section class="battle-pulse is-empty" aria-live="polite">
@@ -1239,6 +1240,7 @@ function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1, ta
         </div>
         ${metrics}
         ${liveStats}
+        ${momentum}
       </section>
     `;
   }
@@ -1260,6 +1262,7 @@ function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1, ta
       <small>${nextAction}</small>
       ${metrics}
       ${liveStats}
+      ${momentum}
     </section>
   `;
 }
@@ -1288,6 +1291,22 @@ function renderBattleLiveStats(log, playerId) {
       <span>${translate("battle.accuracy")}: <strong>${stats.accuracy}%</strong></span>
       <span>${translate("battle.hits")}: <strong>${stats.hits}/${stats.shots}</strong></span>
       <span>${translate("battle.sunk")}: <strong>${stats.sunk}</strong></span>
+    </div>
+  `;
+}
+
+function renderBattleMomentum(log, playerId) {
+  const momentum = battleMomentum(log, playerId);
+  return `
+    <div class="battle-momentum ${momentum.state}" aria-label="${translate("battle.momentumTitle")}">
+      <div class="battle-momentum-label">
+        <span>${translate("battle.momentumTitle")}</span>
+        <strong>${translate(`battle.momentum.${momentum.state}`)}</strong>
+      </div>
+      <div class="battle-momentum-track" style="--momentum: ${momentum.playerShare}%">
+        <i aria-hidden="true"></i>
+      </div>
+      <small>${momentum.playerScore}:${momentum.opponentScore}</small>
     </div>
   `;
 }

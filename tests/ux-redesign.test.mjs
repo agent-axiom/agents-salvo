@@ -72,6 +72,22 @@ test("battle pulse shows live player accuracy and hit progress", () => {
   assert.match(i18n, /"battle\.sunk"/);
 });
 
+test("battle pulse shows a live momentum strip from battle pressure", () => {
+  assert.match(app, /battleMomentum\(log, playerId\)/);
+  assert.match(app, /function renderBattleMomentum/);
+  assert.match(app, /class="battle-momentum/);
+  assert.match(app, /class="battle-momentum-track"/);
+  assert.match(app, /--momentum:\s*\$\{momentum\.playerShare\}%/);
+  assert.match(app, /battle\.momentumTitle/);
+  assert.match(app, /battle\.momentum\.\$\{momentum\.state\}/);
+  assert.match(css, /\.battle-momentum/);
+  assert.match(css, /\.battle-momentum-track/);
+  assert.match(i18n, /"battle\.momentumTitle"/);
+  assert.match(i18n, /"battle\.momentum\.ahead"/);
+  assert.match(i18n, /"battle\.momentum\.even"/);
+  assert.match(i18n, /"battle\.momentum\.behind"/);
+});
+
 test("agent battles keep the human fleet as own board after the agent wins", () => {
   assert.match(app, /function localPerspectivePlayerId/);
   assert.match(app, /state\.mode === "agent" \? "p1" : state\.game\.currentPlayerId/);

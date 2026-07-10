@@ -32,6 +32,25 @@ export function summarizeBattleLog(log, winnerId) {
   };
 }
 
+export function battleMomentum(log, playerId) {
+  const summary = summarizeBattleLog(log, playerId);
+  const player = statsForPlayer(summary.players, playerId);
+  const opponent =
+    summary.players.find((stats) => stats.playerId !== playerId) ?? withAccuracy(createPlayerStats("opponent"));
+  const playerScore = pressureScore(player);
+  const opponentScore = pressureScore(opponent);
+  const lead = playerScore - opponentScore;
+  const totalScore = playerScore + opponentScore;
+
+  return {
+    playerScore,
+    opponentScore,
+    lead,
+    playerShare: totalScore === 0 ? 50 : Math.round((playerScore / totalScore) * 100),
+    state: lead >= 3 ? "ahead" : lead <= -3 ? "behind" : "even",
+  };
+}
+
 export function buildBattleReport(log, winnerId, playerId = winnerId) {
   const summary = summarizeBattleLog(log, winnerId);
   const player = statsForPlayer(summary.players, playerId);
@@ -111,6 +130,10 @@ function withAccuracy(stats) {
     ...stats,
     accuracy: stats.shots === 0 ? 0 : Math.round((stats.hits / stats.shots) * 100),
   };
+}
+
+function pressureScore(stats) {
+  return stats.hits + stats.sunk * 2;
 }
 
 function achievement(id) {
