@@ -2409,7 +2409,10 @@ input {
 .result-modal {
   display: grid;
   width: min(440px, 100%);
+  max-height: calc(100dvh - 36px);
   gap: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 22px;
   background: var(--surface);
   border: 1px solid var(--line);
@@ -2543,14 +2546,46 @@ input {
 
 .battle-coaching {
   display: grid;
-  gap: 10px;
-  padding: 12px;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
   background: color-mix(in srgb, var(--accent) 8%, var(--surface));
   border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
   border-radius: 8px;
 }
 
-.battle-coaching > span {
+.battle-coaching-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 12px;
+  align-items: center;
+  padding: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.battle-coaching-summary::-webkit-details-marker {
+  display: none;
+}
+
+.battle-coaching-summary::after {
+  content: "⌄";
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: var(--muted);
+  font-weight: 900;
+  transition: transform 140ms ease;
+}
+
+.battle-coaching[open] .battle-coaching-summary {
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+}
+
+.battle-coaching[open] .battle-coaching-summary::after {
+  transform: rotate(180deg);
+}
+
+.battle-coaching-summary span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
@@ -2558,8 +2593,21 @@ input {
   text-transform: uppercase;
 }
 
+.battle-coaching-summary strong {
+  grid-column: 1;
+  color: var(--accent-strong);
+  line-height: 1.2;
+}
+
+.battle-coaching-preview {
+  grid-column: 1;
+  color: var(--text);
+  line-height: 1.35;
+}
+
 .battle-coaching p {
   margin: 0;
+  padding: 12px 12px 0;
   color: var(--text);
   line-height: 1.4;
 }
@@ -2568,6 +2616,7 @@ input {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  padding: 12px 12px 0;
 }
 
 .coaching-grid div {
@@ -2593,6 +2642,11 @@ input {
 .training-plan {
   display: grid;
   gap: 8px;
+  padding: 12px;
+}
+
+.battle-coaching:not([open]) .training-plan {
+  display: none;
 }
 
 .training-plan > span {

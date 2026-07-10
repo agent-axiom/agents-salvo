@@ -1365,8 +1365,12 @@ function renderBattleCoaching(coaching, trainingPlan) {
       ? trainingPlan.steps
       : [{ drillId: coaching.drillId, focusId: coaching.focusId, reasonId: coaching.diagnosisId }];
   return `
-    <section class="battle-coaching">
-      <span>${translate("coaching.title")}</span>
+    <details class="battle-coaching">
+      <summary class="battle-coaching-summary">
+        <span>${translate("coaching.title")}</span>
+        <strong>${translate(`coaching.drill.${coaching.drillId}`)}</strong>
+        <small class="battle-coaching-preview">${translate(`coaching.diagnosis.${coaching.diagnosisId}`)}</small>
+      </summary>
       <p>${translate(`coaching.diagnosis.${coaching.diagnosisId}`)}</p>
       <div class="coaching-grid">
         <div>
@@ -1399,12 +1403,12 @@ function renderBattleCoaching(coaching, trainingPlan) {
                     data-drill-id="${escapeHtml(step.drillId)}"
                   >${translate("coaching.startTraining")}</button>
                 </li>
-              `,
+          `,
             )
             .join("")}
         </ol>
       </div>
-    </section>
+    </details>
   `;
 }
 

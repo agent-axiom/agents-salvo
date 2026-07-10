@@ -154,7 +154,9 @@ test("topbar profile opens a stats popover for authenticated players", () => {
 test("smart battle adds hard agent difficulty and post-battle coaching", () => {
   assert.match(app, /value="hard"/);
   assert.match(app, /function renderBattleCoaching/);
-  assert.match(app, /class="battle-coaching"/);
+  assert.match(app, /<details class="battle-coaching"/);
+  assert.match(app, /class="battle-coaching-summary"/);
+  assert.match(app, /class="battle-coaching-preview"/);
   assert.match(app, /class="training-plan"/);
   assert.match(app, /trainingPlan\.steps/);
   assert.match(app, /data-action="start-coaching-training"/);
@@ -163,7 +165,11 @@ test("smart battle adds hard agent difficulty and post-battle coaching", () => {
   assert.match(app, /coaching\.diagnosis/);
   assert.match(app, /coaching\.drill/);
   assert.match(app, /report\.trainingPlan/);
+  assert.match(cssRule(".result-modal"), /max-height:\s*calc\(100dvh - 36px\)/);
+  assert.match(cssRule(".result-modal"), /overflow-y:\s*auto/);
   assert.match(css, /\.battle-coaching/);
+  assert.match(cssRule(".battle-coaching-summary"), /cursor:\s*pointer/);
+  assert.match(cssRule(".battle-coaching:not([open]) .training-plan"), /display:\s*none/);
   assert.match(css, /\.training-plan/);
   assert.match(i18n, /"agent\.hard"/);
   assert.match(i18n, /"coaching\.title"/);
