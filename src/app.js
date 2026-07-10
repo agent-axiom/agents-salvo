@@ -16,6 +16,7 @@ import {
 import { visibleBattleLog } from "./core/log.js";
 import { gamePresets, getGamePreset } from "./core/presets.js";
 import { buildBattleReport, summarizeBattleLog } from "./core/stats.js";
+import { analyzeTargetBoard } from "./core/tactics.js";
 import {
   applyTrainingShot,
   createTrainingSession,
@@ -921,6 +922,7 @@ function renderGame() {
           targetKind: "target",
           targetDisabled: state.game.phase === "finished",
           log: state.game.log,
+          salvoRemaining: state.game.salvoRemaining,
         })}
       </section>
       ${renderLocalResultModal()}
@@ -1173,10 +1175,11 @@ function renderOnlineSnapshot(snapshot) {
     targetKind: "online-target",
     targetDisabled: snapshot.phase !== "playing" || !snapshot.isYourTurn,
     log: snapshot.log ?? [],
+    salvoRemaining: snapshot.salvoRemaining ?? 1,
   });
 }
 
-function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, log }) {
+function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, log, salvoRemaining = 1 }) {
   const activeTab = state.battleTab || "target";
   return `
     <div class="battlefield target-first" data-active-tab="${activeTab}">
@@ -1186,6 +1189,7 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
         ${renderBattleTab("log", "log.title", activeTab)}
       </div>
       <div class="target-primary battle-tab-panel" data-panel="target">
+        ${renderTacticalAdvisor(targetBoard, { disabled: targetDisabled, salvoRemaining })}
         ${renderBoard(targetBoard, {
           kind: targetKind,
           title: translate("game.target"),
@@ -1200,6 +1204,36 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
           ${renderLog(log)}
         </div>
       </aside>
+    </div>
+  `;
+}
+
+function renderTacticalAdvisor(targetBoard, { disabled = false, salvoRemaining = 1 } = {}) {
+  const analysis = analyzeTargetBoard(targetBoard, { salvoRemaining });
+  const priority = analysis.priorityTargets.length
+    ? analysis.priorityTargets.slice(0, 3).map(formatCoordinate).join(" · ")
+    : translate("tactics.noPriority");
+  return `
+    <section class="tactical-advisor ${disabled ? "is-paused" : ""}" aria-label="${translate("tactics.title")}">
+      <div class="tactical-advisor-heading">
+        <span>${translate("tactics.title")}</span>
+        <strong>${translate(`tactics.recommendation.${analysis.recommendationId}`)}</strong>
+      </div>
+      <div class="tactical-stats">
+        ${renderTacticalStat("tactics.targets", analysis.availableTargets)}
+        ${renderTacticalStat("tactics.unresolved", analysis.unresolvedHits)}
+        ${renderTacticalStat("tactics.priority", priority)}
+        ${analysis.salvoRemaining > 1 ? renderTacticalStat("tactics.salvo", analysis.salvoRemaining) : ""}
+      </div>
+    </section>
+  `;
+}
+
+function renderTacticalStat(key, value) {
+  return `
+    <div>
+      <span>${translate(key)}</span>
+      <strong>${value}</strong>
     </div>
   `;
 }
@@ -1435,6 +1469,10 @@ function renderBoard(board, { kind, title, disabled = false }) {
       </div>
     </section>
   `;
+}
+
+function formatCoordinate(coordinate) {
+  return `${coordinateColumnLabel(state.language, coordinate.col)}${coordinate.row + 1}`;
 }
 
 function renderLog(log) {

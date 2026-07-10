@@ -1701,6 +1701,74 @@ input {
   min-width: 0;
 }
 
+.tactical-advisor {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1.2fr);
+  gap: 12px;
+  align-items: stretch;
+  margin-bottom: 12px;
+  padding: 12px;
+  color: var(--ink);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 64%),
+    color-mix(in srgb, var(--surface) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 8px;
+}
+
+.tactical-advisor.is-paused {
+  opacity: 0.72;
+}
+
+.tactical-advisor-heading {
+  display: grid;
+  gap: 5px;
+  align-content: center;
+}
+
+.tactical-advisor-heading span,
+.tactical-stats span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.tactical-advisor-heading strong {
+  color: var(--accent-strong);
+  font-size: 18px;
+  line-height: 1.18;
+}
+
+.tactical-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tactical-stats > div {
+  display: grid;
+  gap: 4px;
+  align-content: center;
+  min-height: 58px;
+  padding: 9px;
+  background: color-mix(in srgb, var(--surface-strong) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  border-radius: 8px;
+}
+
+.tactical-stats strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--accent-strong);
+  font-size: 18px;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .battle-side {
   grid-area: side;
   display: grid;
@@ -2868,6 +2936,10 @@ input {
     display: block;
   }
 
+  .tactical-advisor {
+    grid-template-columns: 1fr;
+  }
+
   .preset-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2955,6 +3027,10 @@ input {
 
   .public-leaderboard li small {
     grid-column: 2;
+  }
+
+  .tactical-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .settings-row {

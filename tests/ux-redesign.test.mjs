@@ -164,6 +164,17 @@ test("training mode exposes a daily chain, streak, and award shelf", () => {
   assert.match(i18n, /"training\.award\.threeDayStreak"/);
 });
 
+test("battlefield exposes a live tactical advisor during battle", () => {
+  assert.match(app, /analyzeTargetBoard/);
+  assert.match(app, /function renderTacticalAdvisor/);
+  assert.match(app, /class="[^"]*tactical-advisor/);
+  assert.match(app, /tactics\.recommendation/);
+  assert.match(css, /\.tactical-advisor/);
+  assert.match(css, /\.tactical-stats/);
+  assert.match(i18n, /"tactics\.title"/);
+  assert.match(i18n, /"tactics\.recommendation\.finishDamaged"/);
+});
+
 test("board cells expose localized state in aria labels", () => {
   assert.match(app, /function cellAriaLabel/);
   assert.match(app, /board\.state\./);
