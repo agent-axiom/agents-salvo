@@ -314,6 +314,37 @@ input {
   grid-template-columns: auto auto;
 }
 
+.profile-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 9;
+  width: min(560px, calc(100vw - 28px));
+  max-height: min(76vh, 720px);
+  padding: 16px;
+  overflow: auto;
+  background: color-mix(in srgb, var(--paper) 94%, var(--surface));
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.18);
+}
+
+.profile-popover-close {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  justify-self: end;
+  margin-left: auto;
+  background: var(--surface);
+}
+
+.profile-popover .profile-panel {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
 .settings-panel {
   position: absolute;
   top: calc(100% + 10px);
@@ -3039,6 +3070,13 @@ input {
   .settings-panel {
     position: static;
     width: 100%;
+  }
+
+  .profile-popover {
+    position: static;
+    order: 4;
+    width: 100%;
+    max-height: none;
   }
 
   .settings-row,

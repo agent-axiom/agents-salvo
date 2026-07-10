@@ -110,6 +110,19 @@ test("profile exposes online competition rank, best-of-three, and rating history
   assert.match(i18n, /"competition\.ratingHistory"/);
 });
 
+test("topbar profile opens a stats popover for authenticated players", () => {
+  assert.match(app, /profileOpen:\s*false/);
+  assert.match(app, /data-action="toggle-profile"/);
+  assert.match(app, /function renderProfilePopover/);
+  assert.match(app, /state\.profileOpen \? renderProfilePopover\(\) : ""/);
+  assert.match(app, /function toggleProfilePopover/);
+  assert.match(app, /await refreshProfile\(\{ renderWhenDone: false \}\)/);
+  assert.match(app, /data-action="close-profile"/);
+  assert.match(app, /renderProfilePanel\(\)/);
+  assert.match(css, /\.profile-popover/);
+  assert.match(css, /\.profile-popover \.profile-panel/);
+});
+
 test("smart battle adds hard agent difficulty and post-battle coaching", () => {
   assert.match(app, /value="hard"/);
   assert.match(app, /function renderBattleCoaching/);

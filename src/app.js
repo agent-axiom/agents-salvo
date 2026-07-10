@@ -42,6 +42,7 @@ const state = {
   audioEnabled: getInitialAudioEnabled(),
   audioUnlocked: false,
   settingsOpen: false,
+  profileOpen: false,
   screen: "menu",
   mode: null,
   presetId: "classic",
@@ -206,6 +207,7 @@ function render() {
             <strong>${translate("settings.title")}</strong>
           </button>
         </div>
+        ${state.profileOpen ? renderProfilePopover() : ""}
         ${renderSettingsPanel()}
       </header>
       ${renderScreen()}
@@ -232,7 +234,12 @@ function renderTopbarProfile() {
   const summary = profile?.summary;
   const rating = profile?.rating;
   return `
-    <button class="topbar-profile" data-action="refresh-profile">
+    <button
+      class="topbar-profile"
+      data-action="toggle-profile"
+      aria-haspopup="dialog"
+      aria-expanded="${state.profileOpen}"
+    >
       ${renderAuthAvatar(state.auth.user)}
       <span>
         <strong>${escapeHtml(state.auth.user.name || translate("auth.telegram"))}</strong>
@@ -242,6 +249,15 @@ function renderTopbarProfile() {
         })}</small>
       </span>
     </button>
+  `;
+}
+
+function renderProfilePopover() {
+  return `
+    <section class="profile-popover" role="dialog" aria-label="${translate("profile.title")}">
+      <button class="icon-button profile-popover-close" data-action="close-profile" aria-label="${translate("settings.close")}">×</button>
+      ${renderProfilePanel()}
+    </section>
   `;
 }
 
@@ -1640,6 +1656,8 @@ root.addEventListener("click", async (event) => {
   if (action === "audio-toggle") toggleAudio();
   if (action === "theme-toggle") toggleTheme();
   if (action === "visual-style-toggle") toggleVisualStyle();
+  if (action === "toggle-profile") await toggleProfilePopover();
+  if (action === "close-profile") closeProfilePopover();
   if (action === "menu") goToMenu();
   if (action === "new-game") startSetup(state.mode);
   if (action === "online-new-game") showOnline();
@@ -1700,6 +1718,7 @@ function selectPreset(presetId) {
 function startSetup(mode) {
   closeRemote();
   state.settingsOpen = false;
+  state.profileOpen = false;
   state.mode = mode;
   state.screen = "setup";
   state.setupPlayerId = "p1";
@@ -1718,6 +1737,7 @@ function startSetup(mode) {
 function showOnline() {
   closeRemote();
   state.settingsOpen = false;
+  state.profileOpen = false;
   state.mode = "online";
   state.screen = "online";
   state.setupBoard = randomlyPlaceSetup(currentPreset());
@@ -1736,6 +1756,7 @@ function showOnline() {
 function startTraining(scenarioId = state.training.scenarioId) {
   closeRemote();
   state.settingsOpen = false;
+  state.profileOpen = false;
   state.mode = "training";
   state.screen = "training";
   state.training.scenarioId = scenarioId || "checkerboard";
@@ -1747,6 +1768,7 @@ function startTraining(scenarioId = state.training.scenarioId) {
 function goToMenu() {
   closeRemote();
   state.settingsOpen = false;
+  state.profileOpen = false;
   state.screen = "menu";
   state.mode = null;
   state.game = null;
@@ -1759,6 +1781,38 @@ function goToMenu() {
 
 function toggleSettings() {
   state.settingsOpen = !state.settingsOpen;
+  if (state.settingsOpen) {
+    state.profileOpen = false;
+  }
+  render();
+}
+
+async function toggleProfilePopover() {
+  if (!state.auth.user) {
+    state.settingsOpen = true;
+    state.profileOpen = false;
+    render();
+    return;
+  }
+
+  state.profileOpen = !state.profileOpen;
+  state.settingsOpen = false;
+  if (!state.profileOpen) {
+    render();
+    return;
+  }
+
+  state.profile.loading = true;
+  state.profile.error = "";
+  render();
+  await refreshProfile({ renderWhenDone: false });
+  if (state.profileOpen) {
+    render();
+  }
+}
+
+function closeProfilePopover() {
+  state.profileOpen = false;
   render();
 }
 
@@ -2300,6 +2354,7 @@ async function refreshLeaderboard({ renderWhenDone = true } = {}) {
 }
 
 function resetProfile() {
+  state.profileOpen = false;
   state.profile.data = null;
   state.profile.loading = false;
   state.profile.error = "";
