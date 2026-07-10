@@ -1,0 +1,20 @@
+{
+  "name": "Salvo: Battleship",
+  "short_name": "Salvo",
+  "description": "Battleship with local, online, agent, and training modes.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#071224",
+  "background_color": "#071224",
+  "categories": ["games", "entertainment"],
+  "icons": [
+    {
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
