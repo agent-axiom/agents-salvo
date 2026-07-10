@@ -1200,7 +1200,7 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
         ${renderBattleTab("log", "log.title", activeTab)}
       </div>
       <div class="target-primary battle-tab-panel" data-panel="target">
-        ${renderBattlePulse(log, { targetDisabled, salvoRemaining })}
+        ${renderBattlePulse(log, { targetDisabled, salvoRemaining, tacticalAnalysis })}
         ${renderTacticalAdvisor(tacticalAnalysis, { disabled: targetDisabled })}
         ${renderBoard(targetBoard, {
           kind: targetKind,
@@ -1221,8 +1221,9 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
   `;
 }
 
-function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1 } = {}) {
+function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1, tacticalAnalysis = null } = {}) {
   const lastEntry = visibleBattleLog(log)[0];
+  const metrics = renderBattlePulseMetrics({ targetDisabled, salvoRemaining, tacticalAnalysis });
   if (!lastEntry) {
     return `
       <section class="battle-pulse is-empty" aria-live="polite">
@@ -1230,6 +1231,7 @@ function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1 } =
           <span>${translate("battle.awaitingShot")}</span>
           <strong>${translate("battle.nextAction")}</strong>
         </div>
+        ${metrics}
       </section>
     `;
   }
@@ -1249,7 +1251,19 @@ function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1 } =
         <strong>${translate(`shot.${lastEntry.result}`)}</strong>
       </div>
       <small>${nextAction}</small>
+      ${metrics}
     </section>
+  `;
+}
+
+function renderBattlePulseMetrics({ targetDisabled, salvoRemaining, tacticalAnalysis }) {
+  const priorityCount = tacticalAnalysis?.priorityTargets?.length ?? 0;
+  return `
+    <div class="battle-pulse-metrics" aria-label="${translate("battle.nextAction")}">
+      <span>${translate(targetDisabled ? "battle.paused" : "battle.ready")}</span>
+      <span>${translate("game.salvoShots", { count: salvoRemaining })}</span>
+      <span>${translate("battle.priorityCount", { count: priorityCount })}</span>
+    </div>
   `;
 }
 

@@ -40,13 +40,19 @@ test("battlefield prioritizes the opponent board and keeps own fleet/log seconda
 
 test("battlefield shows a compact last-shot pulse above the target board", () => {
   assert.match(app, /function renderBattlePulse/);
+  assert.match(app, /renderBattlePulse\(log, \{ targetDisabled, salvoRemaining, tacticalAnalysis \}\)/);
   assert.match(app, /visibleBattleLog\(log\)\[0\]/);
   assert.match(app, /class="battle-pulse/);
   assert.match(app, /class="battle-pulse-result/);
+  assert.match(app, /class="battle-pulse-metrics"/);
   assert.match(app, /battle\.lastShot/);
   assert.match(app, /battle\.awaitingShot/);
+  assert.match(app, /battle\.ready/);
+  assert.match(app, /battle\.paused/);
+  assert.match(app, /battle\.priorityCount/);
   assert.match(css, /\.battle-pulse/);
   assert.match(css, /\.battle-pulse-result/);
+  assert.match(css, /\.battle-pulse-metrics/);
   assert.match(i18n, /"battle\.lastShot"/);
   assert.match(i18n, /"battle\.awaitingShot"/);
 });

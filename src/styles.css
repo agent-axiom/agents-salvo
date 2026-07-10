@@ -1911,7 +1911,27 @@ input {
 }
 
 .battle-pulse.is-empty {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.battle-pulse-metrics {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.battle-pulse-metrics span {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 0 8px;
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--line));
+  border-radius: 999px;
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .tactical-advisor {
