@@ -1200,6 +1200,7 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
         ${renderBattleTab("log", "log.title", activeTab)}
       </div>
       <div class="target-primary battle-tab-panel" data-panel="target">
+        ${renderBattlePulse(log, { targetDisabled, salvoRemaining })}
         ${renderTacticalAdvisor(tacticalAnalysis, { disabled: targetDisabled })}
         ${renderBoard(targetBoard, {
           kind: targetKind,
@@ -1217,6 +1218,38 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
         </div>
       </aside>
     </div>
+  `;
+}
+
+function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1 } = {}) {
+  const lastEntry = visibleBattleLog(log)[0];
+  if (!lastEntry) {
+    return `
+      <section class="battle-pulse is-empty" aria-live="polite">
+        <div>
+          <span>${translate("battle.awaitingShot")}</span>
+          <strong>${translate("battle.nextAction")}</strong>
+        </div>
+      </section>
+    `;
+  }
+
+  const nextAction =
+    targetDisabled || salvoRemaining <= 1
+      ? translate("battle.nextAction")
+      : translate("game.salvoShots", { count: salvoRemaining });
+  return `
+    <section class="battle-pulse ${lastEntry.result}" aria-live="polite">
+      <div>
+        <span>${translate("battle.lastShot")}</span>
+        <strong>${playerName(lastEntry.playerId)} · ${formatCoordinate(lastEntry.coordinate)}</strong>
+      </div>
+      <div class="battle-pulse-result ${lastEntry.result}">
+        <i aria-hidden="true"></i>
+        <strong>${translate(`shot.${lastEntry.result}`)}</strong>
+      </div>
+      <small>${nextAction}</small>
+    </section>
   `;
 }
 

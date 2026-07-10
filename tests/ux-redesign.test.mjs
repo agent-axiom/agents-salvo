@@ -38,6 +38,19 @@ test("battlefield prioritizes the opponent board and keeps own fleet/log seconda
   assert.match(css, /\.own-minimap/);
 });
 
+test("battlefield shows a compact last-shot pulse above the target board", () => {
+  assert.match(app, /function renderBattlePulse/);
+  assert.match(app, /visibleBattleLog\(log\)\[0\]/);
+  assert.match(app, /class="battle-pulse/);
+  assert.match(app, /class="battle-pulse-result/);
+  assert.match(app, /battle\.lastShot/);
+  assert.match(app, /battle\.awaitingShot/);
+  assert.match(css, /\.battle-pulse/);
+  assert.match(css, /\.battle-pulse-result/);
+  assert.match(i18n, /"battle\.lastShot"/);
+  assert.match(i18n, /"battle\.awaitingShot"/);
+});
+
 test("agent battles keep the human fleet as own board after the agent wins", () => {
   assert.match(app, /function localPerspectivePlayerId/);
   assert.match(app, /state\.mode === "agent" \? "p1" : state\.game\.currentPlayerId/);
@@ -282,6 +295,7 @@ test("mobile setup controls use compact topbar and full-width actions", () => {
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.topbar-controls\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\) auto auto;/);
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.settings-button strong\s*\{[\s\S]*?display:\s*none;/);
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.setup-primary-actions\s*\{[\s\S]*?grid-template-columns:\s*1fr;/);
+  assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.battle-pulse\s*\{[\s\S]*?grid-template-columns:\s*1fr;/);
   assert.match(css, /\.setup-action-ready:not\(:disabled\)/);
 });
 

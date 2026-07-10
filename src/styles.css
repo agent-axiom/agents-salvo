@@ -1834,6 +1834,86 @@ input {
   min-width: 0;
 }
 
+.battle-pulse {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(120px, 0.55fr);
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  color: var(--ink);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%),
+    color-mix(in srgb, var(--surface) 90%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+  border-radius: 8px;
+}
+
+.battle-pulse > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.battle-pulse span,
+.battle-pulse small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.battle-pulse strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--accent-strong);
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.battle-pulse-result {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 11px;
+  background: color-mix(in srgb, var(--surface-strong) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  border-radius: 999px;
+}
+
+.battle-pulse-result i {
+  display: block;
+  width: 9px;
+  height: 9px;
+  background: var(--miss);
+  border-radius: 999px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--miss) 18%, transparent);
+}
+
+.battle-pulse-result.hit i,
+.battle-pulse-result.sunk i {
+  background: var(--hit);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--hit) 20%, transparent);
+}
+
+.battle-pulse-result.sunk {
+  border-color: color-mix(in srgb, var(--sunk) 48%, var(--line));
+}
+
+.battle-pulse-result.sunk i {
+  background: var(--sunk);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--sunk) 18%, transparent);
+}
+
+.battle-pulse.is-empty {
+  grid-template-columns: 1fr;
+}
+
 .tactical-advisor {
   display: grid;
   grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1.2fr);
@@ -3330,6 +3410,10 @@ input {
 
   .result-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .battle-pulse {
+    grid-template-columns: 1fr;
   }
 
   .battle-report-grid,
