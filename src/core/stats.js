@@ -51,6 +51,19 @@ export function battleMomentum(log, playerId) {
   };
 }
 
+export function fleetIntel(log, playerId, ownBoard) {
+  const summary = summarizeBattleLog(log, playerId);
+  const player = statsForPlayer(summary.players, playerId);
+  const ownShips = Array.isArray(ownBoard?.ships) ? ownBoard.ships : [];
+  const ownSunk = ownShips.filter(shipIsSunk).length;
+
+  return {
+    enemySunk: player.sunk,
+    ownAfloat: Math.max(0, ownShips.length - ownSunk),
+    ownTotal: ownShips.length,
+  };
+}
+
 export function buildBattleReport(log, winnerId, playerId = winnerId) {
   const summary = summarizeBattleLog(log, winnerId);
   const player = statsForPlayer(summary.players, playerId);
@@ -134,6 +147,16 @@ function withAccuracy(stats) {
 
 function pressureScore(stats) {
   return stats.hits + stats.sunk * 2;
+}
+
+function shipIsSunk(ship) {
+  const cells = Array.isArray(ship?.cells) ? ship.cells : [];
+  const hits = Array.isArray(ship?.hits) ? ship.hits : [];
+  return cells.length > 0 && cells.every((cell) => hits.some((hit) => sameCoordinate(cell, hit)));
+}
+
+function sameCoordinate(a, b) {
+  return a?.row === b?.row && a?.col === b?.col;
 }
 
 function achievement(id) {

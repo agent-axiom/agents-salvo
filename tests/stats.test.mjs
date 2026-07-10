@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { achievementsForBattleStats, battleMomentum, buildBattleReport, summarizeBattleLog } from "../src/core/stats.js";
+import {
+  achievementsForBattleStats,
+  battleMomentum,
+  buildBattleReport,
+  fleetIntel,
+  summarizeBattleLog,
+} from "../src/core/stats.js";
 
 test("summarizeBattleLog counts winner shots, hits, misses, sunk ships, and accuracy", () => {
   const summary = summarizeBattleLog(
@@ -58,6 +64,50 @@ test("battleMomentum scores live pressure from hits and sunk ships", () => {
     lead: 0,
     playerShare: 50,
     state: "even",
+  });
+});
+
+test("fleetIntel reports visible enemy sunk ships and own fleet afloat", () => {
+  const ownBoard = {
+    ships: [
+      {
+        id: "destroyer",
+        cells: [
+          { row: 0, col: 0 },
+          { row: 0, col: 1 },
+        ],
+        hits: [
+          { row: 0, col: 0 },
+          { row: 0, col: 1 },
+        ],
+      },
+      {
+        id: "cruiser",
+        cells: [
+          { row: 3, col: 3 },
+          { row: 4, col: 3 },
+          { row: 5, col: 3 },
+        ],
+        hits: [{ row: 3, col: 3 }],
+      },
+      {
+        id: "boat",
+        cells: [{ row: 7, col: 7 }],
+        hits: [],
+      },
+    ],
+  };
+  const log = [
+    { playerId: "p1", result: "sunk" },
+    { playerId: "p2", result: "hit" },
+    { playerId: "p1", result: "miss" },
+    { playerId: "p1", result: "sunk" },
+  ];
+
+  assert.deepEqual(fleetIntel(log, "p1", ownBoard), {
+    enemySunk: 2,
+    ownAfloat: 2,
+    ownTotal: 3,
   });
 });
 

@@ -15,7 +15,7 @@ import {
 } from "./core/game.js";
 import { visibleBattleLog } from "./core/log.js";
 import { gamePresets, getGamePreset } from "./core/presets.js";
-import { battleMomentum, buildBattleReport, summarizeBattleLog } from "./core/stats.js";
+import { battleMomentum, buildBattleReport, fleetIntel, summarizeBattleLog } from "./core/stats.js";
 import { analyzeTargetBoard } from "./core/tactics.js";
 import {
   applyTrainingShot,
@@ -1205,7 +1205,7 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
         ${renderBattleTab("log", "log.title", activeTab)}
       </div>
       <div class="target-primary battle-tab-panel" data-panel="target">
-        ${renderBattlePulse(log, { targetDisabled, salvoRemaining, tacticalAnalysis, playerId })}
+        ${renderBattlePulse(log, { targetDisabled, salvoRemaining, tacticalAnalysis, playerId, ownBoard })}
         ${renderTacticalAdvisor(tacticalAnalysis, { disabled: targetDisabled, targetAction })}
         ${renderBoard(targetBoard, {
           kind: targetKind,
@@ -1226,11 +1226,15 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
   `;
 }
 
-function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1, tacticalAnalysis = null, playerId = "p1" } = {}) {
+function renderBattlePulse(
+  log,
+  { targetDisabled = false, salvoRemaining = 1, tacticalAnalysis = null, playerId = "p1", ownBoard = null } = {},
+) {
   const lastEntry = visibleBattleLog(log)[0];
   const metrics = renderBattlePulseMetrics({ targetDisabled, salvoRemaining, tacticalAnalysis });
   const liveStats = renderBattleLiveStats(log, playerId);
   const momentum = renderBattleMomentum(log, playerId);
+  const fleet = renderFleetIntel(log, playerId, ownBoard);
   if (!lastEntry) {
     return `
       <section class="battle-pulse is-empty" aria-live="polite">
@@ -1241,6 +1245,7 @@ function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1, ta
         ${metrics}
         ${liveStats}
         ${momentum}
+        ${fleet}
       </section>
     `;
   }
@@ -1263,6 +1268,7 @@ function renderBattlePulse(log, { targetDisabled = false, salvoRemaining = 1, ta
       ${metrics}
       ${liveStats}
       ${momentum}
+      ${fleet}
     </section>
   `;
 }
@@ -1291,6 +1297,16 @@ function renderBattleLiveStats(log, playerId) {
       <span>${translate("battle.accuracy")}: <strong>${stats.accuracy}%</strong></span>
       <span>${translate("battle.hits")}: <strong>${stats.hits}/${stats.shots}</strong></span>
       <span>${translate("battle.sunk")}: <strong>${stats.sunk}</strong></span>
+    </div>
+  `;
+}
+
+function renderFleetIntel(log, playerId, ownBoard) {
+  const intel = fleetIntel(log, playerId, ownBoard);
+  return `
+    <div class="battle-fleet-intel" aria-label="${translate("battle.fleetIntel")}">
+      <span>${translate("battle.enemySunk")}: <strong>${intel.enemySunk}</strong></span>
+      <span>${translate("battle.ownAfloat")}: <strong>${intel.ownAfloat}/${intel.ownTotal}</strong></span>
     </div>
   `;
 }

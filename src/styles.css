@@ -1962,6 +1962,32 @@ input {
   font-size: 11px;
 }
 
+.battle-fleet-intel {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.battle-fleet-intel span {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface-strong) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 74%, transparent);
+  border-radius: 999px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.battle-fleet-intel strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+
 .battle-momentum {
   grid-column: 1 / -1;
   display: grid;
