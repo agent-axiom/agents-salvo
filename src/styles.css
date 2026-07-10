@@ -2012,6 +2012,33 @@ input {
   grid-template-columns: 1fr;
 }
 
+.tactical-quick-fire {
+  width: fit-content;
+  min-height: 38px;
+  padding: 0 16px;
+  color: var(--paper);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 900;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 88%, white), var(--accent));
+  border: 1px solid color-mix(in srgb, var(--accent) 76%, var(--line));
+  border-radius: 999px;
+  box-shadow: 0 10px 22px color-mix(in srgb, var(--accent) 18%, transparent);
+  cursor: pointer;
+}
+
+.tactical-quick-fire:hover:not(:disabled),
+.tactical-quick-fire:focus-visible {
+  transform: translateY(-1px);
+  filter: saturate(1.08);
+}
+
+.tactical-quick-fire:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
 .tactical-stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

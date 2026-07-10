@@ -280,6 +280,18 @@ test("tactical advisor exposes priority targets as fireable coordinate chips", (
   assert.match(css, /\.priority-target-chip/);
 });
 
+test("tactical advisor exposes a one-tap recommended shot", () => {
+  assert.match(app, /function renderQuickFireButton/);
+  assert.match(app, /renderQuickFireButton\(analysis\.priorityTargets\[0\], \{ disabled, targetAction \}\)/);
+  assert.match(app, /class="tactical-quick-fire"/);
+  assert.match(app, /data-action="\$\{targetAction\}"/);
+  assert.match(app, /data-row="\$\{target\.row\}"/);
+  assert.match(app, /data-col="\$\{target\.col\}"/);
+  assert.match(app, /translate\("tactics\.quickFire"/);
+  assert.match(css, /\.tactical-quick-fire/);
+  assert.match(i18n, /"tactics\.quickFire"/);
+});
+
 test("tactical advisor can collapse into a compact battle control", () => {
   assert.match(app, /tacticalAdvisorOpen:\s*true/);
   assert.match(app, /data-action="toggle-tactical-advisor"/);

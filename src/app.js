@@ -1293,6 +1293,7 @@ function renderTacticalAdvisor(analysis, { disabled = false, targetAction = "sho
         </button>
       </div>
       <div class="tactical-advisor-body" ${expanded ? "" : "hidden"}>
+        ${renderQuickFireButton(analysis.priorityTargets[0], { disabled, targetAction })}
         <div class="tactical-stats">
           ${renderTacticalStat("tactics.targets", analysis.availableTargets)}
           ${renderTacticalStat("tactics.unresolved", analysis.unresolvedHits)}
@@ -1302,6 +1303,21 @@ function renderTacticalAdvisor(analysis, { disabled = false, targetAction = "sho
         ${renderPriorityTargetChips(analysis.priorityTargets, { disabled, targetAction })}
       </div>
     </section>
+  `;
+}
+
+function renderQuickFireButton(target, { disabled = false, targetAction = "shot" } = {}) {
+  if (!target) return "";
+  return `
+    <button
+      class="tactical-quick-fire"
+      data-action="${targetAction}"
+      data-row="${target.row}"
+      data-col="${target.col}"
+      ${disabled ? "disabled" : ""}
+    >
+      ${translate("tactics.quickFire", { coordinate: formatCoordinate(target) })}
+    </button>
   `;
 }
 

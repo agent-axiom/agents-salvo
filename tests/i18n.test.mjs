@@ -207,6 +207,7 @@ test("i18n translates result modal, theme, and history labels in every language"
     "battle.ready",
     "battle.paused",
     "battle.priorityCount",
+    "tactics.quickFire",
     "online.newRoom",
     "online.rematch",
     "online.rematchWaiting",
