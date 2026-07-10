@@ -175,6 +175,14 @@ test("battlefield exposes a live tactical advisor during battle", () => {
   assert.match(i18n, /"tactics\.recommendation\.finishDamaged"/);
 });
 
+test("tactical advisor highlights priority cells on the target board", () => {
+  assert.match(app, /priorityTargetKeys/);
+  assert.match(app, /tactical-priority/);
+  assert.match(app, /priorityTargets:\s*tacticalAnalysis\.priorityTargets/);
+  assert.match(css, /\.cell\.tactical-priority/);
+  assert.match(css, /\.target \.cell\.tactical-priority/);
+});
+
 test("board cells expose localized state in aria labels", () => {
   assert.match(app, /function cellAriaLabel/);
   assert.match(app, /board\.state\./);

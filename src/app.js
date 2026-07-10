@@ -1181,6 +1181,7 @@ function renderOnlineSnapshot(snapshot) {
 
 function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, log, salvoRemaining = 1 }) {
   const activeTab = state.battleTab || "target";
+  const tacticalAnalysis = analyzeTargetBoard(targetBoard, { salvoRemaining });
   return `
     <div class="battlefield target-first" data-active-tab="${activeTab}">
       <div class="battle-tabs" role="tablist" aria-label="${translate("battle.tabs")}">
@@ -1189,11 +1190,12 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
         ${renderBattleTab("log", "log.title", activeTab)}
       </div>
       <div class="target-primary battle-tab-panel" data-panel="target">
-        ${renderTacticalAdvisor(targetBoard, { disabled: targetDisabled, salvoRemaining })}
+        ${renderTacticalAdvisor(tacticalAnalysis, { disabled: targetDisabled })}
         ${renderBoard(targetBoard, {
           kind: targetKind,
           title: translate("game.target"),
           disabled: targetDisabled,
+          priorityTargets: tacticalAnalysis.priorityTargets,
         })}
       </div>
       <aside class="battle-side">
@@ -1208,8 +1210,7 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
   `;
 }
 
-function renderTacticalAdvisor(targetBoard, { disabled = false, salvoRemaining = 1 } = {}) {
-  const analysis = analyzeTargetBoard(targetBoard, { salvoRemaining });
+function renderTacticalAdvisor(analysis, { disabled = false } = {}) {
   const priority = analysis.priorityTargets.length
     ? analysis.priorityTargets.slice(0, 3).map(formatCoordinate).join(" · ")
     : translate("tactics.noPriority");
@@ -1431,10 +1432,11 @@ function renderResultStat(key, value) {
   `;
 }
 
-function renderBoard(board, { kind, title, disabled = false }) {
+function renderBoard(board, { kind, title, disabled = false, priorityTargets = [] }) {
   const columnLabels = Array.from({ length: board.size }, (_, index) =>
     coordinateColumnLabel(state.language, index),
   );
+  const priorityTargetKeys = new Set(priorityTargets.map(coordinateKey));
   return `
     <section class="board-panel">
       <div class="board-title">
@@ -1456,8 +1458,13 @@ function renderBoard(board, { kind, title, disabled = false }) {
             const cell = kind === "own" || kind === "setup" ? getCell(board, coordinate) : getTargetCell(board, coordinate);
             const label = cellAriaLabel(cell, kind, row, columnLabels[col]);
             const buttonDisabled = disabled || kind === "own" || cell.shot;
+            const classes = [
+              "cell",
+              cellClass(cell, kind, board, coordinate),
+              priorityTargetKeys.has(coordinateKey(coordinate)) ? "tactical-priority" : "",
+            ].filter(Boolean).join(" ");
             return `<button
-              class="cell ${cellClass(cell, kind, board, coordinate)}"
+              class="${classes}"
               data-action="${kind === "target" ? "shot" : kind === "online-target" ? "online-shot" : kind === "training-target" ? "training-shot" : kind === "setup" ? "setup-cell" : ""}"
               data-row="${row}"
               data-col="${col}"
@@ -2370,6 +2377,10 @@ function setupPreviewClass(coordinate) {
 
 function sameCoordinate(first, second) {
   return first.row === second.row && first.col === second.col;
+}
+
+function coordinateKey(coordinate) {
+  return `${coordinate.row}:${coordinate.col}`;
 }
 
 function gameOptions() {
