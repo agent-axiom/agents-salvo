@@ -2140,6 +2140,13 @@ input {
   border-color: var(--accent);
 }
 
+.tactical-advisor-compact-toggle {
+  width: fit-content;
+  min-height: 38px;
+  padding: 0 14px;
+  background: color-mix(in srgb, var(--surface-strong) 88%, transparent);
+}
+
 .tactical-advisor-body {
   display: grid;
   gap: 8px;
@@ -2147,6 +2154,10 @@ input {
 
 .tactical-advisor.is-collapsed {
   grid-template-columns: 1fr;
+  justify-items: start;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
 }
 
 .tactical-quick-fire {

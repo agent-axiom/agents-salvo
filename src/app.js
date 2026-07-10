@@ -1350,11 +1350,26 @@ function renderBattleMomentum(log, playerId) {
 function renderTacticalAdvisor(analysis, { disabled = false, targetAction = "shot" } = {}) {
   const expanded = state.tacticalAdvisorOpen;
   const toggleLabel = translate(expanded ? "tactics.collapse" : "tactics.expand");
+  if (!expanded) {
+    return `
+      <section class="tactical-advisor is-collapsed" aria-label="${translate("tactics.title")}">
+        <button
+          class="tactical-advisor-toggle tactical-advisor-compact-toggle"
+          data-action="toggle-tactical-advisor"
+          aria-expanded="false"
+          aria-label="${translate("tactics.expand")}"
+        >
+          ${translate("tactics.expand")}
+        </button>
+      </section>
+    `;
+  }
+
   const priority = analysis.priorityTargets.length
     ? analysis.priorityTargets.slice(0, 3).map(formatCoordinate).join(" · ")
     : translate("tactics.noPriority");
   return `
-    <section class="tactical-advisor ${disabled ? "is-paused" : ""} ${expanded ? "is-expanded" : "is-collapsed"}" aria-label="${translate("tactics.title")}">
+    <section class="tactical-advisor ${disabled ? "is-paused" : ""} is-expanded" aria-label="${translate("tactics.title")}">
       <div class="tactical-advisor-heading">
         <div class="tactical-advisor-title">
           <span>${translate("tactics.title")}</span>
@@ -1369,7 +1384,7 @@ function renderTacticalAdvisor(analysis, { disabled = false, targetAction = "sho
           ${toggleLabel}
         </button>
       </div>
-      <div class="tactical-advisor-body" ${expanded ? "" : "hidden"}>
+      <div class="tactical-advisor-body">
         ${renderQuickFireButton(analysis.priorityTargets[0], { disabled, targetAction })}
         <div class="tactical-stats">
           ${renderTacticalStat("tactics.targets", analysis.availableTargets)}

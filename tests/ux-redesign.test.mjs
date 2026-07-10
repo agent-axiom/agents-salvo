@@ -360,12 +360,23 @@ test("tactical advisor can collapse into a compact battle control", () => {
   assert.match(app, /aria-expanded="\$\{expanded\}"/);
   assert.match(app, /function toggleTacticalAdvisor/);
   assert.match(app, /state\.tacticalAdvisorOpen = !state\.tacticalAdvisorOpen/);
+  assert.match(app, /class="tactical-advisor \$\{disabled \? "is-paused" : ""\} is-expanded"/);
   assert.match(app, /class="tactical-advisor-body"/);
-  assert.match(app, /\$\{expanded \? "" : "hidden"\}/);
   assert.match(css, /\.tactical-advisor-toggle/);
   assert.match(css, /\.tactical-advisor\.is-collapsed/);
   assert.match(i18n, /"tactics\.collapse"/);
   assert.match(i18n, /"tactics\.expand"/);
+});
+
+test("collapsed tactical advisor renders as a single compact toggle", () => {
+  assert.match(app, /if \(!expanded\) \{/);
+  assert.match(app, /class="tactical-advisor is-collapsed"/);
+  assert.match(app, /class="tactical-advisor-toggle tactical-advisor-compact-toggle"/);
+  assert.match(app, /aria-expanded="false"/);
+  assert.match(app, /aria-label="\$\{translate\("tactics\.expand"\)\}"/);
+  assert.match(css, /\.tactical-advisor-compact-toggle/);
+  assert.match(cssRule(".tactical-advisor.is-collapsed"), /padding:\s*0/);
+  assert.match(cssRule(".tactical-advisor.is-collapsed"), /background:\s*transparent/);
 });
 
 test("tactical priority hints do not mimic sunk or miss markers", () => {
