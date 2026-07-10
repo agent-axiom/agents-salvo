@@ -253,6 +253,19 @@ test("tactical advisor highlights priority cells on the target board", () => {
   assert.match(css, /\.target \.cell\.tactical-priority/);
 });
 
+test("tactical advisor exposes priority targets as fireable coordinate chips", () => {
+  assert.match(app, /function renderPriorityTargetChips/);
+  assert.match(app, /targetKind === "online-target" \? "online-shot" : "shot"/);
+  assert.match(app, /renderPriorityTargetChips\(analysis\.priorityTargets, \{ disabled, targetAction \}\)/);
+  assert.match(app, /class="priority-targets"/);
+  assert.match(app, /class="priority-target-chip"/);
+  assert.match(app, /data-action="\$\{targetAction\}"/);
+  assert.match(app, /data-row="\$\{target\.row\}"/);
+  assert.match(app, /data-col="\$\{target\.col\}"/);
+  assert.match(css, /\.priority-targets/);
+  assert.match(css, /\.priority-target-chip/);
+});
+
 test("tactical priority hints do not mimic sunk or miss markers", () => {
   const priorityMarkerRule = combinedCssRule(
     ".target .cell.tactical-priority:not(:disabled)::before",

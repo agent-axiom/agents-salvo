@@ -1192,6 +1192,7 @@ function renderOnlineSnapshot(snapshot) {
 function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, log, salvoRemaining = 1 }) {
   const activeTab = state.battleTab || "target";
   const tacticalAnalysis = analyzeTargetBoard(targetBoard, { salvoRemaining });
+  const targetAction = targetKind === "online-target" ? "online-shot" : "shot";
   return `
     <div class="battlefield target-first" data-active-tab="${activeTab}">
       <div class="battle-tabs" role="tablist" aria-label="${translate("battle.tabs")}">
@@ -1201,7 +1202,7 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
       </div>
       <div class="target-primary battle-tab-panel" data-panel="target">
         ${renderBattlePulse(log, { targetDisabled, salvoRemaining, tacticalAnalysis })}
-        ${renderTacticalAdvisor(tacticalAnalysis, { disabled: targetDisabled })}
+        ${renderTacticalAdvisor(tacticalAnalysis, { disabled: targetDisabled, targetAction })}
         ${renderBoard(targetBoard, {
           kind: targetKind,
           title: translate("game.target"),
@@ -1267,7 +1268,7 @@ function renderBattlePulseMetrics({ targetDisabled, salvoRemaining, tacticalAnal
   `;
 }
 
-function renderTacticalAdvisor(analysis, { disabled = false } = {}) {
+function renderTacticalAdvisor(analysis, { disabled = false, targetAction = "shot" } = {}) {
   const priority = analysis.priorityTargets.length
     ? analysis.priorityTargets.slice(0, 3).map(formatCoordinate).join(" · ")
     : translate("tactics.noPriority");
@@ -1283,7 +1284,32 @@ function renderTacticalAdvisor(analysis, { disabled = false } = {}) {
         ${renderTacticalStat("tactics.priority", priority)}
         ${analysis.salvoRemaining > 1 ? renderTacticalStat("tactics.salvo", analysis.salvoRemaining) : ""}
       </div>
+      ${renderPriorityTargetChips(analysis.priorityTargets, { disabled, targetAction })}
     </section>
+  `;
+}
+
+function renderPriorityTargetChips(priorityTargets, { disabled = false, targetAction = "shot" } = {}) {
+  const targets = priorityTargets.slice(0, 3);
+  if (!targets.length) return "";
+  return `
+    <div class="priority-targets" aria-label="${translate("tactics.priority")}">
+      ${targets
+        .map(
+          (target) => `
+            <button
+              class="priority-target-chip"
+              data-action="${targetAction}"
+              data-row="${target.row}"
+              data-col="${target.col}"
+              ${disabled ? "disabled" : ""}
+            >
+              ${formatCoordinate(target)}
+            </button>
+          `,
+        )
+        .join("")}
+    </div>
   `;
 }
 

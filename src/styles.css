@@ -2002,6 +2002,40 @@ input {
   white-space: nowrap;
 }
 
+.priority-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.priority-target-chip {
+  min-height: 32px;
+  padding: 0 12px;
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 850;
+  line-height: 1;
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 46%, var(--line));
+  border-radius: 999px;
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 12%, transparent);
+  cursor: pointer;
+}
+
+.priority-target-chip:hover:not(:disabled),
+.priority-target-chip:focus-visible {
+  color: var(--paper);
+  background: var(--accent);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.priority-target-chip:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .battle-side {
   grid-area: side;
   display: grid;
