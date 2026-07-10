@@ -278,6 +278,7 @@ input {
 }
 
 .topbar-profile,
+.leaderboard-button,
 .settings-button {
   display: grid;
   align-items: center;
@@ -314,7 +315,45 @@ input {
   grid-template-columns: auto auto;
 }
 
-.profile-popover {
+.leaderboard-button {
+  grid-template-columns: 24px auto;
+}
+
+.leaderboard-button-icon {
+  position: relative;
+  width: 22px;
+  height: 22px;
+}
+
+.leaderboard-button-icon::before,
+.leaderboard-button-icon::after {
+  content: "";
+  position: absolute;
+  bottom: 3px;
+  width: 5px;
+  background: var(--accent);
+  border-radius: 2px 2px 0 0;
+}
+
+.leaderboard-button-icon::before {
+  left: 3px;
+  height: 11px;
+  opacity: 0.7;
+}
+
+.leaderboard-button-icon::after {
+  right: 3px;
+  height: 15px;
+}
+
+.leaderboard-button-icon {
+  background:
+    linear-gradient(var(--accent), var(--accent)) 9px 5px / 5px 15px no-repeat,
+    linear-gradient(var(--line), var(--line)) 1px 19px / 20px 2px no-repeat;
+}
+
+.profile-popover,
+.leaderboard-popover {
   position: absolute;
   top: calc(100% + 10px);
   right: 0;
@@ -329,7 +368,8 @@ input {
   box-shadow: 0 22px 70px rgba(0, 0, 0, 0.18);
 }
 
-.profile-popover-close {
+.profile-popover-close,
+.leaderboard-popover-close {
   position: sticky;
   top: 0;
   z-index: 1;
@@ -339,6 +379,13 @@ input {
 }
 
 .profile-popover .profile-panel {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.leaderboard-popover .leaderboard-panel {
   margin: 0;
   padding: 0;
   background: transparent;
@@ -700,36 +747,7 @@ input {
   border-radius: 0;
 }
 
-.profile-compact {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  padding: 14px;
-  background: color-mix(in srgb, var(--surface) 82%, transparent);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-
-.profile-compact h3,
-.profile-compact p {
-  margin: 0;
-}
-
-.profile-compact span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.profile-compact p {
-  color: var(--muted);
-  line-height: 1.4;
-}
-
-.public-leaderboard {
+.leaderboard-panel {
   display: grid;
   gap: 10px;
   padding: 14px;
@@ -738,14 +756,14 @@ input {
   border-radius: 8px;
 }
 
-.public-leaderboard-header {
+.leaderboard-panel-header {
   display: flex;
   gap: 12px;
   align-items: center;
   justify-content: space-between;
 }
 
-.public-leaderboard span {
+.leaderboard-panel span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
@@ -753,13 +771,13 @@ input {
   text-transform: uppercase;
 }
 
-.public-leaderboard p {
+.leaderboard-panel p {
   margin: 0;
   color: var(--muted);
   line-height: 1.4;
 }
 
-.public-leaderboard ol {
+.leaderboard-panel ol {
   display: grid;
   gap: 6px;
   max-height: 170px;
@@ -769,7 +787,7 @@ input {
   list-style: none;
 }
 
-.public-leaderboard li {
+.leaderboard-panel li {
   display: grid;
   grid-template-columns: minmax(52px, auto) minmax(0, 1fr) auto;
   gap: 8px;
@@ -778,7 +796,7 @@ input {
   border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
 }
 
-.public-leaderboard li span {
+.leaderboard-panel li span {
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
@@ -788,7 +806,7 @@ input {
   text-transform: none;
 }
 
-.public-leaderboard li small {
+.leaderboard-panel li small {
   color: var(--muted);
   font-weight: 700;
 }
@@ -3055,7 +3073,7 @@ input {
 
   .topbar-controls {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     gap: 8px;
     align-items: stretch;
   }
@@ -3065,6 +3083,7 @@ input {
     min-width: 0;
   }
 
+  .leaderboard-button,
   .settings-button {
     width: 52px;
     min-width: 52px;
@@ -3073,6 +3092,7 @@ input {
     padding: 0;
   }
 
+  .leaderboard-button strong,
   .settings-button strong {
     display: none;
   }
@@ -3086,28 +3106,28 @@ input {
     width: 100%;
   }
 
-  .profile-popover {
+  .profile-popover,
+  .leaderboard-popover {
     position: static;
     order: 4;
     width: 100%;
     max-height: none;
   }
 
-  .settings-row,
-  .profile-compact {
+  .settings-row {
     grid-template-columns: 1fr;
   }
 
-  .public-leaderboard-header {
+  .leaderboard-panel-header {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .public-leaderboard li {
+  .leaderboard-panel li {
     grid-template-columns: minmax(42px, auto) minmax(0, 1fr);
   }
 
-  .public-leaderboard li small {
+  .leaderboard-panel li small {
     grid-column: 2;
   }
 

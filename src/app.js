@@ -43,6 +43,7 @@ const state = {
   audioUnlocked: false,
   settingsOpen: false,
   profileOpen: false,
+  leaderboardOpen: false,
   screen: "menu",
   mode: null,
   presetId: "classic",
@@ -197,6 +198,7 @@ function render() {
         </div>
         <div class="topbar-controls compact-controls">
           ${renderTopbarProfile()}
+          ${renderTopbarLeaderboard()}
           <button
             class="settings-button"
             data-action="toggle-settings"
@@ -208,6 +210,7 @@ function render() {
           </button>
         </div>
         ${state.profileOpen ? renderProfilePopover() : ""}
+        ${state.leaderboardOpen ? renderLeaderboardPopover() : ""}
         ${renderSettingsPanel()}
       </header>
       ${renderScreen()}
@@ -249,6 +252,30 @@ function renderTopbarProfile() {
         })}</small>
       </span>
     </button>
+  `;
+}
+
+function renderTopbarLeaderboard() {
+  return `
+    <button
+      class="leaderboard-button"
+      data-action="toggle-leaderboard"
+      aria-haspopup="dialog"
+      aria-expanded="${state.leaderboardOpen}"
+      aria-label="${translate("leaderboard.title")}"
+    >
+      <span class="leaderboard-button-icon" aria-hidden="true"></span>
+      <strong>${translate("profile.leaderboard")}</strong>
+    </button>
+  `;
+}
+
+function renderLeaderboardPopover() {
+  return `
+    <section class="leaderboard-popover" role="dialog" aria-label="${translate("leaderboard.title")}">
+      <button class="icon-button leaderboard-popover-close" data-action="close-leaderboard" aria-label="${translate("settings.close")}">×</button>
+      ${renderLeaderboardPanel()}
+    </section>
   `;
 }
 
@@ -424,8 +451,6 @@ function renderMenu() {
           </summary>
           ${renderPresetSelector()}
         </details>
-        ${renderCompactProfile()}
-        ${renderPublicLeaderboard()}
         <details class="rules-panel">
           <summary>${translate("history.title")}</summary>
           <div class="history-panel">
@@ -443,12 +468,12 @@ function renderMenu() {
   `;
 }
 
-function renderPublicLeaderboard() {
+function renderLeaderboardPanel() {
   const leaderboard = state.leaderboard.data ?? state.profile.data?.leaderboard;
   const entries = leaderboard?.entries ?? [];
   return `
-    <section class="public-leaderboard">
-      <div class="public-leaderboard-header">
+    <section class="leaderboard-panel">
+      <div class="leaderboard-panel-header">
         <div>
           <span>${translate("leaderboard.title")}</span>
           <p>${translate("leaderboard.subtitle")}</p>
@@ -475,37 +500,6 @@ function renderPublicLeaderboard() {
                 .join("")}
             </ol>`
       }
-    </section>
-  `;
-}
-
-function renderCompactProfile() {
-  if (!state.auth.user) {
-    return `
-      <section class="profile-compact">
-        <div>
-          <span>${translate("profile.title")}</span>
-          <p>${translate("profile.loginPrompt")}</p>
-        </div>
-        <button data-action="toggle-settings">${translate("auth.telegram")}</button>
-      </section>
-    `;
-  }
-
-  const profile = state.profile.data;
-  const summary = profile?.summary;
-  const rating = profile?.rating;
-  return `
-    <section class="profile-compact">
-      <div>
-        <span>${translate("profile.title")}</span>
-        <h3>${escapeHtml(state.auth.user.name || translate("auth.telegram"))}</h3>
-        <p>${translate("profile.compactStats", {
-          wins: summary?.wins ?? 0,
-          rating: rating?.onlineMatches ? rating.mmr : "—",
-        })}</p>
-      </div>
-      <button data-action="refresh-profile">${translate("profile.refresh")}</button>
     </section>
   `;
 }
@@ -1658,6 +1652,8 @@ root.addEventListener("click", async (event) => {
   if (action === "visual-style-toggle") toggleVisualStyle();
   if (action === "toggle-profile") await toggleProfilePopover();
   if (action === "close-profile") closeProfilePopover();
+  if (action === "toggle-leaderboard") await toggleLeaderboardPopover();
+  if (action === "close-leaderboard") closeLeaderboardPopover();
   if (action === "menu") goToMenu();
   if (action === "new-game") startSetup(state.mode);
   if (action === "online-new-game") showOnline();
@@ -1719,6 +1715,7 @@ function startSetup(mode) {
   closeRemote();
   state.settingsOpen = false;
   state.profileOpen = false;
+  state.leaderboardOpen = false;
   state.mode = mode;
   state.screen = "setup";
   state.setupPlayerId = "p1";
@@ -1738,6 +1735,7 @@ function showOnline() {
   closeRemote();
   state.settingsOpen = false;
   state.profileOpen = false;
+  state.leaderboardOpen = false;
   state.mode = "online";
   state.screen = "online";
   state.setupBoard = randomlyPlaceSetup(currentPreset());
@@ -1757,6 +1755,7 @@ function startTraining(scenarioId = state.training.scenarioId) {
   closeRemote();
   state.settingsOpen = false;
   state.profileOpen = false;
+  state.leaderboardOpen = false;
   state.mode = "training";
   state.screen = "training";
   state.training.scenarioId = scenarioId || "checkerboard";
@@ -1769,6 +1768,7 @@ function goToMenu() {
   closeRemote();
   state.settingsOpen = false;
   state.profileOpen = false;
+  state.leaderboardOpen = false;
   state.screen = "menu";
   state.mode = null;
   state.game = null;
@@ -1783,6 +1783,7 @@ function toggleSettings() {
   state.settingsOpen = !state.settingsOpen;
   if (state.settingsOpen) {
     state.profileOpen = false;
+    state.leaderboardOpen = false;
   }
   render();
 }
@@ -1791,12 +1792,14 @@ async function toggleProfilePopover() {
   if (!state.auth.user) {
     state.settingsOpen = true;
     state.profileOpen = false;
+    state.leaderboardOpen = false;
     render();
     return;
   }
 
   state.profileOpen = !state.profileOpen;
   state.settingsOpen = false;
+  state.leaderboardOpen = false;
   if (!state.profileOpen) {
     render();
     return;
@@ -1813,6 +1816,29 @@ async function toggleProfilePopover() {
 
 function closeProfilePopover() {
   state.profileOpen = false;
+  render();
+}
+
+async function toggleLeaderboardPopover() {
+  state.leaderboardOpen = !state.leaderboardOpen;
+  state.settingsOpen = false;
+  state.profileOpen = false;
+  if (!state.leaderboardOpen) {
+    render();
+    return;
+  }
+
+  state.leaderboard.loading = true;
+  state.leaderboard.error = "";
+  render();
+  await refreshLeaderboard({ renderWhenDone: false });
+  if (state.leaderboardOpen) {
+    render();
+  }
+}
+
+function closeLeaderboardPopover() {
+  state.leaderboardOpen = false;
   render();
 }
 

@@ -11,7 +11,8 @@ test("main menu is a focused game hub with agent play as the primary action", ()
   assert.match(app, /class="hub-primary"/);
   assert.match(app, /class="hub-cta primary-button"[^>]+data-action="start-agent"/);
   assert.match(app, /class="hub-rule-summary"/);
-  assert.match(app, /renderCompactProfile/);
+  assert.doesNotMatch(app, /renderCompactProfile/);
+  assert.doesNotMatch(app, /class="profile-compact"/);
   assert.match(app, /class="rules-panel"/);
 });
 
@@ -44,13 +45,21 @@ test("agent battles keep the human fleet as own board after the agent wins", () 
   assert.match(app, /const ownBoard = state\.game\.players\[perspectivePlayerId\]\.board/);
 });
 
-test("main menu exposes a public leaderboard", () => {
+test("topbar exposes the public leaderboard as a popover", () => {
   assert.match(app, /leaderboard:\s*\{/);
-  assert.match(app, /renderPublicLeaderboard/);
+  assert.match(app, /leaderboardOpen:\s*false/);
+  assert.match(app, /renderTopbarLeaderboard/);
+  assert.match(app, /data-action="toggle-leaderboard"/);
+  assert.match(app, /state\.leaderboardOpen \? renderLeaderboardPopover\(\) : ""/);
+  assert.match(app, /function renderLeaderboardPopover/);
+  assert.match(app, /data-action="close-leaderboard"/);
+  assert.match(app, /await refreshLeaderboard\(\{ renderWhenDone: false \}\)/);
+  assert.doesNotMatch(app, /renderPublicLeaderboard/);
+  assert.doesNotMatch(app, /class="public-leaderboard"/);
   assert.match(app, /refreshLeaderboard/);
   assert.match(app, /\/leaderboard/);
-  assert.match(app, /class="public-leaderboard"/);
-  assert.match(css, /\.public-leaderboard/);
+  assert.match(css, /\.leaderboard-popover/);
+  assert.match(css, /\.leaderboard-panel/);
   assert.match(i18n, /"leaderboard\.title"/);
 });
 
@@ -118,6 +127,7 @@ test("topbar profile opens a stats popover for authenticated players", () => {
   assert.match(app, /function toggleProfilePopover/);
   assert.match(app, /await refreshProfile\(\{ renderWhenDone: false \}\)/);
   assert.match(app, /data-action="close-profile"/);
+  assert.match(app, /state\.leaderboardOpen = false/);
   assert.match(app, /renderProfilePanel\(\)/);
   assert.match(css, /\.profile-popover/);
   assert.match(css, /\.profile-popover \.profile-panel/);
@@ -241,7 +251,7 @@ test("manual setup supports keyboard preview, rotation, and focus restore", () =
 });
 
 test("mobile setup controls use compact topbar and full-width actions", () => {
-  assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.topbar-controls\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\) auto;/);
+  assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.topbar-controls\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\) auto auto;/);
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.settings-button strong\s*\{[\s\S]*?display:\s*none;/);
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.setup-primary-actions\s*\{[\s\S]*?grid-template-columns:\s*1fr;/);
   assert.match(css, /\.setup-primary-actions \[data-action="ready"\]:not\(:disabled\)/);
