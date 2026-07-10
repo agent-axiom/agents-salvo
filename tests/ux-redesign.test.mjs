@@ -266,6 +266,20 @@ test("tactical advisor exposes priority targets as fireable coordinate chips", (
   assert.match(css, /\.priority-target-chip/);
 });
 
+test("tactical advisor can collapse into a compact battle control", () => {
+  assert.match(app, /tacticalAdvisorOpen:\s*true/);
+  assert.match(app, /data-action="toggle-tactical-advisor"/);
+  assert.match(app, /aria-expanded="\$\{expanded\}"/);
+  assert.match(app, /function toggleTacticalAdvisor/);
+  assert.match(app, /state\.tacticalAdvisorOpen = !state\.tacticalAdvisorOpen/);
+  assert.match(app, /class="tactical-advisor-body"/);
+  assert.match(app, /\$\{expanded \? "" : "hidden"\}/);
+  assert.match(css, /\.tactical-advisor-toggle/);
+  assert.match(css, /\.tactical-advisor\.is-collapsed/);
+  assert.match(i18n, /"tactics\.collapse"/);
+  assert.match(i18n, /"tactics\.expand"/);
+});
+
 test("tactical priority hints do not mimic sunk or miss markers", () => {
   const priorityMarkerRule = combinedCssRule(
     ".target .cell.tactical-priority:not(:disabled)::before",

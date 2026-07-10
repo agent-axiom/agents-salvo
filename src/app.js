@@ -56,6 +56,7 @@ const state = {
   boards: { p1: null, p2: null },
   game: null,
   battleTab: "target",
+  tacticalAdvisorOpen: true,
   agentDifficulty: "normal",
   passPlayerId: null,
   resultModalDismissed: null,
@@ -1269,22 +1270,36 @@ function renderBattlePulseMetrics({ targetDisabled, salvoRemaining, tacticalAnal
 }
 
 function renderTacticalAdvisor(analysis, { disabled = false, targetAction = "shot" } = {}) {
+  const expanded = state.tacticalAdvisorOpen;
+  const toggleLabel = translate(expanded ? "tactics.collapse" : "tactics.expand");
   const priority = analysis.priorityTargets.length
     ? analysis.priorityTargets.slice(0, 3).map(formatCoordinate).join(" · ")
     : translate("tactics.noPriority");
   return `
-    <section class="tactical-advisor ${disabled ? "is-paused" : ""}" aria-label="${translate("tactics.title")}">
+    <section class="tactical-advisor ${disabled ? "is-paused" : ""} ${expanded ? "is-expanded" : "is-collapsed"}" aria-label="${translate("tactics.title")}">
       <div class="tactical-advisor-heading">
-        <span>${translate("tactics.title")}</span>
-        <strong>${translate(`tactics.recommendation.${analysis.recommendationId}`)}</strong>
+        <div class="tactical-advisor-title">
+          <span>${translate("tactics.title")}</span>
+          <strong>${translate(`tactics.recommendation.${analysis.recommendationId}`)}</strong>
+        </div>
+        <button
+          class="tactical-advisor-toggle"
+          data-action="toggle-tactical-advisor"
+          aria-expanded="${expanded}"
+          aria-label="${toggleLabel}"
+        >
+          ${toggleLabel}
+        </button>
       </div>
-      <div class="tactical-stats">
-        ${renderTacticalStat("tactics.targets", analysis.availableTargets)}
-        ${renderTacticalStat("tactics.unresolved", analysis.unresolvedHits)}
-        ${renderTacticalStat("tactics.priority", priority)}
-        ${analysis.salvoRemaining > 1 ? renderTacticalStat("tactics.salvo", analysis.salvoRemaining) : ""}
+      <div class="tactical-advisor-body" ${expanded ? "" : "hidden"}>
+        <div class="tactical-stats">
+          ${renderTacticalStat("tactics.targets", analysis.availableTargets)}
+          ${renderTacticalStat("tactics.unresolved", analysis.unresolvedHits)}
+          ${renderTacticalStat("tactics.priority", priority)}
+          ${analysis.salvoRemaining > 1 ? renderTacticalStat("tactics.salvo", analysis.salvoRemaining) : ""}
+        </div>
+        ${renderPriorityTargetChips(analysis.priorityTargets, { disabled, targetAction })}
       </div>
-      ${renderPriorityTargetChips(analysis.priorityTargets, { disabled, targetAction })}
     </section>
   `;
 }
@@ -1731,6 +1746,7 @@ root.addEventListener("click", async (event) => {
   if (action === "close-profile") closeProfilePopover();
   if (action === "toggle-leaderboard") await toggleLeaderboardPopover();
   if (action === "close-leaderboard") closeLeaderboardPopover();
+  if (action === "toggle-tactical-advisor") toggleTacticalAdvisor();
   if (action === "menu") goToMenu();
   if (action === "new-game") startSetup(state.mode);
   if (action === "online-new-game") showOnline();
@@ -1804,6 +1820,7 @@ function startSetup(mode) {
   state.boards = { p1: null, p2: null };
   state.game = null;
   state.battleTab = "target";
+  state.tacticalAdvisorOpen = true;
   state.resultModalDismissed = null;
   render();
 }
@@ -1824,6 +1841,7 @@ function showOnline() {
   state.online.error = "";
   state.online.status = "";
   state.battleTab = "target";
+  state.tacticalAdvisorOpen = true;
   state.resultModalDismissed = null;
   render();
 }
@@ -1862,6 +1880,11 @@ function toggleSettings() {
     state.profileOpen = false;
     state.leaderboardOpen = false;
   }
+  render();
+}
+
+function toggleTacticalAdvisor() {
+  state.tacticalAdvisorOpen = !state.tacticalAdvisorOpen;
   render();
 }
 

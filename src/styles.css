@@ -1955,11 +1955,19 @@ input {
 
 .tactical-advisor-heading {
   display: grid;
-  gap: 5px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
   align-content: center;
+  align-items: center;
 }
 
-.tactical-advisor-heading span,
+.tactical-advisor-title {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.tactical-advisor-title span,
 .tactical-stats span {
   color: var(--muted);
   font-size: 11px;
@@ -1969,10 +1977,39 @@ input {
   text-transform: uppercase;
 }
 
-.tactical-advisor-heading strong {
+.tactical-advisor-title strong {
   color: var(--accent-strong);
   font-size: 18px;
   line-height: 1.18;
+}
+
+.tactical-advisor-toggle {
+  min-height: 34px;
+  padding: 0 12px;
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 850;
+  background: color-mix(in srgb, var(--surface-strong) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.tactical-advisor-toggle:hover,
+.tactical-advisor-toggle:focus-visible {
+  color: var(--paper);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.tactical-advisor-body {
+  display: grid;
+  gap: 8px;
+}
+
+.tactical-advisor.is-collapsed {
+  grid-template-columns: 1fr;
 }
 
 .tactical-stats {
