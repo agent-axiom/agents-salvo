@@ -60,6 +60,7 @@ const state = {
   agentDifficulty: "normal",
   passPlayerId: null,
   resultModalDismissed: null,
+  resultCopyStatus: "",
   auth: {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     telegramBotUsername: window.SALVO_CONFIG?.telegramBotUsername || "",
@@ -1402,8 +1403,10 @@ function renderResultModal({ winnerId, playerId = winnerId, log, newGameAction, 
         </div>
         ${renderBattleReport(report, ratingChange)}
         ${renderOnlineRatingChange(ratingChange)}
+        ${state.resultCopyStatus === "copied" ? `<p class="result-share-status status-line" role="status">${translate("result.copySuccess")}</p>` : ""}
         <div class="result-actions button-row">
           <button data-action="close-result">${translate("result.inspect")}</button>
+          <button data-action="copy-battle-summary">${translate("result.copySummary")}</button>
           ${
             onlineActions
               ? `<button data-action="share-telegram">${translate("online.shareTelegram")}</button>
@@ -1767,6 +1770,7 @@ root.addEventListener("click", async (event) => {
   if (action === "online-join") await onlineJoin();
   if (action === "online-rematch") await onlineRematch();
   if (action === "copy-room-code") await copyRoomCode();
+  if (action === "copy-battle-summary") await copyBattleSummary();
   if (action === "share-telegram") shareRoomInTelegram();
   if (action === "battle-tab") selectBattleTab(button.dataset.tab);
   if (action === "auth-logout") await logoutAuth();
@@ -1822,6 +1826,7 @@ function startSetup(mode) {
   state.battleTab = "target";
   state.tacticalAdvisorOpen = true;
   state.resultModalDismissed = null;
+  state.resultCopyStatus = "";
   render();
 }
 
@@ -1843,6 +1848,7 @@ function showOnline() {
   state.battleTab = "target";
   state.tacticalAdvisorOpen = true;
   state.resultModalDismissed = null;
+  state.resultCopyStatus = "";
   render();
 }
 
@@ -1856,6 +1862,7 @@ function startTraining(scenarioId = state.training.scenarioId) {
   state.training.scenarioId = scenarioId || "checkerboard";
   state.training.session = createTrainingSession(state.training.scenarioId);
   state.resultModalDismissed = null;
+  state.resultCopyStatus = "";
   render();
 }
 
@@ -1871,6 +1878,7 @@ function goToMenu() {
   state.online.error = "";
   state.online.status = "";
   state.resultModalDismissed = null;
+  state.resultCopyStatus = "";
   render();
 }
 
@@ -1970,6 +1978,7 @@ function closeResultModal() {
   if (resultKey) {
     state.resultModalDismissed = resultKey;
   }
+  state.resultCopyStatus = "";
   render();
 }
 
@@ -2234,6 +2243,7 @@ async function onlineRematch() {
     state.setupBoard = randomlyPlaceSetup(preset);
     state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
     state.resultModalDismissed = onlineResultKey(snapshot);
+    state.resultCopyStatus = "";
     await state.online.client.send("requestRematch", { board: state.setupBoard, presetId: preset.id });
     render();
   });
@@ -2256,6 +2266,34 @@ async function copyRoomCode() {
   } catch {}
   state.online.status = "copied";
   render();
+}
+
+async function copyBattleSummary() {
+  const context = currentBattleResultContext();
+  if (!context) {
+    return;
+  }
+  const report = buildBattleReport(context.log, context.winnerId, context.playerId);
+  const summaryText = buildBattleSummaryText(report, context);
+  try {
+    await navigator.clipboard?.writeText(summaryText);
+  } catch {}
+  state.resultCopyStatus = "copied";
+  render();
+}
+
+function buildBattleSummaryText(report, context) {
+  return translate("result.shareText", {
+    app: translate("app.title"),
+    mode: translate(`mode.${context.mode}`),
+    preset: translate(`preset.${context.presetId}.name`),
+    winner: playerName(context.winnerId),
+    result: translate(`profile.result.${report.result}`),
+    hits: report.player.hits,
+    shots: report.player.shots,
+    accuracy: report.player.accuracy,
+    url: window.location.href,
+  });
 }
 
 function shareRoomInTelegram() {
@@ -2926,6 +2964,29 @@ function currentResultKey() {
     return onlineResultKey(state.online.snapshot);
   }
   return "";
+}
+
+function currentBattleResultContext() {
+  if (state.screen === "playing" && state.game?.phase === "finished") {
+    return {
+      winnerId: state.game.winnerId,
+      playerId: state.mode === "agent" ? "p1" : state.game.winnerId,
+      log: state.game.log,
+      mode: state.mode,
+      presetId: state.game.presetId ?? state.presetId,
+    };
+  }
+  const snapshot = state.online.snapshot;
+  if (state.screen === "online" && snapshot?.phase === "finished") {
+    return {
+      winnerId: snapshot.winnerId,
+      playerId: snapshot.playerId,
+      log: snapshot.log ?? [],
+      mode: "online",
+      presetId: snapshot.presetId ?? state.presetId,
+    };
+  }
+  return null;
 }
 
 function localResultKey(game) {

@@ -148,6 +148,20 @@ test("result modal includes a player battle report with achievements", () => {
   assert.match(i18n, /"achievement\.sharpshooter\.title"/);
 });
 
+test("result modal can copy a shareable battle summary", () => {
+  assert.match(app, /data-action="copy-battle-summary"/);
+  assert.match(app, /function copyBattleSummary/);
+  assert.match(app, /function buildBattleSummaryText/);
+  assert.match(app, /currentBattleResultContext/);
+  assert.match(app, /navigator\.clipboard\?\.writeText\(summaryText\)/);
+  assert.match(app, /resultCopyStatus:\s*""/);
+  assert.match(app, /state\.resultCopyStatus = "copied"/);
+  assert.match(app, /class="result-share-status status-line"/);
+  assert.match(i18n, /"result\.copySummary"/);
+  assert.match(i18n, /"result\.copySuccess"/);
+  assert.match(i18n, /"result\.shareText"/);
+});
+
 test("profile exposes online competition rank, best-of-three, and rating history", () => {
   assert.match(app, /function renderCompetitionProfile/);
   assert.match(app, /profile\.competition/);
