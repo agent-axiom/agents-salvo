@@ -2031,11 +2031,25 @@ input {
 .online-target .cell.tactical-priority:not(:disabled)::before {
   content: "";
   position: absolute;
-  inset: 18%;
+  inset: 25%;
   z-index: 3;
   pointer-events: none;
-  border: 2px dashed color-mix(in srgb, var(--accent-strong) 76%, transparent);
-  border-radius: 50%;
+  background:
+    linear-gradient(
+        90deg,
+        transparent 0 32%,
+        color-mix(in srgb, var(--accent-strong) 78%, transparent) 32% 68%,
+        transparent 68%
+      )
+      center / 100% 2px no-repeat,
+    linear-gradient(
+        transparent 0 32%,
+        color-mix(in srgb, var(--accent-strong) 78%, transparent) 32% 68%,
+        transparent 68%
+      )
+      center / 2px 100% no-repeat;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 45%, transparent));
+  opacity: 0.78;
 }
 
 .cell.placement-ok {

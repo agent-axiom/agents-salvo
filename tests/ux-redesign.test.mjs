@@ -196,6 +196,17 @@ test("tactical advisor highlights priority cells on the target board", () => {
   assert.match(css, /\.target \.cell\.tactical-priority/);
 });
 
+test("tactical priority hints do not mimic sunk or miss markers", () => {
+  const priorityMarkerRule = combinedCssRule(
+    ".target .cell.tactical-priority:not(:disabled)::before",
+    ".online-target .cell.tactical-priority:not(:disabled)::before",
+  );
+
+  assert.doesNotMatch(priorityMarkerRule, /border:\s*2px dashed/);
+  assert.doesNotMatch(priorityMarkerRule, /border-radius:\s*50%/);
+  assert.match(priorityMarkerRule, /linear-gradient/);
+});
+
 test("board cells expose localized state in aria labels", () => {
   assert.match(app, /function cellAriaLabel/);
   assert.match(app, /board\.state\./);
@@ -235,3 +246,13 @@ test("mobile setup controls use compact topbar and full-width actions", () => {
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.setup-primary-actions\s*\{[\s\S]*?grid-template-columns:\s*1fr;/);
   assert.match(css, /\.setup-primary-actions \[data-action="ready"\]:not\(:disabled\)/);
 });
+
+function combinedCssRule(...selectors) {
+  const escapedSelectors = selectors.map((selector) =>
+    selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+  );
+  const pattern = new RegExp(`${escapedSelectors.join("\\s*,\\s*")}\\s*\\{([\\s\\S]*?)\\}`);
+  const match = css.match(pattern);
+  assert.ok(match, `Missing CSS rule: ${selectors.join(", ")}`);
+  return match[1];
+}
