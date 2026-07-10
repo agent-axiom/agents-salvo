@@ -1531,6 +1531,7 @@ root.addEventListener("change", (event) => {
 });
 
 root.addEventListener("keydown", handleBoardKeydown);
+root.addEventListener("focusin", handleSetupFocusin);
 
 function updateOnlineInput(target) {
   const action = target.dataset.action;
@@ -1542,6 +1543,14 @@ function updateOnlineInput(target) {
 function handleBoardKeydown(event) {
   const button = event.target.closest?.(".board-grid .cell[data-row][data-col]");
   if (!button) {
+    return;
+  }
+
+  const isRotateShortcut = !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "r";
+  if (button.matches('.setup .cell[data-action="setup-cell"]') && isRotateShortcut) {
+    event.preventDefault();
+    rotateSetupOrientation();
+    restoreBoardFocus(button);
     return;
   }
 
@@ -1569,6 +1578,23 @@ function moveBoardFocus(button, delta) {
   button.tabIndex = -1;
   nextCell.tabIndex = 0;
   nextCell.focus();
+}
+
+function restoreBoardFocus(button) {
+  const grid = button.closest(".board-grid");
+  const boardKind = ["setup", "target", "own", "training-target"].find((kind) => grid?.classList.contains(kind));
+  const row = button.dataset.row;
+  const col = button.dataset.col;
+  const scheduleFocus = window.requestAnimationFrame ?? ((callback) => window.setTimeout(callback, 0));
+  scheduleFocus(() => {
+    const gridSelector = boardKind ? `.board-grid.${boardKind}` : ".board-grid";
+    const nextButton = root.querySelector(`${gridSelector} .cell[data-row="${row}"][data-col="${col}"]:not(:disabled)`);
+    if (!nextButton) {
+      return;
+    }
+    nextButton.tabIndex = 0;
+    nextButton.focus();
+  });
 }
 
 function nextBoardCell(button, delta) {
@@ -1648,12 +1674,13 @@ root.addEventListener("mouseover", (event) => {
   }
 });
 
-root.addEventListener("focusin", (event) => {
+function handleSetupFocusin(event) {
   const cell = event.target.closest('.setup .cell[data-action="setup-cell"]');
   if (cell) {
     updateSetupHover(readCoordinate(cell));
+    restoreBoardFocus(cell);
   }
-});
+}
 
 window.onTelegramAuth = (payload) => {
   void handleTelegramAuth(payload);

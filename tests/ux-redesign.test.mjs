@@ -205,6 +205,17 @@ test("board grids support keyboard navigation with visible focus", () => {
   assert.match(css, /\.cell:focus-visible/);
 });
 
+test("manual setup supports keyboard preview, rotation, and focus restore", () => {
+  assert.match(app, /root\.addEventListener\("focusin", handleSetupFocusin\)/);
+  assert.match(app, /function handleSetupFocusin/);
+  assert.match(app, /updateSetupHover\(readCoordinate\(cell\)\)/);
+  assert.match(app, /event\.key\.toLowerCase\(\) === "r"/);
+  assert.match(app, /rotateSetupOrientation\(\)/);
+  assert.match(app, /restoreBoardFocus\(button\)/);
+  assert.match(app, /function restoreBoardFocus/);
+  assert.match(app, /requestAnimationFrame/);
+});
+
 test("mobile setup controls use compact topbar and full-width actions", () => {
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.topbar-controls\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\) auto;/);
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.settings-button strong\s*\{[\s\S]*?display:\s*none;/);
