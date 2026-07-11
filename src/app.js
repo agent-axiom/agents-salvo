@@ -15,6 +15,14 @@ import {
 } from "./core/game.js";
 import { visibleBattleLog } from "./core/log.js";
 import { gamePresets, getGamePreset } from "./core/presets.js";
+import {
+  advanceReplayTurn,
+  createReplayClock,
+  nextReplaySpeedIndex,
+  normalizeReplayTurn,
+  replaySpeeds,
+  startReplayTurn,
+} from "./core/replay.js";
 import { battleMomentum, buildBattleReport, fleetIntel, summarizeBattleLog, targetIntel } from "./core/stats.js";
 import { analyzeTargetBoard } from "./core/tactics.js";
 import {
@@ -33,6 +41,10 @@ const root = document.querySelector("#app");
 const audio = createAudioController();
 const authTokenStorageKey = "salvo.authToken";
 const trainingProgressStorageKey = "salvo.trainingProgress";
+const resultReplayClock = createReplayClock({
+  setInterval: (callback, delay) => window.setInterval(callback, delay),
+  clearInterval: (handle) => window.clearInterval(handle),
+});
 let telegramWidgetScheduled = false;
 
 const state = {
@@ -62,6 +74,8 @@ const state = {
   resultModalDismissed: null,
   resultCopyStatus: "",
   resultReplayTurn: null,
+  resultReplayPlaying: false,
+  resultReplaySpeedIndex: 0,
   auth: {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     telegramBotUsername: window.SALVO_CONFIG?.telegramBotUsername || "",
@@ -1511,6 +1525,7 @@ function renderResultModal({ winnerId, playerId = winnerId, log, newGameAction, 
           ${renderResultStat("result.accuracy", `${stats.accuracy}%`)}
         </div>
         ${renderBattleReport(report, ratingChange)}
+        <p class="replay-live-status visually-hidden" aria-live="polite" aria-atomic="true"></p>
         ${renderBattleReplay(log)}
         ${renderOnlineRatingChange(ratingChange)}
         ${state.resultCopyStatus === "copied" ? `<p class="result-share-status status-line" role="status">${translate("result.copySuccess")}</p>` : ""}
@@ -1616,6 +1631,7 @@ function renderBattleReplay(log) {
   const activeTurn = normalizedReplayTurn(entries.length);
   const entry = entries[activeTurn - 1];
   const replayBoard = replayBoardForLog(entries, activeTurn);
+  const replaySpeed = currentResultReplaySpeed();
   return `
     <section class="battle-replay" aria-label="${translate("replay.title")}">
       <div class="battle-replay-header">
@@ -1645,8 +1661,26 @@ function renderBattleReplay(log) {
         </div>
       </div>
       <div class="battle-replay-controls">
-        <button data-action="result-replay-prev" ${activeTurn <= 1 ? "disabled" : ""}>${translate("replay.previous")}</button>
-        <button data-action="result-replay-next" ${activeTurn >= entries.length ? "disabled" : ""}>${translate("replay.next")}</button>
+        <button
+          class="primary-button replay-play-button"
+          data-action="result-replay-toggle-play"
+        >
+          <span aria-hidden="true">${state.resultReplayPlaying ? "Ⅱ" : "▶"}</span>
+          ${translate(state.resultReplayPlaying ? "replay.pause" : "replay.play")}
+        </button>
+        <button
+          data-action="result-replay-speed"
+          aria-label="${translate("replay.speed", { speed: replaySpeed.label })}"
+          title="${translate("replay.speed", { speed: replaySpeed.label })}"
+        >
+          <span aria-hidden="true">${replaySpeed.label}</span>
+        </button>
+        <button data-action="result-replay-prev" ${activeTurn <= 1 ? "disabled" : ""}>
+          <span aria-hidden="true">←</span> ${translate("replay.previous")}
+        </button>
+        <button data-action="result-replay-next" ${activeTurn >= entries.length ? "disabled" : ""}>
+          ${translate("replay.next")} <span aria-hidden="true">→</span>
+        </button>
       </div>
     </section>
   `;
@@ -1672,8 +1706,7 @@ function replayBoardForLog(log, activeTurn) {
 }
 
 function normalizedReplayTurn(total) {
-  const rawTurn = Number.isInteger(state.resultReplayTurn) ? state.resultReplayTurn : total;
-  return Math.min(Math.max(rawTurn, 1), total);
+  return normalizeReplayTurn(state.resultReplayTurn, total);
 }
 
 function battleReplayCoordinateText(entry) {
@@ -2003,6 +2036,8 @@ root.addEventListener("click", async (event) => {
   if (action === "new-game") startSetup(state.mode);
   if (action === "online-new-game") showOnline();
   if (action === "close-result") closeResultModal();
+  if (action === "result-replay-toggle-play") toggleResultReplayPlayback();
+  if (action === "result-replay-speed") cycleResultReplaySpeed();
   if (action === "result-replay-prev") changeResultReplayTurn(-1);
   if (action === "result-replay-next") changeResultReplayTurn(1);
   if (action === "select-setup-ship") selectSetupShip(button.dataset.shipId);
@@ -2079,7 +2114,7 @@ function startSetup(mode) {
   state.tacticalAdvisorOpen = true;
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
-  state.resultReplayTurn = null;
+  resetResultReplayPlayback();
   render();
 }
 
@@ -2102,7 +2137,7 @@ function showOnline() {
   state.tacticalAdvisorOpen = true;
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
-  state.resultReplayTurn = null;
+  resetResultReplayPlayback();
   render();
 }
 
@@ -2117,7 +2152,7 @@ function startTraining(scenarioId = state.training.scenarioId) {
   state.training.session = createTrainingSession(state.training.scenarioId);
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
-  state.resultReplayTurn = null;
+  resetResultReplayPlayback();
   render();
 }
 
@@ -2134,7 +2169,7 @@ function goToMenu() {
   state.online.status = "";
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
-  state.resultReplayTurn = null;
+  resetResultReplayPlayback();
   render();
 }
 
@@ -2235,11 +2270,12 @@ function closeResultModal() {
     state.resultModalDismissed = resultKey;
   }
   state.resultCopyStatus = "";
-  state.resultReplayTurn = null;
+  resetResultReplayPlayback();
   render();
 }
 
 function changeResultReplayTurn(delta) {
+  stopResultReplayPlayback();
   const context = currentBattleResultContext();
   if (!context?.log?.length) {
     return;
@@ -2247,7 +2283,104 @@ function changeResultReplayTurn(delta) {
   const currentTurn = normalizedReplayTurn(context.log.length);
   const nextTurn = Math.min(Math.max(currentTurn + delta, 1), context.log.length);
   state.resultReplayTurn = nextTurn;
-  render();
+  renderResultReplayFrame();
+}
+
+function currentResultReplaySpeed() {
+  return replaySpeeds[state.resultReplaySpeedIndex] ?? replaySpeeds[0];
+}
+
+function stopResultReplayPlayback() {
+  resultReplayClock.stop();
+  state.resultReplayPlaying = false;
+}
+
+function resetResultReplayPlayback() {
+  stopResultReplayPlayback();
+  state.resultReplayTurn = null;
+  state.resultReplaySpeedIndex = 0;
+}
+
+function renderResultReplayFrame() {
+  const resultModal = root.querySelector(".result-modal");
+  const replayElement = resultModal?.querySelector(".battle-replay");
+  const context = currentBattleResultContext();
+  if (!resultModal || !replayElement || !context?.log?.length) {
+    render();
+    return;
+  }
+
+  const scrollTop = resultModal.scrollTop;
+  const activeAction = document.activeElement?.closest(".battle-replay")?.querySelector("[data-action]:focus")?.dataset.action;
+  replayElement.outerHTML = renderBattleReplay(context.log);
+  resultModal.scrollTop = scrollTop;
+
+  if (activeAction) {
+    const matchingControl = resultModal.querySelector(`[data-action="${activeAction}"]`);
+    const focusTarget = matchingControl?.disabled
+      ? resultModal.querySelector('[data-action="result-replay-toggle-play"]')
+      : matchingControl;
+    focusTarget?.focus({ preventScroll: true });
+  }
+
+  const activeTurn = normalizedReplayTurn(context.log.length);
+  const entry = context.log[activeTurn - 1];
+  const liveStatus = resultModal.querySelector(".replay-live-status");
+  if (liveStatus) {
+    liveStatus.textContent = translate("replay.announcement", {
+      turn: activeTurn,
+      total: context.log.length,
+      player: playerName(entry.playerId),
+      result: translate(`shot.${entry.result}`),
+      coordinate: battleReplayCoordinateText(entry),
+    });
+  }
+}
+
+function scheduleResultReplayTimer() {
+  resultReplayClock.start(advanceResultReplayPlayback, currentResultReplaySpeed().delay);
+}
+
+function startResultReplayPlayback() {
+  const context = currentBattleResultContext();
+  if (!context?.log?.length) {
+    return;
+  }
+  state.resultReplayTurn = startReplayTurn(state.resultReplayTurn, context.log.length);
+  state.resultReplayPlaying = true;
+  scheduleResultReplayTimer();
+  renderResultReplayFrame();
+}
+
+function toggleResultReplayPlayback() {
+  if (state.resultReplayPlaying) {
+    stopResultReplayPlayback();
+    renderResultReplayFrame();
+    return;
+  }
+  startResultReplayPlayback();
+}
+
+function advanceResultReplayPlayback() {
+  const context = currentBattleResultContext();
+  if (!context?.log?.length) {
+    stopResultReplayPlayback();
+    return;
+  }
+  const frame = advanceReplayTurn(state.resultReplayTurn, context.log.length);
+  state.resultReplayTurn = frame.turn;
+  if (frame.complete) {
+    stopResultReplayPlayback();
+  }
+  renderResultReplayFrame();
+}
+
+function cycleResultReplaySpeed() {
+  state.resultReplaySpeedIndex = nextReplaySpeedIndex(state.resultReplaySpeedIndex);
+  if (state.resultReplayPlaying) {
+    scheduleResultReplayTimer();
+  }
+  renderResultReplayFrame();
 }
 
 function selectSetupShip(shipId) {
@@ -2512,7 +2645,7 @@ async function onlineRematch() {
     state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
     state.resultModalDismissed = onlineResultKey(snapshot);
     state.resultCopyStatus = "";
-    state.resultReplayTurn = null;
+    resetResultReplayPlayback();
     await state.online.client.send("requestRematch", { board: state.setupBoard, presetId: preset.id });
     render();
   });

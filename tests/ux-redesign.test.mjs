@@ -238,6 +238,9 @@ test("result modal includes key battle moments", () => {
 
 test("result modal includes step-through battle replay controls", () => {
   assert.match(app, /resultReplayTurn:\s*null/);
+  assert.match(app, /resultReplayPlaying:\s*false/);
+  assert.match(app, /resultReplaySpeedIndex:\s*0/);
+  assert.match(app, /const resultReplayClock = createReplayClock/);
   assert.match(app, /function renderBattleReplay/);
   assert.match(app, /renderBattleReplay\(log\)/);
   assert.match(app, /function replayBoardForLog/);
@@ -246,7 +249,24 @@ test("result modal includes step-through battle replay controls", () => {
   assert.match(app, /highlightCoordinate:\s*entry\.coordinate/);
   assert.match(app, /data-action="result-replay-prev"/);
   assert.match(app, /data-action="result-replay-next"/);
+  assert.match(app, /data-action="result-replay-toggle-play"/);
+  assert.match(app, /data-action="result-replay-speed"/);
+  assert.match(app, /aria-label="\$\{translate\("replay\.speed", \{ speed: replaySpeed\.label \}\)\}"/);
+  assert.match(app, /<span aria-hidden="true">\$\{replaySpeed\.label\}<\/span>/);
   assert.match(app, /function changeResultReplayTurn/);
+  assert.match(app, /function toggleResultReplayPlayback/);
+  assert.match(app, /function cycleResultReplaySpeed/);
+  assert.match(app, /function stopResultReplayPlayback/);
+  assert.match(app, /function resetResultReplayPlayback/);
+  assert.match(app, /function renderResultReplayFrame/);
+  assert.match(app, /replayElement\.outerHTML = renderBattleReplay/);
+  assert.match(app, /resultModal\.scrollTop = scrollTop/);
+  assert.match(app, /focus\(\{ preventScroll: true \}\)/);
+  assert.match(app, /class="replay-live-status visually-hidden"/);
+  assert.match(app, /aria-live="polite" aria-atomic="true"/);
+  assert.match(app, /resultReplayClock\.start/);
+  assert.match(app, /resultReplayClock\.stop/);
+  assert.doesNotMatch(app, /aria-pressed="\$\{state\.resultReplayPlaying\}"/);
   assert.match(app, /state\.resultReplayTurn = nextTurn/);
   assert.match(app, /class="battle-replay"/);
   assert.match(app, /class="battle-replay-map"/);
@@ -255,12 +275,22 @@ test("result modal includes step-through battle replay controls", () => {
   assert.match(css, /\.battle-replay/);
   assert.match(css, /\.battle-replay-map/);
   assert.match(css, /\.cell\.replay-active/);
+  assert.match(css, /\.cell\.replay-active::before/);
+  assert.match(css, /@keyframes replayShotPulse/);
+  assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(css, /\.battle-replay-controls/);
+  assert.match(css, /\.visually-hidden/);
+  assert.match(css, /\.battle-replay-controls button\s*\{[^}]*display:\s*inline-flex/s);
+  assert.match(css, /\.battle-replay-controls button\s*\{[^}]*white-space:\s*nowrap/s);
   assert.match(i18n, /"replay\.title"/);
   assert.match(i18n, /"replay\.map"/);
   assert.match(i18n, /"replay\.move"/);
   assert.match(i18n, /"replay\.previous"/);
   assert.match(i18n, /"replay\.next"/);
+  assert.match(i18n, /"replay\.play"/);
+  assert.match(i18n, /"replay\.pause"/);
+  assert.match(i18n, /"replay\.speed"/);
+  assert.match(i18n, /"replay\.announcement"/);
 });
 
 test("result modal can copy a shareable battle summary", () => {

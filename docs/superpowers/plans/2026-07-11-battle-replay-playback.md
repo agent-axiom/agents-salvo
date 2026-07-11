@@ -4,7 +4,7 @@
 
 **Goal:** Add reliable Play/Pause, 1x/1.5x/2x speed selection, and an accessible active-shot pulse to the battle replay.
 
-**Architecture:** Keep playback orchestration in `src/app.js` beside the existing replay renderer and navigation. Store only serializable UI state in `state`, keep the interval handle module-local, and route every exit path through a single cleanup helper so no timer survives a closed result modal. CSS supplies the pulse and disables it for reduced motion.
+**Architecture:** Keep UI orchestration in `src/app.js` beside the existing replay renderer and navigation, while `src/core/replay.js` owns deterministic turn transitions, speeds, and the single interval. Store only serializable UI state in `state`, update only the replay subtree during playback, preserve focus and modal scroll, and route every exit path through a single cleanup helper. CSS supplies the pulse and disables it for reduced motion.
 
 **Tech Stack:** Vanilla JavaScript, HTML templates, CSS, Node test runner, custom build script.
 
@@ -13,6 +13,7 @@
 ### Task 1: Specify playback controls and lifecycle
 
 **Files:**
+- Create: `tests/replay.test.mjs`
 - Modify: `tests/ux-redesign.test.mjs`
 - Modify: `tests/i18n.test.mjs`
 
@@ -33,20 +34,21 @@ Expected: FAIL because playback state, controls, helpers, CSS pulse, and localiz
 ### Task 2: Implement deterministic replay playback
 
 **Files:**
+- Create: `src/core/replay.js`
 - Modify: `src/app.js`
 - Modify: `src/i18n.js`
 
 - [ ] **Step 1: Add playback state and speed definitions**
 
-Add `resultReplayPlaying: false`, `resultReplaySpeedIndex: 0`, one module-level `resultReplayTimer`, and immutable speed choices for 1x, 1.5x, and 2x.
+Add `resultReplayPlaying: false`, `resultReplaySpeedIndex: 0`, and immutable speed choices for 1x, 1.5x, and 2x. Create a replay clock that owns one interval and expose pure turn/speed helpers for unit testing.
 
 - [ ] **Step 2: Render playback controls**
 
-Render Play/Pause and speed-cycle buttons before Previous/Next. The labels come from i18n and the speed button includes the active multiplier.
+Render Play/Pause and speed-cycle buttons before Previous/Next. The labels come from i18n; the speed button shows only the active multiplier and exposes its full localized label to assistive technology.
 
 - [ ] **Step 3: Implement the timer lifecycle**
 
-Add helpers to start, stop, clear, toggle, and restart playback. A tick advances exactly one move. Playback stops and re-renders at the final move. Play at the final move resets to move one first.
+Add helpers to start, stop, toggle, and restart playback. A tick advances exactly one move. Playback stops at the final move. Play at the final move resets to move one first. Replay frames replace only the replay subtree, preserve modal scroll and keyboard focus, and announce the new move through a stable live region.
 
 - [ ] **Step 4: Integrate manual controls and exits**
 
