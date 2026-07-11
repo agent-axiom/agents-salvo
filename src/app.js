@@ -1542,6 +1542,7 @@ function renderBattleReport(report, ratingChange = null) {
         ${renderResultStat("result.streak", streak)}
       </div>
       ${renderBattleDebrief(report.debrief)}
+      ${renderBattleMoments(report.moments)}
       <div class="achievement-block">
         <span>${translate("result.achievements")}</span>
         ${
@@ -1579,6 +1580,45 @@ function renderBattleDebrief(debrief) {
       </ul>
     </section>
   `;
+}
+
+function renderBattleMoments(moments) {
+  const items = Array.isArray(moments?.items) ? moments.items : [];
+  if (!items.length) {
+    return "";
+  }
+  return `
+    <section class="battle-moments" aria-label="${translate("moments.title")}">
+      <span>${translate("moments.title")}</span>
+      <ol class="battle-moment-list">
+        ${items
+          .map(
+            (moment) => `
+              <li class="battle-moment-item">
+                <strong>${translate(`moments.${moment.id}`)}</strong>
+                <small>${momentDetailText(moment)}</small>
+              </li>
+            `,
+          )
+          .join("")}
+      </ol>
+    </section>
+  `;
+}
+
+function momentDetailText(moment) {
+  if (moment.id === "missStreak") {
+    return translate("moments.turnRange", {
+      start: moment.startTurn,
+      end: moment.endTurn,
+      count: moment.length,
+    });
+  }
+  return `${translate("moments.turn", { turn: moment.turn })} · ${momentCoordinateText(moment)}`;
+}
+
+function momentCoordinateText(moment) {
+  return moment.coordinate ? formatCoordinate(moment.coordinate) : translate("moments.noCoordinate");
 }
 
 function renderBattleCoaching(coaching, trainingPlan) {

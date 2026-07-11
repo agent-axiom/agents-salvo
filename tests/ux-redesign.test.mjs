@@ -221,6 +221,21 @@ test("result modal includes a tactical battle debrief", () => {
   assert.match(i18n, /"debrief\.message\.cleanFinish"/);
 });
 
+test("result modal includes key battle moments", () => {
+  assert.match(app, /function renderBattleMoments/);
+  assert.match(app, /report\.moments/);
+  assert.match(app, /class="battle-moments"/);
+  assert.match(app, /moments\.items/);
+  assert.match(app, /momentCoordinateText/);
+  assert.match(app, /moment\.id === "missStreak"/);
+  assert.match(css, /\.battle-moments/);
+  assert.match(css, /\.battle-moment-list/);
+  assert.match(css, /\.battle-moment-item/);
+  assert.match(i18n, /"moments\.title"/);
+  assert.match(i18n, /"moments\.firstContact"/);
+  assert.match(i18n, /"moments\.missStreak"/);
+});
+
 test("result modal can copy a shareable battle summary", () => {
   assert.match(app, /data-action="copy-battle-summary"/);
   assert.match(app, /data-action="share-battle-summary"/);

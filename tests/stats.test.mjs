@@ -229,6 +229,28 @@ test("buildBattleReport adds a positive tactical debrief for controlled wins", (
   ]);
 });
 
+test("buildBattleReport adds player-focused key battle moments", () => {
+  const log = [
+    { playerId: "p1", result: "miss", coordinate: { row: 0, col: 0 } },
+    { playerId: "p2", result: "miss", coordinate: { row: 9, col: 9 } },
+    { playerId: "p1", result: "hit", coordinate: { row: 2, col: 3 } },
+    { playerId: "p1", result: "sunk", coordinate: { row: 2, col: 4 } },
+    { playerId: "p1", result: "miss", coordinate: { row: 4, col: 4 } },
+    { playerId: "p1", result: "miss", coordinate: { row: 4, col: 6 } },
+    { playerId: "p2", result: "hit", coordinate: { row: 1, col: 1 } },
+    { playerId: "p1", result: "sunk", coordinate: { row: 7, col: 1 } },
+  ];
+
+  const report = buildBattleReport(log, "p1", "p1");
+
+  assert.deepEqual(report.moments.items, [
+    { id: "firstContact", turn: 3, playerId: "p1", coordinate: { row: 2, col: 3 }, result: "hit" },
+    { id: "firstSunk", turn: 4, playerId: "p1", coordinate: { row: 2, col: 4 }, result: "sunk" },
+    { id: "missStreak", playerId: "p1", length: 2, startTurn: 5, endTurn: 6 },
+    { id: "finalShot", turn: 8, playerId: "p1", coordinate: { row: 7, col: 1 }, result: "sunk" },
+  ]);
+});
+
 test("buildBattleReport creates a personalized multi-step training plan", () => {
   const log = [
     { playerId: "p1", result: "miss" },

@@ -86,6 +86,7 @@ export function buildBattleReport(log, winnerId, playerId = winnerId) {
   const finalShot = log.at(-1);
   const coaching = coachingForBattle(result, player);
   const debrief = battleDebriefForBattle(result, player, opponent, coaching, log);
+  const moments = battleMomentsForBattle(log, playerId);
 
   return {
     result,
@@ -103,6 +104,7 @@ export function buildBattleReport(log, winnerId, playerId = winnerId) {
     }),
     coaching,
     debrief,
+    moments,
     trainingPlan: trainingPlanForBattle(result, player, coaching),
   };
 }
@@ -305,6 +307,78 @@ function hasUnresolvedPlayerHit(log, playerId) {
     }
   }
   return hasOpenHit;
+}
+
+function battleMomentsForBattle(log, playerId) {
+  const items = [];
+  const firstContact = log.find((entry) => entry.playerId === playerId && hitLike(entry.result));
+  const firstSunk = log.find((entry) => entry.playerId === playerId && entry.result === "sunk");
+  const missStreak = longestMissStreak(log, playerId);
+  const finalShot = log.at(-1);
+
+  if (firstContact) {
+    items.push(momentFromEntry("firstContact", firstContact, log.indexOf(firstContact)));
+  }
+  if (firstSunk) {
+    items.push(momentFromEntry("firstSunk", firstSunk, log.indexOf(firstSunk)));
+  }
+  if (missStreak.length > 0) {
+    items.push({ id: "missStreak", playerId, ...missStreak });
+  }
+  if (finalShot) {
+    items.push(momentFromEntry("finalShot", finalShot, log.length - 1));
+  }
+
+  return { items };
+}
+
+function momentFromEntry(id, entry, index) {
+  return {
+    id,
+    turn: index + 1,
+    playerId: entry.playerId,
+    coordinate: cloneCoordinate(entry.coordinate),
+    result: entry.result,
+  };
+}
+
+function longestMissStreak(log, playerId) {
+  let current = { length: 0, startTurn: 0, endTurn: 0 };
+  let best = { length: 0, startTurn: 0, endTurn: 0 };
+
+  log.forEach((entry, index) => {
+    if (entry.playerId !== playerId) {
+      return;
+    }
+    const turn = index + 1;
+    if (missLike(entry.result)) {
+      current = current.length
+        ? { length: current.length + 1, startTurn: current.startTurn, endTurn: turn }
+        : { length: 1, startTurn: turn, endTurn: turn };
+      if (current.length > best.length) {
+        best = { ...current };
+      }
+      return;
+    }
+    current = { length: 0, startTurn: 0, endTurn: 0 };
+  });
+
+  return best;
+}
+
+function hitLike(result) {
+  return result === "hit" || result === "sunk";
+}
+
+function missLike(result) {
+  return result === "miss" || result === "mine" || result === "sweeper";
+}
+
+function cloneCoordinate(coordinate) {
+  if (!coordinate || !Number.isInteger(coordinate.row) || !Number.isInteger(coordinate.col)) {
+    return undefined;
+  }
+  return { row: coordinate.row, col: coordinate.col };
 }
 
 function addTrainingPlanStep(steps, step) {
