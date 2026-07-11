@@ -26,6 +26,12 @@ This release does not include public replays, replay discovery, spectator access
 
 Use one versioned JSON replay snapshot in D1. The Durable Object remains the authoritative source because it owns both legal boards and the server-generated shot log. The browser never uploads an online replay or chooses its winner, participants, or moves.
 
+Online setup boards and fire coordinates remain untrusted input. Before they enter
+room state, the Worker reconstructs a pristine board from the exact preset fleet
+and marker identities, rejects pre-existing hits or shots, and allocates every
+coordinate from integer `row` and `col` values only. Unknown nested fields are
+never cloned into game, outbox, replay, or recovery data.
+
 Normalized per-move SQL storage was rejected because it creates many writes and joins without a current analytics requirement. Durable Object-only storage was rejected because rooms are coordination objects, not a convenient permanent, searchable profile archive.
 
 ## Data Model
@@ -45,9 +51,13 @@ Add migration `0002_online_replays.sql`.
 | `data_json` | `TEXT NOT NULL` | Versioned replay payload |
 | `created_at` | `TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP` | Storage timestamp |
 
-Indexes cover `(p1_user_key, finished_at DESC)` and `(p2_user_key, finished_at DESC)`.
+The replay primary key supports direct ACL reads. Archive pagination starts from the
+signed-in participant's match rows, so the supporting composite index is
+`(user_key, mode, played_at DESC, id DESC)`.
 
-Add nullable `replay_id TEXT` to `matches` and index it. Existing rows remain valid and simply have no replay action.
+Add nullable `replay_id TEXT` to `matches` and index it both directly and through
+the participant archive index. Existing rows remain valid and simply have no
+replay action.
 
 ## Replay Payload
 
@@ -75,15 +85,32 @@ Boards are trusted final board clones from the server game state. Log entries re
 
 ## Recording Flow
 
-1. When a fire action finishes a battle, the Durable Object assigns `room.replayId` with `crypto.randomUUID()` before saving the room.
-2. `recordFinishedOnlineBattle()` writes the replay with `INSERT OR IGNORE` and records both participant match rows using IDs derived from `replayId` and `playerId`.
-3. Both match rows receive the same `replay_id`.
-4. A successful operation sets `room.profileRecordedAt` and `room.replayRecordedAt`.
-5. A D1 failure does not block the finished snapshot or result broadcast. The room records the error and schedules a Durable Object alarm.
-6. `alarm()` retries the same idempotent operation with bounded exponential backoff. The saved `replayId` prevents duplicate replays or rematch collisions.
-7. A rematch clears recording timestamps and retry state and receives a new replay ID when it finishes.
-
-Retries start after 30 seconds, double after each failure, cap at 15 minutes, and remain pending until successful; permanent authenticated history is more important than silently dropping a completed match. Missing `DB` configuration is treated as a configuration error in tests and does not create an alarm loop.
+1. When a fire action finishes a battle, the Durable Object generates a stable
+   `replayId` and creates an immutable recording payload before broadcasting the
+   result.
+2. That payload is stored in a separate Durable Object outbox. The finished room,
+   immutable job, and its due-time schedule become durable together with an alarm
+   already established. The job is not embedded in the mutable room snapshot and
+   cannot overwrite later rematch state after an awaited D1 call.
+3. One D1 `batch()` transaction inserts the replay and both participant match
+   rows. Both rows use IDs derived from `replayId` and `playerId` and receive the
+   same `replay_id`.
+4. Duplicate completion and alarm delivery are idempotent. Rating movement for a
+   replay is derived from the stored match position, so retrying the transaction
+   cannot change or erase the displayed delta.
+5. A D1 failure does not block the finished snapshot, result broadcast, room
+   actions, or a prepared rematch. The outbox entry records retry metadata and a
+   Durable Object alarm processes it independently from the active room.
+6. Retries start after 30 seconds, double after each failure, cap at 15 minutes,
+   and stop after 12 failed attempts. Schedule keys sort by due time, and each
+   alarm handles a bounded batch before scheduling the next due item.
+7. A terminal persistence entry retains the complete immutable envelope as a
+   dead-letter record, supports an internal requeue operation, and emits Worker
+   telemetry without preventing subsequent games. A payload-construction failure
+   retains an allowlisted recovery snapshot without room tokens and can be
+   requeued only with an explicitly supplied repaired envelope.
+8. Missing `DB` configuration and malformed immutable recording payloads are
+   terminal configuration/data errors. They do not create an alarm loop.
 
 ## Authorization And Privacy
 
@@ -95,8 +122,8 @@ Status behavior:
 
 - `401`: no or invalid session;
 - `403`: authenticated user was not a participant;
-- `404`: replay does not exist or contains an unsupported/corrupt payload;
-- `503`: D1 is unavailable.
+- `404`: replay does not exist;
+- `503`: D1 is unavailable or the stored replay payload is unsupported/corrupt.
 
 Replay URLs are not security credentials. Knowing an ID never bypasses participant authorization.
 
@@ -104,9 +131,16 @@ Replay URLs are not security credentials. Knowing an ID never bypasses participa
 
 ### `GET /profile/replays`
 
-Returns the signed-in player's online replay metadata in reverse chronological order, 20 items per request. Cursor pagination uses a base64url-encoded JSON pair of `finishedAt` and `id`; it does not use mutable offsets. Invalid cursors return `400`.
+Returns the signed-in player's online replay metadata in reverse chronological
+order, 20 items per request, including legacy online rows without a replay.
+Cursor pagination uses a base64url-encoded JSON pair of `finishedAt` and the
+stable match-row `id`; it does not use mutable offsets. The first page and
+cursor pages use separate SQL statements, and cursor pages apply tuple keyset
+range `(played_at, id) < (?, ?)`. Invalid cursors return `400`.
 
-Each item includes replay ID, participant-facing opponent name, result, preset, winner, turn count, accuracy, and completion time. The response includes `nextCursor` when more items exist.
+Each item includes a stable archive-row ID, nullable replay ID,
+participant-facing opponent name, result, preset, winner, turn count, accuracy,
+and completion time. The response includes `nextCursor` when more items exist.
 
 ### `GET /replays/:id`
 
@@ -182,7 +216,8 @@ The header identifies both captains, winner, ruleset, and completion date. Comma
 
 ## Error Handling
 
-- Invalid JSON or unsupported replay versions fail closed with `404`; no partial board is rendered.
+- Invalid JSON or unsupported stored replay versions fail closed with a generic
+  `503`; the Worker logs only the replay ID and never renders a partial board.
 - Network failures preserve the requested replay ID and expose Retry.
 - Authentication expiry returns to the sign-in gate and retries after a new login.
 - Autoplay stops when leaving the replay screen, opening another replay, or changing identity.
@@ -203,10 +238,19 @@ The header identifies both captains, winner, ruleset, and completion date. Comma
 
 - room completion writes one replay and two linked match rows;
 - duplicate completion/retry does not duplicate rows;
-- alarm retries after D1 failure and clears retry state after success;
+- replay and both match rows commit atomically, including a partial-failure retry;
+- a deferred D1 completion cannot overwrite a concurrently prepared rematch;
+- alarm retries after transient D1 failure and dead-letters terminal/exhausted work
+  without blocking gameplay;
+- dead letters preserve and can requeue the complete immutable recording envelope;
+- setup and fire payloads cannot inject unknown fields, prior damage, or room
+  credentials into room/replay/recovery state;
+- due-time schedules and alarm processing remain bounded as a backlog grows;
 - authenticated participant reads succeed;
 - unauthenticated, non-participant, missing, corrupt, and unavailable-DB cases return the specified status;
 - archive queries return only the signed-in participant's battles.
+- the participant archive query includes legacy null-replay rows and uses the composite pagination index under real
+  SQLite `EXPLAIN QUERY PLAN`.
 
 ### Frontend
 
