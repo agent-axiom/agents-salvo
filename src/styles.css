@@ -3002,6 +3002,43 @@ input {
   white-space: nowrap;
 }
 
+.battle-replay-map {
+  overflow: auto;
+  padding: 8px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
+  border-radius: 8px;
+}
+
+.battle-replay-map .board-panel {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.battle-replay-map .board-title {
+  margin-bottom: 6px;
+}
+
+.battle-replay-map .board-title h3 {
+  font-size: 13px;
+}
+
+.battle-replay-map .coordinate-board {
+  min-width: 220px;
+}
+
+.cell.replay-active {
+  position: relative;
+  z-index: 1;
+  outline: 3px solid var(--accent-strong);
+  outline-offset: -3px;
+  box-shadow:
+    inset 0 0 0 2px color-mix(in srgb, var(--surface) 70%, transparent),
+    0 0 16px color-mix(in srgb, var(--accent) 52%, transparent);
+}
+
 .battle-replay-card {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

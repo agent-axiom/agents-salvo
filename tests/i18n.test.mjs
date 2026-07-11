@@ -164,6 +164,7 @@ test("i18n translates result modal, theme, and history labels in every language"
     "moments.turnRange",
     "moments.noCoordinate",
     "replay.title",
+    "replay.map",
     "replay.move",
     "replay.player",
     "replay.result",

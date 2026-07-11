@@ -1615,11 +1615,20 @@ function renderBattleReplay(log) {
   }
   const activeTurn = normalizedReplayTurn(entries.length);
   const entry = entries[activeTurn - 1];
+  const replayBoard = replayBoardForLog(entries, activeTurn);
   return `
     <section class="battle-replay" aria-label="${translate("replay.title")}">
       <div class="battle-replay-header">
         <span>${translate("replay.title")}</span>
         <strong>${translate("replay.move", { turn: activeTurn, total: entries.length })}</strong>
+      </div>
+      <div class="battle-replay-map">
+        ${renderBoard(replayBoard, {
+          kind: "replay-target",
+          title: translate("replay.map"),
+          disabled: true,
+          highlightCoordinate: entry.coordinate,
+        })}
       </div>
       <div class="battle-replay-card">
         <div>
@@ -1641,6 +1650,25 @@ function renderBattleReplay(log) {
       </div>
     </section>
   `;
+}
+
+function replayBoardForLog(log, activeTurn) {
+  const entry = log[activeTurn - 1];
+  const context = currentBattleResultContext();
+  const size = getGamePreset(context?.presetId ?? state.presetId).size;
+  return {
+    size,
+    ships: [],
+    markers: [],
+    shots: log
+      .slice(0, activeTurn)
+      .filter((shot) => shot.playerId === entry.playerId && shot.coordinate)
+      .map((shot) => ({
+        ...shot.coordinate,
+        result: shot.result,
+        shipId: shot.shipId ?? null,
+      })),
+  };
 }
 
 function normalizedReplayTurn(total) {
@@ -1757,7 +1785,7 @@ function renderResultStat(key, value) {
   `;
 }
 
-function renderBoard(board, { kind, title, disabled = false, priorityTargets = [] }) {
+function renderBoard(board, { kind, title, disabled = false, priorityTargets = [], highlightCoordinate = null }) {
   const columnLabels = Array.from({ length: board.size }, (_, index) =>
     coordinateColumnLabel(state.language, index),
   );
@@ -1792,6 +1820,7 @@ function renderBoard(board, { kind, title, disabled = false, priorityTargets = [
               "cell",
               cellClass(cell, kind, board, coordinate),
               priorityTargetKeys.has(coordinateKey(coordinate)) ? "tactical-priority" : "",
+              highlightCoordinate && sameCoordinate(coordinate, highlightCoordinate) ? "replay-active" : "",
             ].filter(Boolean).join(" ");
             return `<button
               class="${classes}"
