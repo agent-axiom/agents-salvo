@@ -17,7 +17,11 @@ import { visibleBattleLog } from "./core/log.js";
 import { gamePresets, getGamePreset } from "./core/presets.js";
 import {
   advanceReplayTurn,
+  archiveReplayId,
+  archiveRetryOptions,
   archivedReplayFrame,
+  archivedReplayBoardMinWidth,
+  authRequestIsCurrent,
   createReplayClock,
   nextReplaySpeedIndex,
   normalizeReplayTurn,
@@ -53,6 +57,14 @@ const resultReplayClock = createReplayClock({
 });
 let telegramWidgetScheduled = false;
 const initialRequestedReplayId = replayIdFromSearch(window.location.search);
+let authEpoch = 0;
+const privateRequestControllers = {
+  auth: null,
+  profile: null,
+  archive: null,
+  replay: null,
+  saves: new Set(),
+};
 
 const state = {
   language: getInitialLanguage(),
@@ -108,6 +120,9 @@ const state = {
     nextCursor: "",
     loading: false,
     error: "",
+    retryAppend: false,
+    retryCursor: "",
+    retrying: false,
     requestId: 0,
   },
   replayArchive: {
@@ -117,6 +132,7 @@ const state = {
     error: "",
     tab: "own",
     copyStatus: "",
+    openedFromArchive: false,
     requestId: 0,
   },
   online: {
@@ -556,7 +572,7 @@ function renderReplayArchive() {
           : ""
       }
       ${
-        state.archive.nextCursor
+        state.archive.nextCursor && !state.archive.error
           ? `<button class="archive-load-more" data-action="archive-load-more" ${state.archive.loading ? "disabled" : ""}>${translate(
               state.archive.loading ? "archive.loadingMore" : "archive.loadMore",
             )}</button>`
@@ -568,32 +584,43 @@ function renderReplayArchive() {
 }
 
 function renderArchiveRow(item) {
+  const replayId = archiveReplayId(item);
   const opponent =
     typeof item.opponent === "string" && item.opponent !== "online"
       ? item.opponent
       : translate("archive.unknownOpponent");
+  const content = `
+    <span class="archive-row-result">${translate(`profile.result.${item.result}`)}</span>
+    <span class="archive-row-opponent">
+      <small>${translate("archive.opponent")}</small>
+      <strong class="archive-row-name">${escapeHtml(opponent)}</strong>
+    </span>
+    <span class="archive-row-battle">
+      <strong>${archivedPresetName(item.presetId)}</strong>
+      <small>${formatReplayDate(item.finishedAt)}</small>
+    </span>
+    <span class="archive-row-stat">
+      <small>${translate("archive.accuracy")}</small>
+      <strong>${Number(item.accuracy) || 0}%</strong>
+    </span>
+    <span class="archive-row-stat">
+      <small>${translate("archive.shots")}</small>
+      <strong>${Number(item.playerHits) || 0}/${Number(item.playerShots) || 0}</strong>
+    </span>
+  `;
   return `
-    <li class="archive-row is-${item.result === "win" ? "win" : "loss"}">
-      <button data-action="open-replay" data-replay-id="${escapeHtml(item.id)}" aria-label="${translate("archive.watchReplay")}">
-        <span class="archive-row-result">${translate(`profile.result.${item.result}`)}</span>
-        <span class="archive-row-opponent">
-          <small>${translate("archive.opponent")}</small>
-          <strong class="archive-row-name">${escapeHtml(opponent)}</strong>
-        </span>
-        <span class="archive-row-battle">
-          <strong>${archivedPresetName(item.presetId)}</strong>
-          <small>${formatReplayDate(item.finishedAt)}</small>
-        </span>
-        <span class="archive-row-stat">
-          <small>${translate("archive.accuracy")}</small>
-          <strong>${Number(item.accuracy) || 0}%</strong>
-        </span>
-        <span class="archive-row-stat">
-          <small>${translate("archive.shots")}</small>
-          <strong>${Number(item.playerHits) || 0}/${Number(item.playerShots) || 0}</strong>
-        </span>
-        <span class="archive-row-play" aria-hidden="true">▶</span>
-      </button>
+    <li class="archive-row is-${item.result === "win" ? "win" : "loss"} ${replayId ? "has-replay" : "is-historical"}">
+      ${
+        replayId
+          ? `<button data-action="open-replay" data-replay-id="${escapeHtml(replayId)}" data-replay-source="archive">
+              ${content}
+              <span class="archive-row-play" aria-hidden="true">▶</span>
+            </button>`
+          : `<div class="archive-row-content">
+              ${content}
+              <span class="archive-row-unavailable">${translate("archive.historicalUnavailable")}</span>
+            </div>`
+      }
     </li>
   `;
 }
@@ -673,12 +700,15 @@ function renderArchivedReplayContent() {
           )}</p>`
         : ""
     }
-    <div class="archived-replay-tabs" role="tablist" aria-label="${translate("replayArchive.captains")}">
-      <button data-action="replay-tab" data-tab="own" role="tab" aria-selected="${ownSelected}" class="${ownSelected ? "is-selected" : ""}">${translate("replayArchive.ownBoard")}</button>
-      <button data-action="replay-tab" data-tab="opponent" role="tab" aria-selected="${!ownSelected}" class="${!ownSelected ? "is-selected" : ""}">${translate("replayArchive.opponentBoard")}</button>
+    <div class="archived-replay-tabs" role="group" aria-label="${translate("replayArchive.captains")}">
+      <button data-action="replay-tab" data-tab="own" aria-pressed="${ownSelected}" class="${ownSelected ? "is-selected" : ""}">${translate("replayArchive.ownBoard")}</button>
+      <button data-action="replay-tab" data-tab="opponent" aria-pressed="${!ownSelected}" class="${!ownSelected ? "is-selected" : ""}">${translate("replayArchive.opponentBoard")}</button>
     </div>
     <div class="archived-replay-boards">
-      <div class="replay-board-view is-own ${ownSelected ? "is-selected" : ""}">
+      <div
+        class="replay-board-view is-own ${ownSelected ? "is-selected" : ""}"
+        style="--replay-board-min-width: ${archivedReplayBoardMinWidth(frame.boards[viewerPlayerId].size)}px"
+      >
         ${renderBoard(frame.boards[viewerPlayerId], {
           kind: "own",
           title: `${translate("replayArchive.ownBoard")} · ${ownName}`,
@@ -686,7 +716,10 @@ function renderArchivedReplayContent() {
           highlightCoordinate: frame.activeTargetPlayerId === viewerPlayerId ? frame.activeCoordinate : null,
         })}
       </div>
-      <div class="replay-board-view is-opponent ${!ownSelected ? "is-selected" : ""}">
+      <div
+        class="replay-board-view is-opponent ${!ownSelected ? "is-selected" : ""}"
+        style="--replay-board-min-width: ${archivedReplayBoardMinWidth(frame.boards[opponentPlayerId].size)}px"
+      >
         ${renderBoard(frame.boards[opponentPlayerId], {
           kind: "own",
           title: `${translate("replayArchive.opponentBoard")} · ${opponentName}`,
@@ -986,26 +1019,31 @@ function renderRecentMatches(matches) {
           ? `<p>${translate("profile.noMatches")}</p>`
           : `<ol>
               ${matches
-                .map(
-                  (match) => `
-                    <li class="${match.replayId ? "has-replay" : ""}">
+                .map((match) => {
+                  const replayId = archiveReplayId(match);
+                  const historicalOnlineMatch = match.mode === "online" && !replayId;
+                  return `
+                    <li class="${replayId ? "has-replay" : historicalOnlineMatch ? "is-historical" : ""}">
                       <strong>${translate(`profile.result.${match.result}`)}</strong>
                       <span>${translate(`mode.${match.mode}`)} · ${translate(`preset.${match.presetId}.name`)}</span>
                       <small>${match.playerShots} / ${match.accuracy}%</small>
                       ${
-                        match.replayId
+                        replayId
                           ? `<button
                               class="icon-button recent-replay-button"
                               data-action="open-replay"
-                              data-replay-id="${escapeHtml(match.replayId)}"
+                              data-replay-id="${escapeHtml(replayId)}"
+                              data-replay-source="recent"
                               aria-label="${translate("archive.watchReplay")}"
                               title="${translate("archive.watchReplay")}"
                             >▶</button>`
-                          : ""
+                          : historicalOnlineMatch
+                            ? `<small class="historical-replay-unavailable">${translate("archive.historicalUnavailable")}</small>`
+                            : ""
                       }
                     </li>
-                  `,
-                )
+                  `;
+                })
                 .join("")}
             </ol>`
       }
@@ -2389,12 +2427,14 @@ root.addEventListener("click", async (event) => {
   if (action === "result-replay-next") changeResultReplayTurn(1);
   if (action === "result-replay-jump") setResultReplayTurn(button.dataset.turn);
   if (action === "open-archive") await openReplayArchive();
-  if (action === "archive-retry") await loadReplayArchive();
+  if (action === "archive-retry") await retryReplayArchive();
   if (action === "archive-load-more") await loadReplayArchive({ append: true });
-  if (action === "open-replay") await openArchivedReplay(button.dataset.replayId);
+  if (action === "open-replay") {
+    await openArchivedReplay(button.dataset.replayId, { source: button.dataset.replaySource || "direct" });
+  }
   if (action === "replay-retry") await loadArchivedReplay(state.replayArchive.requestedId);
   if (action === "replay-copy-link") await copyArchivedReplayLink();
-  if (action === "replay-back") await openReplayArchive();
+  if (action === "replay-back") await backToReplayArchive();
   if (action === "replay-tab") selectArchivedReplayTab(button.dataset.tab);
   if (action === "archived-replay-toggle-play") toggleResultReplayPlayback();
   if (action === "archived-replay-speed") cycleResultReplaySpeed();
@@ -2519,6 +2559,8 @@ function startTraining(scenarioId = state.training.scenarioId) {
 
 function goToMenu({ updateHistory = true } = {}) {
   closeRemote();
+  abortPrivateRequest("archive");
+  abortPrivateRequest("replay");
   state.settingsOpen = false;
   state.profileOpen = false;
   state.leaderboardOpen = false;
@@ -2536,6 +2578,8 @@ function goToMenu({ updateHistory = true } = {}) {
   state.replayArchive.loading = false;
   state.replayArchive.error = "";
   state.replayArchive.copyStatus = "";
+  state.replayArchive.openedFromArchive = false;
+  state.archive.loading = false;
   state.archive.requestId += 1;
   state.replayArchive.requestId += 1;
   if (updateHistory) {
@@ -2544,8 +2588,10 @@ function goToMenu({ updateHistory = true } = {}) {
   render();
 }
 
-async function openReplayArchive() {
+async function openReplayArchive({ historyMode = "push" } = {}) {
   resetResultReplayPlayback();
+  abortPrivateRequest("archive");
+  abortPrivateRequest("replay");
   state.settingsOpen = false;
   state.profileOpen = false;
   state.leaderboardOpen = false;
@@ -2555,17 +2601,20 @@ async function openReplayArchive() {
   state.replayArchive.loading = false;
   state.replayArchive.error = "";
   state.replayArchive.copyStatus = "";
+  state.replayArchive.openedFromArchive = false;
   state.replayArchive.requestId += 1;
-  updateReplayHistory("", "push", "archive");
+  updateReplayHistory("", historyMode, "archive");
   await loadReplayArchive();
 }
 
-async function openArchivedReplay(id) {
+async function openArchivedReplay(id, { source = "direct" } = {}) {
   const replayId = replayIdFromSearch(`?replay=${encodeURIComponent(id || "")}`);
   if (!replayId) {
     return;
   }
   resetResultReplayPlayback();
+  abortPrivateRequest("archive");
+  abortPrivateRequest("replay");
   state.settingsOpen = false;
   state.profileOpen = false;
   state.leaderboardOpen = false;
@@ -2575,13 +2624,24 @@ async function openArchivedReplay(id) {
   state.replayArchive.error = "";
   state.replayArchive.tab = "own";
   state.replayArchive.copyStatus = "";
+  state.replayArchive.openedFromArchive = source === "archive";
   state.archive.requestId += 1;
   state.archive.loading = false;
-  updateReplayHistory(replayId, "push", "replay");
+  updateReplayHistory(replayId, "push", "replay", { replaySource: source });
   await loadArchivedReplay(replayId);
 }
 
-function updateReplayHistory(replayId, mode, screen) {
+async function backToReplayArchive() {
+  resetResultReplayPlayback();
+  abortPrivateRequest("replay");
+  if (state.replayArchive.openedFromArchive) {
+    window.history.back();
+    return;
+  }
+  await openReplayArchive({ historyMode: "replace" });
+}
+
+function updateReplayHistory(replayId, mode, screen, details = {}) {
   let url;
   if (replayId) {
     url = replayUrlForId(window.location.href, replayId);
@@ -2592,20 +2652,23 @@ function updateReplayHistory(replayId, mode, screen) {
     url = nextUrl.toString();
   }
   if (mode === "replace") {
-    window.history.replaceState({ screen }, "", url);
+    window.history.replaceState({ screen, ...details }, "", url);
     return;
   }
-  window.history.pushState({ screen }, "", url);
+  window.history.pushState({ screen, ...details }, "", url);
 }
 
 async function handleReplayPopState(event) {
   const replayId = replayIdFromSearch(window.location.search);
   resetResultReplayPlayback();
+  abortPrivateRequest("archive");
+  abortPrivateRequest("replay");
   if (replayId) {
     state.screen = "replay";
     state.replayArchive.requestedId = replayId;
     state.replayArchive.data = null;
     state.replayArchive.error = "";
+    state.replayArchive.openedFromArchive = event.state?.replaySource === "archive";
     await loadArchivedReplay(replayId);
     return;
   }
@@ -2613,6 +2676,7 @@ async function handleReplayPopState(event) {
     state.screen = "archive";
     state.replayArchive.requestedId = "";
     state.replayArchive.data = null;
+    state.replayArchive.openedFromArchive = false;
     await loadReplayArchive();
     return;
   }
@@ -2624,7 +2688,7 @@ function selectArchivedReplayTab(tab) {
     return;
   }
   state.replayArchive.tab = tab;
-  render();
+  renderArchivedReplayFrame();
 }
 
 async function copyArchivedReplayLink() {
@@ -3331,64 +3395,151 @@ function isTelegramLoginOriginAllowed() {
   return !["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
 }
 
+function authIdentity(user = state.auth.user) {
+  return user?.provider && user?.id ? `${user.provider}:${user.id}` : "";
+}
+
+function captureAuthRequest() {
+  return {
+    epoch: authEpoch,
+    token: state.auth.token,
+    identity: authIdentity(),
+  };
+}
+
+function currentAuthRequest() {
+  return captureAuthRequest();
+}
+
+function beginPrivateRequest(owner) {
+  abortPrivateRequest(owner);
+  const controller = new AbortController();
+  privateRequestControllers[owner] = controller;
+  return controller;
+}
+
+function abortPrivateRequest(owner) {
+  const controller = privateRequestControllers[owner];
+  if (controller) {
+    controller.abort();
+  }
+  privateRequestControllers[owner] = null;
+}
+
+function finishPrivateRequest(owner, controller) {
+  if (privateRequestControllers[owner] === controller) {
+    privateRequestControllers[owner] = null;
+  }
+}
+
+function privateRequestIsCurrent(owner, controller) {
+  return privateRequestControllers[owner] === controller && !controller.signal.aborted;
+}
+
+function abortAllPrivateRequests() {
+  for (const owner of ["auth", "profile", "archive", "replay"]) {
+    abortPrivateRequest(owner);
+  }
+  for (const controller of privateRequestControllers.saves) {
+    controller.abort();
+  }
+  privateRequestControllers.saves.clear();
+}
+
+function isAbortError(error) {
+  return error?.name === "AbortError";
+}
+
 async function loadReplayArchive({ append = false } = {}) {
   state.screen = "archive";
   if (!state.auth.token || !state.auth.user || !state.auth.workerUrl) {
+    abortPrivateRequest("archive");
     state.archive.loading = false;
     state.archive.error = "archive.signInRequired";
     render();
     return;
   }
-  if (append && !state.archive.nextCursor) {
+  const retry = state.archive.retrying
+    ? archiveRetryOptions({ append: state.archive.retryAppend, cursor: state.archive.retryCursor })
+    : null;
+  state.archive.retrying = false;
+  const appendRequest = retry ? retry.append : append;
+  const requestCursor = appendRequest ? retry?.cursor || state.archive.nextCursor : "";
+  if (appendRequest && !requestCursor) {
     return;
   }
 
   state.archive.loading = true;
   state.archive.error = "";
+  state.archive.retryAppend = false;
+  state.archive.retryCursor = "";
   state.archive.requestId += 1;
+  const authRequest = captureAuthRequest();
+  const controller = beginPrivateRequest("archive");
+  const workerUrl = state.auth.workerUrl;
   const request = {
-    token: state.auth.token,
+    token: authRequest.token,
     requestId: state.archive.requestId,
     replayId: "",
   };
-  if (!append) {
+  if (!appendRequest) {
     state.archive.items = [];
     state.archive.nextCursor = "";
   }
   render();
 
   try {
-    const url = new URL(`${state.auth.workerUrl}/profile/replays`);
-    if (append) {
-      url.searchParams.set("cursor", state.archive.nextCursor);
+    const url = new URL(`${workerUrl}/profile/replays`);
+    if (appendRequest) {
+      url.searchParams.set("cursor", requestCursor);
     }
     const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${state.auth.token}` },
+      headers: { Authorization: `Bearer ${authRequest.token}` },
+      signal: controller.signal,
     });
     const payload = await readReplayJson(response);
-    if (!replayRequestIsCurrent(request, currentArchiveRequest())) {
+    if (!archiveLoadIsCurrent(request, authRequest, controller)) {
       return;
     }
     if (!payload.archive || !Array.isArray(payload.archive.items)) {
       throw replayUnavailableError();
     }
     const items = payload.archive.items;
-    state.archive.items = append ? uniqueArchiveItems([...state.archive.items, ...items]) : items;
+    state.archive.items = appendRequest ? uniqueArchiveItems([...state.archive.items, ...items]) : items;
     state.archive.nextCursor = payload.archive?.nextCursor || "";
+    state.archive.retryAppend = false;
+    state.archive.retryCursor = "";
   } catch (error) {
-    if (!replayRequestIsCurrent(request, currentArchiveRequest())) {
+    if (isAbortError(error) || !archiveLoadIsCurrent(request, authRequest, controller)) {
       return;
     }
     if (error.status === 401) {
-      expireReplayAuthentication();
+      expireReplayAuthentication(authRequest);
+      return;
     }
+    state.archive.retryAppend = appendRequest;
+    state.archive.retryCursor = requestCursor;
     state.archive.error = replayRequestErrorKey(error, "archive");
   } finally {
-    if (replayRequestIsCurrent(request, currentArchiveRequest())) {
+    if (archiveLoadIsCurrent(request, authRequest, controller)) {
       state.archive.loading = false;
+      finishPrivateRequest("archive", controller);
+      render();
+    } else {
+      finishPrivateRequest("archive", controller);
     }
-    render();
   }
+}
+
+async function retryReplayArchive() {
+  const retry = archiveRetryOptions({
+    append: state.archive.retryAppend,
+    cursor: state.archive.retryCursor,
+  });
+  state.archive.retryAppend = retry.append;
+  state.archive.retryCursor = retry.cursor;
+  state.archive.retrying = true;
+  await loadReplayArchive({ append: retry.append });
 }
 
 async function loadArchivedReplay(id) {
@@ -3405,6 +3556,7 @@ async function loadArchivedReplay(id) {
   state.replayArchive.requestedId = replayId;
   state.replayArchive.copyStatus = "";
   if (!state.auth.token || !state.auth.user || !state.auth.workerUrl) {
+    abortPrivateRequest("replay");
     state.replayArchive.loading = false;
     state.replayArchive.data = null;
     state.replayArchive.error = "replayArchive.signInRequired";
@@ -3417,18 +3569,22 @@ async function loadArchivedReplay(id) {
   state.replayArchive.data = null;
   state.replayArchive.error = "";
   state.replayArchive.requestId += 1;
+  const authRequest = captureAuthRequest();
+  const controller = beginPrivateRequest("replay");
+  const workerUrl = state.auth.workerUrl;
   const request = {
-    token: state.auth.token,
+    token: authRequest.token,
     requestId: state.replayArchive.requestId,
     replayId,
   };
   render();
   try {
-    const response = await fetch(`${state.auth.workerUrl}/replays/${encodeURIComponent(id)}`, {
-      headers: { Authorization: `Bearer ${state.auth.token}` },
+    const response = await fetch(`${workerUrl}/replays/${encodeURIComponent(id)}`, {
+      headers: { Authorization: `Bearer ${authRequest.token}` },
+      signal: controller.signal,
     });
     const payload = await readReplayJson(response);
-    if (!replayRequestIsCurrent(request, currentArchivedReplayRequest())) {
+    if (!archivedReplayLoadIsCurrent(request, authRequest, controller)) {
       return;
     }
     if (payload.replay?.id !== replayId) {
@@ -3436,19 +3592,39 @@ async function loadArchivedReplay(id) {
     }
     state.replayArchive.data = payload.replay;
   } catch (error) {
-    if (!replayRequestIsCurrent(request, currentArchivedReplayRequest())) {
+    if (isAbortError(error) || !archivedReplayLoadIsCurrent(request, authRequest, controller)) {
       return;
     }
     if (error.status === 401) {
-      expireReplayAuthentication();
+      expireReplayAuthentication(authRequest);
+      return;
     }
     state.replayArchive.error = replayRequestErrorKey(error, "replayArchive");
   } finally {
-    if (replayRequestIsCurrent(request, currentArchivedReplayRequest())) {
+    if (archivedReplayLoadIsCurrent(request, authRequest, controller)) {
       state.replayArchive.loading = false;
+      finishPrivateRequest("replay", controller);
+      render();
+    } else {
+      finishPrivateRequest("replay", controller);
     }
-    render();
   }
+}
+
+function archiveLoadIsCurrent(request, authRequest, controller) {
+  return (
+    replayRequestIsCurrent(request, currentArchiveRequest()) &&
+    authRequestIsCurrent(authRequest, currentAuthRequest()) &&
+    privateRequestIsCurrent("archive", controller)
+  );
+}
+
+function archivedReplayLoadIsCurrent(request, authRequest, controller) {
+  return (
+    replayRequestIsCurrent(request, currentArchivedReplayRequest()) &&
+    authRequestIsCurrent(authRequest, currentAuthRequest()) &&
+    privateRequestIsCurrent("replay", controller)
+  );
 }
 
 function currentArchiveRequest() {
@@ -3515,93 +3691,177 @@ function replayRequestErrorKey(error, scope) {
   return `${scope}.unavailable`;
 }
 
-function expireReplayAuthentication() {
-  resetResultReplayPlayback();
-  state.auth.token = "";
-  state.auth.user = null;
-  resetProfile();
-  clearPrivateReplayData({ preserveRequestedId: true });
-  localStorage.removeItem(authTokenStorageKey);
+function expireReplayAuthentication(request) {
+  if (!authRequestIsCurrent(request, currentAuthRequest())) {
+    return false;
+  }
+  invalidateAuthSession({ preserveRequestedId: true });
+  render();
+  return true;
 }
 
 function clearPrivateReplayData({ preserveRequestedId = false } = {}) {
+  abortPrivateRequest("archive");
+  abortPrivateRequest("replay");
   const requestedId = preserveRequestedId ? state.replayArchive.requestedId : "";
   state.archive.items = [];
   state.archive.nextCursor = "";
   state.archive.loading = false;
   state.archive.error = "";
+  state.archive.retryAppend = false;
+  state.archive.retryCursor = "";
+  state.archive.retrying = false;
   state.archive.requestId += 1;
   state.replayArchive.requestedId = requestedId;
   state.replayArchive.data = null;
   state.replayArchive.loading = false;
   state.replayArchive.error = "";
   state.replayArchive.copyStatus = "";
+  state.replayArchive.openedFromArchive = false;
   state.replayArchive.requestId += 1;
 }
 
-function resetReplayForIdentityChange(nextUser) {
-  const currentIdentity = state.auth.user ? `${state.auth.user.provider}:${state.auth.user.id}` : "";
-  const nextIdentity = nextUser ? `${nextUser.provider}:${nextUser.id}` : "";
-  if (currentIdentity !== nextIdentity) {
+function establishAuthSession(token, user) {
+  const identityChanged = authIdentity() !== authIdentity(user);
+  authEpoch += 1;
+  abortAllPrivateRequests();
+  if (identityChanged) {
     resetResultReplayPlayback();
+    resetProfile();
     clearPrivateReplayData({ preserveRequestedId: true });
   }
+  state.auth.token = token;
+  state.auth.user = user;
+  state.auth.error = "";
+  state.auth.loading = false;
+  localStorage.setItem(authTokenStorageKey, token);
+}
+
+function invalidateAuthSession({ error = "", preserveRequestedId = true } = {}) {
+  authEpoch += 1;
+  abortAllPrivateRequests();
+  state.auth.token = "";
+  state.auth.user = null;
+  state.auth.error = error;
+  state.auth.loading = false;
+  resetProfile();
+  clearPrivateReplayData({ preserveRequestedId });
+  resetResultReplayPlayback();
+  localStorage.removeItem(authTokenStorageKey);
+}
+
+function authOperationIsCurrent(request, controller) {
+  return (
+    authRequestIsCurrent(request, currentAuthRequest()) &&
+    privateRequestIsCurrent("auth", controller)
+  );
+}
+
+function handleAuthFailure(error, request, controller) {
+  if (isAbortError(error) || !authOperationIsCurrent(request, controller)) {
+    return false;
+  }
+  invalidateAuthSession({ error: error.message, preserveRequestedId: true });
+  render();
+  return true;
 }
 
 async function handleTelegramAuth(payload) {
-  await withAuthError(async () => {
-    const response = await fetch(`${state.auth.workerUrl}/auth/telegram`, {
+  const request = captureAuthRequest();
+  const controller = beginPrivateRequest("auth");
+  const workerUrl = state.auth.workerUrl;
+  state.auth.loading = true;
+  state.auth.error = "";
+  render();
+  try {
+    const response = await fetch(`${workerUrl}/auth/telegram`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
     const authPayload = await readAuthJson(response);
-    resetReplayForIdentityChange(authPayload.user);
-    state.auth.token = authPayload.token;
-    state.auth.user = authPayload.user;
-    localStorage.setItem(authTokenStorageKey, state.auth.token);
-    await refreshProfile({ renderWhenDone: false });
-    await resumeRequestedReplay();
-  });
+    if (!authOperationIsCurrent(request, controller)) {
+      return;
+    }
+    if (!authPayload.token || !authPayload.user) {
+      throw new Error("Telegram authentication response is incomplete");
+    }
+    establishAuthSession(authPayload.token, authPayload.user);
+    render();
+    const sessionRequest = captureAuthRequest();
+    await refreshProfile();
+    if (authRequestIsCurrent(sessionRequest, currentAuthRequest())) {
+      await resumeRequestedReplay();
+    }
+  } catch (error) {
+    handleAuthFailure(error, request, controller);
+  } finally {
+    if (authOperationIsCurrent(request, controller)) {
+      state.auth.loading = false;
+      finishPrivateRequest("auth", controller);
+      render();
+    } else {
+      finishPrivateRequest("auth", controller);
+    }
+  }
 }
 
 async function refreshAuth() {
   if (!state.auth.token || !state.auth.workerUrl) {
     return;
   }
-  await withAuthError(async () => {
-    const response = await fetch(`${state.auth.workerUrl}/auth/me`, {
-      headers: { Authorization: `Bearer ${state.auth.token}` },
+  const request = captureAuthRequest();
+  const controller = beginPrivateRequest("auth");
+  const workerUrl = state.auth.workerUrl;
+  state.auth.loading = true;
+  state.auth.error = "";
+  render();
+  try {
+    const response = await fetch(`${workerUrl}/auth/me`, {
+      headers: { Authorization: `Bearer ${request.token}` },
+      signal: controller.signal,
     });
     const payload = await readAuthJson(response);
-    resetReplayForIdentityChange(payload.user);
-    state.auth.user = payload.user;
+    if (!authOperationIsCurrent(request, controller)) {
+      return;
+    }
     if (!payload.user) {
-      state.auth.token = "";
-      localStorage.removeItem(authTokenStorageKey);
-      resetProfile();
-    } else {
-      await refreshProfile({ renderWhenDone: false });
+      invalidateAuthSession({ preserveRequestedId: true });
+      render();
+      return;
+    }
+    establishAuthSession(request.token, payload.user);
+    render();
+    const sessionRequest = captureAuthRequest();
+    await refreshProfile();
+    if (authRequestIsCurrent(sessionRequest, currentAuthRequest())) {
       await resumeRequestedReplay();
     }
-  });
+  } catch (error) {
+    handleAuthFailure(error, request, controller);
+  } finally {
+    if (authOperationIsCurrent(request, controller)) {
+      state.auth.loading = false;
+      finishPrivateRequest("auth", controller);
+      render();
+    } else {
+      finishPrivateRequest("auth", controller);
+    }
+  }
 }
 
 async function logoutAuth() {
-  await withAuthError(async () => {
-    if (state.auth.token && state.auth.workerUrl) {
-      await fetch(`${state.auth.workerUrl}/auth/logout`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${state.auth.token}` },
-      }).catch(() => {});
-    }
-    state.auth.token = "";
-    state.auth.user = null;
-    resetProfile();
-    clearPrivateReplayData({ preserveRequestedId: true });
-    resetResultReplayPlayback();
-    localStorage.removeItem(authTokenStorageKey);
-  });
+  const token = state.auth.token;
+  const workerUrl = state.auth.workerUrl;
+  invalidateAuthSession({ preserveRequestedId: true });
+  render();
+  if (token && workerUrl) {
+    await fetch(`${workerUrl}/auth/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    }).catch(() => {});
+  }
 }
 
 async function refreshProfile({ renderWhenDone = true } = {}) {
@@ -3609,24 +3869,48 @@ async function refreshProfile({ renderWhenDone = true } = {}) {
     resetProfile();
     return;
   }
+  const request = captureAuthRequest();
+  const controller = beginPrivateRequest("profile");
+  const workerUrl = state.auth.workerUrl;
   state.profile.loading = true;
   state.profile.error = "";
   if (renderWhenDone) {
     render();
   }
   try {
-    const response = await fetch(`${state.auth.workerUrl}/profile/me`, {
-      headers: { Authorization: `Bearer ${state.auth.token}` },
+    const response = await fetch(`${workerUrl}/profile/me`, {
+      headers: { Authorization: `Bearer ${request.token}` },
+      signal: controller.signal,
     });
     const payload = await readAuthJson(response);
+    if (
+      !authRequestIsCurrent(request, currentAuthRequest()) ||
+      !privateRequestIsCurrent("profile", controller)
+    ) {
+      return;
+    }
     state.profile.data = payload.profile;
     state.leaderboard.data = payload.profile?.leaderboard ?? state.leaderboard.data;
   } catch (error) {
-    state.profile.error = error.message;
+    if (
+      !isAbortError(error) &&
+      authRequestIsCurrent(request, currentAuthRequest()) &&
+      privateRequestIsCurrent("profile", controller)
+    ) {
+      state.profile.error = error.message;
+    }
   } finally {
-    state.profile.loading = false;
-    if (renderWhenDone) {
-      render();
+    if (
+      authRequestIsCurrent(request, currentAuthRequest()) &&
+      privateRequestIsCurrent("profile", controller)
+    ) {
+      state.profile.loading = false;
+      finishPrivateRequest("profile", controller);
+      if (renderWhenDone) {
+        render();
+      }
+    } else {
+      finishPrivateRequest("profile", controller);
     }
   }
 }
@@ -3640,23 +3924,49 @@ async function recordCompletedBattle(match) {
   }
   state.profile.savedMatchKeys.add(match.id);
   state.profile.saveMessage = "";
+  const request = captureAuthRequest();
+  const controller = new AbortController();
+  const workerUrl = state.auth.workerUrl;
+  privateRequestControllers.saves.add(controller);
   try {
-    const response = await fetch(`${state.auth.workerUrl}/profile/matches`, {
+    const response = await fetch(`${workerUrl}/profile/matches`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${state.auth.token}`,
+        Authorization: `Bearer ${request.token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(match),
+      signal: controller.signal,
     });
     const payload = await readAuthJson(response);
+    if (
+      !authRequestIsCurrent(request, currentAuthRequest()) ||
+      controller.signal.aborted ||
+      !privateRequestControllers.saves.has(controller)
+    ) {
+      return;
+    }
     state.profile.data = payload.profile;
     state.leaderboard.data = payload.profile?.leaderboard ?? state.leaderboard.data;
     state.profile.saveMessage = translate("profile.saved");
   } catch (error) {
-    state.profile.error = translate("profile.saveError", { message: error.message });
+    if (
+      !isAbortError(error) &&
+      authRequestIsCurrent(request, currentAuthRequest()) &&
+      privateRequestControllers.saves.has(controller)
+    ) {
+      state.profile.error = translate("profile.saveError", { message: error.message });
+    }
+  } finally {
+    const shouldRender =
+      authRequestIsCurrent(request, currentAuthRequest()) &&
+      !controller.signal.aborted &&
+      privateRequestControllers.saves.has(controller);
+    privateRequestControllers.saves.delete(controller);
+    if (shouldRender) {
+      render();
+    }
   }
-  render();
 }
 
 async function refreshLeaderboard({ renderWhenDone = true } = {}) {
@@ -3684,32 +3994,13 @@ async function refreshLeaderboard({ renderWhenDone = true } = {}) {
 }
 
 function resetProfile() {
+  abortPrivateRequest("profile");
   state.profileOpen = false;
   state.profile.data = null;
   state.profile.loading = false;
   state.profile.error = "";
   state.profile.saveMessage = "";
   state.profile.savedMatchKeys.clear();
-}
-
-async function withAuthError(action) {
-  state.auth.loading = true;
-  state.auth.error = "";
-  render();
-  try {
-    await action();
-  } catch (error) {
-    state.auth.error = error.message;
-    state.auth.token = "";
-    state.auth.user = null;
-    resetProfile();
-    clearPrivateReplayData({ preserveRequestedId: true });
-    resetResultReplayPlayback();
-    localStorage.removeItem(authTokenStorageKey);
-  } finally {
-    state.auth.loading = false;
-    render();
-  }
 }
 
 async function readAuthJson(response) {

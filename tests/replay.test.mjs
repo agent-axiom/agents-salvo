@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 
 import {
   advanceReplayTurn,
+  archiveReplayId,
+  archiveRetryOptions,
   archivedReplayFrame,
+  archivedReplayBoardMinWidth,
+  authRequestIsCurrent,
   createReplayClock,
   nextReplaySpeedIndex,
   normalizeReplayTurn,
@@ -197,6 +201,42 @@ test("private replay responses are ignored after logout, identity change, or sup
   assert.equal(replayRequestIsCurrent(request, { ...request, token: "token-b" }), false);
   assert.equal(replayRequestIsCurrent(request, { ...request, requestId: 5 }), false);
   assert.equal(replayRequestIsCurrent(request, { ...request, replayId: "other-456" }), false);
+});
+
+test("authenticated responses require the same epoch, token, and identity", () => {
+  const request = { epoch: 7, token: "token-a", identity: "telegram:42" };
+
+  assert.equal(authRequestIsCurrent(request, { ...request }), true);
+  assert.equal(authRequestIsCurrent(request, { ...request, epoch: 8 }), false);
+  assert.equal(authRequestIsCurrent(request, { ...request, token: "token-b" }), false);
+  assert.equal(authRequestIsCurrent(request, { ...request, identity: "telegram:84" }), false);
+  assert.equal(authRequestIsCurrent(null, request), false);
+});
+
+test("archive helpers distinguish replay-enabled and historical rows", () => {
+  assert.equal(archiveReplayId({ id: "match-1", replayId: "abc-123" }), "abc-123");
+  assert.equal(archiveReplayId({ id: "match-2", replayId: null }), "");
+  assert.equal(archiveReplayId({ id: "match-3", replayId: "abc/123" }), "");
+
+  assert.deepEqual(archiveRetryOptions({ append: true, cursor: "page-2" }), {
+    append: true,
+    cursor: "page-2",
+  });
+  assert.deepEqual(archiveRetryOptions({ append: true, cursor: "" }), {
+    append: false,
+    cursor: "",
+  });
+  assert.deepEqual(archiveRetryOptions({ append: false, cursor: "page-2" }), {
+    append: false,
+    cursor: "",
+  });
+});
+
+test("large archived boards keep a deliberate scrollable minimum width", () => {
+  assert.equal(archivedReplayBoardMinWidth(10), 0);
+  assert.equal(archivedReplayBoardMinWidth(16), 628);
+  assert.equal(archivedReplayBoardMinWidth(0), 0);
+  assert.equal(archivedReplayBoardMinWidth(Number.NaN), 0);
 });
 
 test("replay turn helpers normalize, restart, and finish deterministically", () => {

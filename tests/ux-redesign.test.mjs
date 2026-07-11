@@ -547,6 +547,8 @@ test("private archive renders replay-enabled rows and complete request states", 
   assert.match(app, /archive\.empty/);
   assert.match(css, /\.archive-screen/);
   assert.match(css, /\.archive-row/);
+  assert.match(css, /\.profile-recent li\.is-historical/);
+  assert.match(css, /\.historical-replay-unavailable[\s\S]*?grid-column:\s*1 \/ -1/);
 });
 
 test("archived replay uses viewer perspective, two boards, and mobile board tabs", () => {
@@ -579,6 +581,32 @@ test("archived replay playback preserves keyboard focus between rendered frames"
   assert.match(app, /renderActiveReplayFrame\(\)[\s\S]*?renderArchivedReplayFrame\(\)/);
 });
 
+test("archived replay board chooser is a valid focus-preserving segmented control", () => {
+  const replayContent = sourceBetween("function renderArchivedReplayContent", "function renderArchivedReplayMoments");
+  const selectBoard = sourceBetween("function selectArchivedReplayTab", "async function copyArchivedReplayLink");
+  const archiveRow = sourceBetween("function renderArchiveRow", "function renderArchivedReplay");
+
+  assert.match(replayContent, /class="archived-replay-tabs" role="group"/);
+  assert.match(replayContent, /aria-pressed="\$\{ownSelected\}"/);
+  assert.match(replayContent, /aria-pressed="\$\{!ownSelected\}"/);
+  assert.doesNotMatch(replayContent, /role="tab(?:list)?"/);
+  assert.doesNotMatch(replayContent, /aria-selected=/);
+  assert.match(selectBoard, /renderArchivedReplayFrame\(\)/);
+  assert.doesNotMatch(archiveRow, /aria-label="\$\{translate\("archive\.watchReplay"\)\}"/);
+});
+
+test("16x16 archived boards scroll inside the replay at 320px while 10x10 stays fluid", () => {
+  assert.match(app, /archivedReplayBoardMinWidth\(frame\.boards\[viewerPlayerId\]\.size\)/);
+  assert.match(app, /archivedReplayBoardMinWidth\(frame\.boards\[opponentPlayerId\]\.size\)/);
+  assert.match(app, /--replay-board-min-width:/);
+  assert.match(cssRule(".replay-board-view"), /max-width:\s*100%/);
+  assert.match(cssRule(".replay-board-view"), /overflow-x:\s*auto/);
+  assert.match(cssRule(".replay-board-view"), /overscroll-behavior-inline:\s*contain/);
+  assert.match(cssRule(".replay-board-view .board-panel"), /width:\s*max\(100%,\s*var\(--replay-board-min-width,\s*0px\)\)/);
+  assert.match(css, /@media \(max-width:\s*360px\)[\s\S]*?\.archive-screen,[\s\S]*?\.archived-replay-screen\s*\{[\s\S]*?padding:\s*8px;/);
+  assert.match(cssRule(".archived-replay-screen"), /overflow-x:\s*clip/);
+});
+
 function combinedCssRule(...selectors) {
   const escapedSelectors = selectors.map((selector) =>
     selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
@@ -594,4 +622,12 @@ function cssRule(selector) {
   const match = css.match(new RegExp(`${escapedSelector}\\s*\\{([\\s\\S]*?)\\}`));
   assert.ok(match, `Missing CSS rule: ${selector}`);
   return match[1];
+}
+
+function sourceBetween(start, end) {
+  const startIndex = app.indexOf(start);
+  const endIndex = app.indexOf(end, startIndex + start.length);
+  assert.ok(startIndex >= 0, `Missing source start: ${start}`);
+  assert.ok(endIndex > startIndex, `Missing source end: ${end}`);
+  return app.slice(startIndex, endIndex);
 }

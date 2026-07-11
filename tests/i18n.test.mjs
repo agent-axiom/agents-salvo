@@ -194,6 +194,7 @@ test("i18n translates result modal, theme, and history labels in every language"
     "archive.loadMore",
     "archive.back",
     "archive.watchReplay",
+    "archive.historicalUnavailable",
     "archive.unknownOpponent",
     "archive.opponent",
     "archive.accuracy",
@@ -315,6 +316,12 @@ test("i18n translates result modal, theme, and history labels in every language"
       assert.notEqual(t(language.code, key), key);
     }
   }
+});
+
+test("legacy online battles explain why no replay can be opened", () => {
+  assert.equal(t("en", "archive.historicalUnavailable"), "Replay unavailable for this historical battle.");
+  assert.equal(t("ru", "archive.historicalUnavailable"), "Повтор недоступен для этого исторического боя.");
+  assert.equal(t("zh-CN", "archive.historicalUnavailable"), "此历史战斗没有可用回放。");
 });
 
 test("replay range positions are announced as natural localized text", () => {

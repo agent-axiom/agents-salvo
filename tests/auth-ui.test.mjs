@@ -67,7 +67,7 @@ test("private replay archive state uses authenticated participant endpoints", ()
   assert.match(app, /\/profile\/replays/);
   assert.match(app, /function loadArchivedReplay\(id\)/);
   assert.match(app, /\/replays\/\$\{encodeURIComponent\(id\)\}/);
-  assert.match(app, /Authorization:\s*`Bearer \$\{state\.auth\.token\}`/);
+  assert.match(app, /Authorization:\s*`Bearer \$\{authRequest\.token\}`/);
 });
 
 test("replay deep links survive auth restoration and use browser history", () => {
@@ -81,3 +81,117 @@ test("replay deep links survive auth restoration and use browser history", () =>
   assert.match(app, /canonicalReplayBaseUrl\s*=\s*"https:\/\/agent-axiom\.github\.io\/agents-salvo\/"/);
   assert.match(app, /replayUrlForId\(canonicalReplayBaseUrl, replayId\)/);
 });
+
+test("private async work is scoped to one auth epoch and abortable request owners", () => {
+  assert.match(app, /let authEpoch = 0;/);
+  assert.match(app, /const privateRequestControllers = \{/);
+  assert.match(app, /auth:\s*null/);
+  assert.match(app, /profile:\s*null/);
+  assert.match(app, /archive:\s*null/);
+  assert.match(app, /replay:\s*null/);
+  assert.match(app, /saves:\s*new Set\(\)/);
+  assert.match(app, /new AbortController\(\)/);
+  assert.match(app, /signal:\s*controller\.signal/);
+  assert.match(app, /authRequestIsCurrent/);
+  assert.match(app, /function captureAuthRequest\(\)/);
+  assert.match(app, /function abortAllPrivateRequests\(\)/);
+  assert.match(app, /function privateRequestIsCurrent\(/);
+});
+
+test("logout invalidates and renders private state before best-effort network logout", () => {
+  const logout = sourceBetween("async function logoutAuth()", "async function refreshProfile");
+  const invalidateAt = logout.indexOf("invalidateAuthSession");
+  const renderAt = logout.indexOf("render()");
+  const fetchAt = logout.indexOf("fetch(");
+
+  assert.ok(invalidateAt >= 0, "logout must invalidate the local session");
+  assert.ok(renderAt > invalidateAt, "logout must render cleared state after invalidation");
+  assert.ok(fetchAt > renderAt, "logout network request must happen after the synchronous render");
+  assert.match(logout, /const token = state\.auth\.token/);
+  assert.match(logout, /Authorization:\s*`Bearer \$\{token\}`/);
+});
+
+test("profile loads and battle saves reject stale session responses", () => {
+  const profile = sourceBetween("async function refreshProfile", "async function recordCompletedBattle");
+  const save = sourceBetween("async function recordCompletedBattle", "async function refreshLeaderboard");
+  const reset = sourceBetween("function resetProfile()", "async function readAuthJson");
+
+  assert.match(profile, /captureAuthRequest\(\)/);
+  assert.match(profile, /beginPrivateRequest\("profile"\)/);
+  assert.match(profile, /authRequestIsCurrent/);
+  assert.match(profile, /privateRequestIsCurrent\("profile", controller\)/);
+  assert.match(save, /captureAuthRequest\(\)/);
+  assert.match(save, /privateRequestControllers\.saves\.add\(controller\)/);
+  assert.match(save, /authRequestIsCurrent/);
+  assert.match(reset, /abortPrivateRequest\("profile"\)/);
+});
+
+test("archive and replay requests abort superseded work and gate final renders", () => {
+  const archive = sourceBetween("async function loadReplayArchive", "async function loadArchivedReplay");
+  const replay = sourceBetween("async function loadArchivedReplay", "function currentArchiveRequest");
+
+  for (const [source, owner] of [
+    [archive, "archive"],
+    [replay, "replay"],
+  ]) {
+    assert.match(source, new RegExp(`beginPrivateRequest\\("${owner}"\\)`));
+    assert.match(source, /signal:\s*controller\.signal/);
+    assert.match(source, new RegExp(`${owner === "archive" ? "archiveLoad" : "archivedReplayLoad"}IsCurrent`));
+    assert.match(
+      app,
+      new RegExp(`function ${owner === "archive" ? "archiveLoad" : "archivedReplayLoad"}IsCurrent[\\s\\S]*?privateRequestIsCurrent\\("${owner}", controller\\)`),
+    );
+    assert.match(source, /finally\s*\{[\s\S]*?if \([^)]*IsCurrent[\s\S]*?render\(\);/);
+  }
+  assert.match(app, /function archiveLoadIsCurrent[\s\S]*?authRequestIsCurrent/);
+  assert.match(app, /function archivedReplayLoadIsCurrent[\s\S]*?authRequestIsCurrent/);
+});
+
+test("legacy archive and recent rows remain visible without acting like replay links", () => {
+  const archiveRow = sourceBetween("function renderArchiveRow", "function renderArchivedReplay");
+  const recentRows = sourceBetween("function renderRecentMatches", "function renderLeaderboard");
+
+  assert.match(archiveRow, /archiveReplayId\(item\)/);
+  assert.match(archiveRow, /data-replay-id="\$\{escapeHtml\(replayId\)\}"/);
+  assert.match(archiveRow, /data-replay-source="archive"/);
+  assert.match(archiveRow, /archive\.historicalUnavailable/);
+  assert.match(archiveRow, /archive-row-content/);
+  assert.match(recentRows, /archiveReplayId\(match\)/);
+  assert.match(recentRows, /match\.mode === "online"/);
+  assert.match(recentRows, /data-replay-source="recent"/);
+  assert.match(recentRows, /archive\.historicalUnavailable/);
+});
+
+test("failed archive pagination retries the preserved page without dropping existing rows", () => {
+  const archive = sourceBetween("async function loadReplayArchive", "async function loadArchivedReplay");
+  const retry = sourceBetween("async function retryReplayArchive", "async function loadArchivedReplay");
+
+  assert.match(archive, /const requestCursor =/);
+  assert.match(archive, /state\.archive\.retryAppend = appendRequest/);
+  assert.match(archive, /state\.archive\.retryCursor = requestCursor/);
+  assert.match(archive, /appendRequest \? uniqueArchiveItems\(\[\.\.\.state\.archive\.items, \.\.\.items\]\) : items/);
+  assert.match(retry, /archiveRetryOptions/);
+  assert.match(retry, /state\.archive\.retrying = true/);
+  assert.match(app, /if \(action === "archive-retry"\) await retryReplayArchive\(\)/);
+});
+
+test("replay back reuses archive history only when the replay came from the archive", () => {
+  const openReplay = sourceBetween("async function openArchivedReplay", "function updateReplayHistory");
+  const back = sourceBetween("async function backToReplayArchive", "function updateReplayHistory");
+
+  assert.match(openReplay, /source = "direct"/);
+  assert.match(openReplay, /state\.replayArchive\.openedFromArchive = source === "archive"/);
+  assert.match(openReplay, /replaySource:\s*source/);
+  assert.match(back, /state\.replayArchive\.openedFromArchive/);
+  assert.match(back, /window\.history\.back\(\)/);
+  assert.match(back, /openReplayArchive\(\{ historyMode: "replace" \}\)/);
+  assert.match(app, /if \(action === "replay-back"\) await backToReplayArchive\(\)/);
+});
+
+function sourceBetween(start, end) {
+  const startIndex = app.indexOf(start);
+  const endIndex = app.indexOf(end, startIndex + start.length);
+  assert.ok(startIndex >= 0, `Missing source start: ${start}`);
+  assert.ok(endIndex > startIndex, `Missing source end: ${end}`);
+  return app.slice(startIndex, endIndex);
+}

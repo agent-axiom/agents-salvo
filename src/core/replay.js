@@ -69,6 +69,32 @@ export function replayRequestIsCurrent(request, current) {
   );
 }
 
+export function authRequestIsCurrent(request, current) {
+  return Boolean(
+    Number.isInteger(request?.epoch) &&
+      request.epoch === current?.epoch &&
+      (request.token ?? "") === (current?.token ?? "") &&
+      (request.identity ?? "") === (current?.identity ?? ""),
+  );
+}
+
+export function archiveReplayId(item) {
+  const replayId = typeof item?.replayId === "string" ? item.replayId.trim() : "";
+  return replayIdPattern.test(replayId) ? replayId : "";
+}
+
+export function archiveRetryOptions(retry) {
+  const cursor = typeof retry?.cursor === "string" ? retry.cursor.trim() : "";
+  return retry?.append && cursor ? { append: true, cursor } : { append: false, cursor: "" };
+}
+
+export function archivedReplayBoardMinWidth(size) {
+  if (!Number.isInteger(size) || size <= 10) {
+    return 0;
+  }
+  return size * 36 + 52;
+}
+
 export function normalizeReplayTurn(selectedTurn, totalTurns) {
   if (!Number.isInteger(totalTurns) || totalTurns <= 0) {
     return 0;
