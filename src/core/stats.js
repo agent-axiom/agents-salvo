@@ -85,6 +85,7 @@ export function buildBattleReport(log, winnerId, playerId = winnerId) {
   const result = winnerId === playerId ? "win" : "loss";
   const finalShot = log.at(-1);
   const coaching = coachingForBattle(result, player);
+  const debrief = battleDebriefForBattle(result, player, opponent, coaching, log);
 
   return {
     result,
@@ -101,6 +102,7 @@ export function buildBattleReport(log, winnerId, playerId = winnerId) {
       finalShotByPlayer: finalShot?.playerId === playerId && finalShot?.result === "sunk",
     }),
     coaching,
+    debrief,
     trainingPlan: trainingPlanForBattle(result, player, coaching),
   };
 }
@@ -255,6 +257,54 @@ function trainingPlanForBattle(result, player, primaryCoaching) {
   }
 
   return { steps: steps.slice(0, 3) };
+}
+
+function battleDebriefForBattle(result, player, opponent, coaching, log) {
+  const weakSearch = player.accuracy < 35 || player.misses >= Math.max(3, player.hits * 2 + 1);
+  const finishMessageId =
+    player.hits === 0 ? "noContact" : hasUnresolvedPlayerHit(log, player.playerId) ? "unfinishedTargets" : "cleanFinish";
+  const pressureWon = result === "win" || player.sunk > opponent.sunk;
+
+  return {
+    insights: [
+      {
+        id: "search",
+        tone: weakSearch ? "warning" : "positive",
+        messageId: weakSearch ? "weakSearch" : "strongSearch",
+      },
+      {
+        id: "finish",
+        tone: finishMessageId === "cleanFinish" ? "positive" : "warning",
+        messageId: finishMessageId,
+      },
+      {
+        id: "pressure",
+        tone: pressureWon ? "positive" : "warning",
+        messageId: pressureWon ? "highPressure" : "lowPressure",
+      },
+      {
+        id: "focus",
+        tone: "neutral",
+        messageId: coaching.focusId,
+      },
+    ],
+  };
+}
+
+function hasUnresolvedPlayerHit(log, playerId) {
+  let hasOpenHit = false;
+  for (const entry of log) {
+    if (entry.playerId !== playerId) {
+      continue;
+    }
+    if (entry.result === "hit") {
+      hasOpenHit = true;
+    }
+    if (entry.result === "sunk") {
+      hasOpenHit = false;
+    }
+  }
+  return hasOpenHit;
 }
 
 function addTrainingPlanStep(steps, step) {

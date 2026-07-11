@@ -1541,6 +1541,7 @@ function renderBattleReport(report, ratingChange = null) {
         ${renderResultStat("result.opponent", `${report.opponent.hits}/${report.opponent.shots}`)}
         ${renderResultStat("result.streak", streak)}
       </div>
+      ${renderBattleDebrief(report.debrief)}
       <div class="achievement-block">
         <span>${translate("result.achievements")}</span>
         ${
@@ -1552,6 +1553,30 @@ function renderBattleReport(report, ratingChange = null) {
         }
       </div>
       ${renderBattleCoaching(report.coaching, report.trainingPlan)}
+    </section>
+  `;
+}
+
+function renderBattleDebrief(debrief) {
+  const insights = Array.isArray(debrief?.insights) ? debrief.insights : [];
+  if (!insights.length) {
+    return "";
+  }
+  return `
+    <section class="battle-debrief" aria-label="${translate("debrief.title")}">
+      <span>${translate("debrief.title")}</span>
+      <ul class="battle-debrief-list">
+        ${insights
+          .map(
+            (insight) => `
+              <li class="battle-debrief-item is-${escapeHtml(insight.tone)}">
+                <strong>${translate(`debrief.label.${insight.id}`)}</strong>
+                <small>${translate(`debrief.message.${insight.messageId}`)}</small>
+              </li>
+            `,
+          )
+          .join("")}
+      </ul>
     </section>
   `;
 }

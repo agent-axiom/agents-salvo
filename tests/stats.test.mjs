@@ -187,6 +187,48 @@ test("buildBattleReport recommends a training drill after low-accuracy losses", 
   });
 });
 
+test("buildBattleReport adds a tactical debrief for low-accuracy losses", () => {
+  const log = [
+    { playerId: "p1", result: "miss" },
+    { playerId: "p2", result: "hit" },
+    { playerId: "p1", result: "miss" },
+    { playerId: "p2", result: "sunk" },
+    { playerId: "p1", result: "miss" },
+    { playerId: "p2", result: "sunk" },
+  ];
+
+  const report = buildBattleReport(log, "p2", "p1");
+
+  assert.deepEqual(report.debrief.insights, [
+    { id: "search", tone: "warning", messageId: "weakSearch" },
+    { id: "finish", tone: "warning", messageId: "noContact" },
+    { id: "pressure", tone: "warning", messageId: "lowPressure" },
+    { id: "focus", tone: "neutral", messageId: "searchPattern" },
+  ]);
+});
+
+test("buildBattleReport adds a positive tactical debrief for controlled wins", () => {
+  const log = [
+    { playerId: "p1", result: "hit" },
+    { playerId: "p1", result: "sunk" },
+    { playerId: "p2", result: "miss" },
+    { playerId: "p1", result: "hit" },
+    { playerId: "p1", result: "sunk" },
+    { playerId: "p1", result: "hit" },
+    { playerId: "p1", result: "sunk" },
+    { playerId: "p2", result: "hit" },
+  ];
+
+  const report = buildBattleReport(log, "p1", "p1");
+
+  assert.deepEqual(report.debrief.insights, [
+    { id: "search", tone: "positive", messageId: "strongSearch" },
+    { id: "finish", tone: "positive", messageId: "cleanFinish" },
+    { id: "pressure", tone: "positive", messageId: "highPressure" },
+    { id: "focus", tone: "neutral", messageId: "pressure" },
+  ]);
+});
+
 test("buildBattleReport creates a personalized multi-step training plan", () => {
   const log = [
     { playerId: "p1", result: "miss" },

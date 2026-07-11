@@ -206,6 +206,21 @@ test("result modal includes a player battle report with achievements", () => {
   assert.match(i18n, /"achievement\.sharpshooter\.title"/);
 });
 
+test("result modal includes a tactical battle debrief", () => {
+  assert.match(app, /function renderBattleDebrief/);
+  assert.match(app, /report\.debrief/);
+  assert.match(app, /class="battle-debrief"/);
+  assert.match(app, /debrief\.insights/);
+  assert.match(app, /debrief\.message\.\$\{insight\.messageId\}/);
+  assert.match(css, /\.battle-debrief/);
+  assert.match(css, /\.battle-debrief-list/);
+  assert.match(css, /\.battle-debrief-item\.is-warning/);
+  assert.match(css, /\.battle-debrief-item\.is-positive/);
+  assert.match(i18n, /"debrief\.title"/);
+  assert.match(i18n, /"debrief\.message\.weakSearch"/);
+  assert.match(i18n, /"debrief\.message\.cleanFinish"/);
+});
+
 test("result modal can copy a shareable battle summary", () => {
   assert.match(app, /data-action="copy-battle-summary"/);
   assert.match(app, /data-action="share-battle-summary"/);
