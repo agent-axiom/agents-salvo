@@ -282,6 +282,27 @@ test("server-side online match recording can generate ids and timestamps", async
   assert.equal(db.matches.length, 1);
 });
 
+test("only server-authored online matches persist replay links", async () => {
+  const db = new MemoryD1();
+  const linked = await recordCompletedMatch(
+    db,
+    profileUser,
+    { ...completedMatchPayload(), id: "linked", mode: "online", replayId: "replay-1" },
+    { source: "server" },
+  );
+  const client = await recordCompletedMatch(db, profileUser, {
+    ...completedMatchPayload(),
+    id: "client",
+    replayId: "forged-replay",
+  });
+
+  assert.equal(linked.replayId, "replay-1");
+  assert.equal(client.replayId, null);
+  const profile = await getPlayerProfile(db, profileUser);
+  assert.equal(profile.recentMatches.find((match) => match.id === "linked").replayId, "replay-1");
+  assert.equal(profile.recentMatches.find((match) => match.id === "client").replayId, null);
+});
+
 test("server-side online match recording returns rating movement", async () => {
   const db = new MemoryD1();
   await recordCompletedMatch(
@@ -584,6 +605,7 @@ class MemoryStatement {
         turns,
         winnerId,
         playedAt,
+        replayId,
       ] = this.params;
       if (!this.db.matches.some((match) => match.id === id && match.user_key === userKey)) {
         this.db.matches.push({
@@ -602,6 +624,7 @@ class MemoryStatement {
           turns,
           winner_id: winnerId,
           played_at: playedAt,
+          replay_id: replayId,
         });
       }
       return { success: true };

@@ -49,7 +49,7 @@ export async function getPlayerProfile(db, user, { now = new Date() } = {}) {
     db
       .prepare(
         `SELECT id, mode, preset_id, result, opponent, total_shots, player_shots,
-          player_hits, player_misses, player_sunk, accuracy, turns, winner_id, played_at
+          player_hits, player_misses, player_sunk, accuracy, turns, winner_id, played_at, replay_id
         FROM matches
         WHERE user_key = ?
         ORDER BY played_at DESC
@@ -173,9 +173,9 @@ export async function recordCompletedMatch(db, user, payload, { source = "client
     .prepare(
       `INSERT OR IGNORE INTO matches (
         id, user_key, mode, preset_id, result, opponent, total_shots, player_shots,
-        player_hits, player_misses, player_sunk, accuracy, turns, winner_id, played_at
+        player_hits, player_misses, player_sunk, accuracy, turns, winner_id, played_at, replay_id
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       match.id,
@@ -193,6 +193,7 @@ export async function recordCompletedMatch(db, user, payload, { source = "client
       match.turns,
       match.winnerId,
       match.playedAt,
+      match.replayId,
     )
     .run();
 
@@ -293,6 +294,7 @@ function normalizeMatch(payload, { source }) {
     turns: nonNegativeInteger(payload.turns, "Turns"),
     winnerId: cleanText(payload.winnerId),
     playedAt: normalizePlayedAt(payload.playedAt),
+    replayId: source === "server" && payload.mode === "online" ? cleanText(payload.replayId) || null : null,
   };
 
   if (!match.presetId) {
@@ -320,6 +322,7 @@ function publicMatch(row) {
     turns: number(row.turns),
     winnerId: row.winner_id,
     playedAt: row.played_at,
+    replayId: row.replay_id || null,
   });
 }
 

@@ -179,6 +179,76 @@ test("worker handles CORS, not found, logout, and room routing", async () => {
   assert.equal(namespace.requests.at(-1).url, "https://worker.test/rooms/ab12/join");
 });
 
+test("worker replay routes require auth and enforce replay statuses", async () => {
+  const db = new RecordingD1();
+  db.replays.push({
+    id: "replay-route",
+    p1_user_key: "telegram:1",
+    p2_user_key: "telegram:2",
+    preset_id: "classic",
+    winner_id: "p1",
+    finished_at: "2026-07-11T12:00:00.000Z",
+    data_json: JSON.stringify(replayPayload()),
+  });
+  db.matches.push({
+    id: "online:replay-route:p1",
+    replay_id: "replay-route",
+    user_key: "telegram:1",
+    mode: "online",
+    preset_id: "classic",
+    result: "win",
+    opponent: "Two",
+    player_shots: 1,
+    player_hits: 1,
+    accuracy: 100,
+  });
+  const env = { DB: db, SESSION_SECRET: "session-secret" };
+  const participantHeaders = await authHeaders(
+    { provider: "telegram", id: "1", name: "One", username: "one", photoUrl: "" },
+    env,
+  );
+  const outsiderHeaders = await authHeaders(
+    { provider: "telegram", id: "9", name: "Nine", username: "nine", photoUrl: "" },
+    env,
+  );
+
+  assert.equal((await worker.fetch(new Request("https://worker.test/replays/replay-route"), env)).status, 401);
+  const replayResponse = await worker.fetch(
+    new Request("https://worker.test/replays/replay-route", { headers: participantHeaders }),
+    env,
+  );
+  assert.equal(replayResponse.status, 200);
+  assert.equal((await replayResponse.json()).replay.viewerPlayerId, "p1");
+  assert.equal(
+    (await worker.fetch(new Request("https://worker.test/replays/replay-route", { headers: outsiderHeaders }), env)).status,
+    403,
+  );
+  assert.equal(
+    (await worker.fetch(new Request("https://worker.test/replays/missing", { headers: participantHeaders }), env)).status,
+    404,
+  );
+
+  const archive = await worker.fetch(
+    new Request("https://worker.test/profile/replays?limit=20", { headers: participantHeaders }),
+    env,
+  );
+  assert.equal(archive.status, 200);
+  assert.equal((await archive.json()).archive.items[0].id, "replay-route");
+  assert.equal(
+    (await worker.fetch(new Request("https://worker.test/profile/replays?cursor=bad", { headers: participantHeaders }), env))
+      .status,
+    400,
+  );
+  assert.equal(
+    (
+      await worker.fetch(new Request("https://worker.test/profile/replays", { headers: participantHeaders }), {
+        SESSION_SECRET: env.SESSION_SECRET,
+      })
+    ).status,
+    503,
+  );
+});
+
 test("worker create room retries collisions and reports allocation failure", async () => {
   const namespace = new FakeBattleRoomNamespace({ statuses: [409, 409, 200] });
 
@@ -482,7 +552,10 @@ test("BattleRoom restarts a finished online room when both players request a rem
       presetId: "quick",
       game: { ...firstGame, phase: "finished", winnerId: "p1" },
       finishedAt: "2026-07-09T10:00:00.000Z",
+      replayId: "old-replay",
       profileRecordedAt: "2026-07-09T10:00:00.000Z",
+      profileRecordErrorAt: "2026-07-09T10:01:00.000Z",
+      recordRetryCount: 3,
       ratingChanges: { p1: { delta: 24 }, p2: { delta: -16 } },
     },
   });
@@ -532,7 +605,10 @@ test("BattleRoom restarts a finished online room when both players request a rem
   assert.equal(restarted.game.phase, "playing");
   assert.equal(restarted.game.log.length, 0);
   assert.equal(restarted.finishedAt, undefined);
+  assert.equal(restarted.replayId, undefined);
   assert.equal(restarted.profileRecordedAt, undefined);
+  assert.equal(restarted.profileRecordErrorAt, undefined);
+  assert.equal(restarted.recordRetryCount, undefined);
   assert.equal(restarted.ratingChanges, undefined);
   assert.equal(restarted.rematch, undefined);
   assert.equal(restarted.rematchRound, 1);
@@ -617,6 +693,9 @@ test("BattleRoom records completed authenticated online matches in profile stora
   assert.equal(createPlayerSnapshot(savedRoom, "p1").ratingChange.delta, 24);
   assert.equal(createPlayerSnapshot(savedRoom, "p2").ratingChange.delta, -16);
   assert.equal(db.matches.length, 2);
+  assert.equal(db.replays.length, 1);
+  assert.equal(savedRoom.replayId.length, 36);
+  assert.ok(db.matches.every((match) => match.replay_id === savedRoom.replayId));
   assert.deepEqual(
     db.matches.map((match) => [match.user_key, match.result, match.player_shots, match.player_hits]),
     [
@@ -625,7 +704,7 @@ test("BattleRoom records completed authenticated online matches in profile stora
     ],
   );
   assert.ok(db.matches.every((match) => match.mode === "online"));
-  assert.ok(db.matches.every((match) => match.id.startsWith("online:AUTH01:")));
+  assert.ok(db.matches.every((match) => match.id.startsWith(`online:${savedRoom.replayId}:`)));
 });
 
 test("BattleRoom still broadcasts finished games when profile storage fails", async () => {
@@ -674,9 +753,36 @@ test("BattleRoom still broadcasts finished games when profile storage fails", as
   const savedRoom = await storage.get("room");
   assert.equal(savedRoom.game.phase, "finished");
   assert.equal(savedRoom.profileRecordedAt, undefined);
+  assert.equal(savedRoom.recordRetryCount, 1);
+  assert.ok(savedRoom.profileRecordErrorAt);
+  assert.ok(storage.alarmAt >= Date.now() + 29_000);
   assert.equal(sent.some((message) => message.type === "error"), false);
   assert.equal(sent.at(-1)?.type, "snapshot");
   assert.equal(sent.at(-1)?.snapshot.phase, "finished");
+
+  await room.alarm();
+  const failedRetryRoom = await storage.get("room");
+  assert.equal(failedRetryRoom.recordRetryCount, 2);
+  assert.ok(storage.alarmAt >= Date.now() + 59_000);
+
+  room.env.DB = new RecordingD1();
+  await room.alarm();
+  await room.alarm();
+  const retriedRoom = await storage.get("room");
+  assert.equal(retriedRoom.profileRecordedAt, retriedRoom.finishedAt);
+  assert.equal(retriedRoom.recordRetryCount, undefined);
+  assert.equal(retriedRoom.profileRecordErrorAt, undefined);
+  assert.equal(room.env.DB.replays.length, 1);
+  assert.equal(room.env.DB.matches.length, 2);
+});
+
+test("BattleRoom does not schedule replay retries without D1", async () => {
+  const storage = new MemoryStorage({ room: { game: { phase: "finished" }, replayId: "replay-1" } });
+  const room = new BattleRoom({ storage });
+
+  await room.alarm();
+
+  assert.equal(storage.alarmAt, undefined);
 });
 
 async function signTelegramPayload(payload, botToken) {
@@ -712,6 +818,14 @@ class MemoryStorage {
 
   async put(key, value) {
     this.values.set(key, value);
+  }
+
+  async setAlarm(alarmAt) {
+    this.alarmAt = alarmAt;
+  }
+
+  async deleteAlarm() {
+    this.alarmAt = undefined;
   }
 }
 
@@ -811,6 +925,7 @@ class RecordingD1 {
   constructor() {
     this.users = [];
     this.matches = [];
+    this.replays = [];
   }
 
   prepare(sql) {
@@ -860,7 +975,11 @@ class RecordingStatement {
         turns,
         winnerId,
         playedAt,
+        replayId,
       ] = this.params;
+      if (this.db.matches.some((match) => match.id === id && match.user_key === userKey)) {
+        return { success: true };
+      }
       this.db.matches.push({
         id,
         user_key: userKey,
@@ -877,13 +996,52 @@ class RecordingStatement {
         turns,
         winner_id: winnerId,
         played_at: playedAt,
+        replay_id: replayId,
       });
+      return { success: true };
+    }
+    if (this.sql.startsWith("INSERT OR IGNORE INTO battle_replays")) {
+      const [id, p1UserKey, p2UserKey, presetId, winnerId, finishedAt, dataJson] = this.params;
+      if (!this.db.replays.some((replay) => replay.id === id)) {
+        this.db.replays.push({
+          id,
+          p1_user_key: p1UserKey,
+          p2_user_key: p2UserKey,
+          preset_id: presetId,
+          winner_id: winnerId,
+          finished_at: finishedAt,
+          data_json: dataJson,
+        });
+      }
       return { success: true };
     }
     throw new Error(`Unsupported run SQL: ${this.sql}`);
   }
 
   async all() {
+    if (this.sql.includes("JOIN matches m ON m.replay_id = r.id")) {
+      const [userKey, p1UserKey, p2UserKey, cursorFinishedAt, , , cursorId, limit] = this.params;
+      let rows = this.db.replays
+        .filter((replay) => replay.p1_user_key === p1UserKey || replay.p2_user_key === p2UserKey)
+        .map((replay) => ({
+          ...replay,
+          replay_id: replay.id,
+          ...this.db.matches.find((match) => match.replay_id === replay.id && match.user_key === userKey),
+        }))
+        .filter((row) => row.user_key);
+      if (cursorFinishedAt) {
+        rows = rows.filter(
+          (row) =>
+            row.finished_at < cursorFinishedAt ||
+            (row.finished_at === cursorFinishedAt && row.replay_id < cursorId),
+        );
+      }
+      rows.sort(
+        (first, second) =>
+          second.finished_at.localeCompare(first.finished_at) || second.replay_id.localeCompare(first.replay_id),
+      );
+      return { success: true, results: rows.slice(0, limit) };
+    }
     if (this.sql.startsWith("SELECT result, played_at")) {
       const [userKey] = this.params;
       return {
@@ -896,4 +1054,29 @@ class RecordingStatement {
     }
     throw new Error(`Unsupported all SQL: ${this.sql}`);
   }
+
+  async first() {
+    if (this.sql.includes("FROM battle_replays") && this.sql.includes("WHERE id = ?")) {
+      return this.db.replays.find((replay) => replay.id === this.params[0]) ?? null;
+    }
+    throw new Error(`Unsupported first SQL: ${this.sql}`);
+  }
+}
+
+function replayPayload() {
+  return {
+    version: 1,
+    presetId: "classic",
+    winnerId: "p1",
+    finishedAt: "2026-07-11T12:00:00.000Z",
+    players: {
+      p1: { name: "One", username: "one" },
+      p2: { name: "Two", username: "two" },
+    },
+    boards: {
+      p1: { size: 2, ships: [], markers: [], shots: [] },
+      p2: { size: 2, ships: [], markers: [], shots: [] },
+    },
+    log: [],
+  };
 }

@@ -16,6 +16,13 @@ import {
   verifyTelegramLoginPayload,
 } from "./auth.js";
 import { getLeaderboard, getPlayerProfile, recordCompletedMatch } from "./profile.js";
+import {
+  HttpError,
+  createOnlineReplayRecord,
+  getAuthorizedReplay,
+  listPlayerReplays,
+  saveOnlineReplay,
+} from "./replay.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -54,6 +61,12 @@ export default {
     }
     if (route.kind === "profileMatches" && request.method === "POST") {
       return saveProfileMatch(request, env);
+    }
+    if (route.kind === "profileReplays" && request.method === "GET") {
+      return playerReplays(request, env, url);
+    }
+    if (route.kind === "replay" && request.method === "GET") {
+      return archivedReplay(request, env, route.replayId);
     }
     if (route.kind === "leaderboard" && request.method === "GET") {
       return leaderboard(env);
@@ -225,14 +238,14 @@ export class BattleRoom {
         const finishedNow = !wasFinished && room.game.phase === "finished";
         if (finishedNow) {
           room.finishedAt = new Date().toISOString();
+          room.replayId ||= crypto.randomUUID();
         }
         await this.saveRoom(room);
         if (finishedNow) {
           try {
             await this.recordFinishedOnlineBattle(room);
-          } catch {
-            room.profileRecordErrorAt = new Date().toISOString();
-            await this.saveRoom(room);
+          } catch (error) {
+            await this.scheduleRecordRetry(room, error);
           }
         }
         await this.broadcast(room);
@@ -299,6 +312,10 @@ export class BattleRoom {
       return;
     }
 
+    room.replayId ||= crypto.randomUUID();
+    room.finishedAt ||= new Date().toISOString();
+    await saveOnlineReplay(this.env.DB, createOnlineReplayRecord(room, room.replayId));
+
     const recordedMatches = await Promise.all(
       players.map(async ([playerId, player]) => [
         playerId,
@@ -313,7 +330,37 @@ export class BattleRoom {
         .map(([playerId, match]) => [playerId, match.rating]),
     );
     room.profileRecordedAt = room.finishedAt;
+    delete room.recordRetryCount;
+    delete room.profileRecordErrorAt;
     await this.saveRoom(room);
+    await this.state.storage.deleteAlarm?.();
+  }
+
+  async scheduleRecordRetry(room, error) {
+    room.recordRetryCount = (room.recordRetryCount ?? 0) + 1;
+    room.profileRecordErrorAt = new Date().toISOString();
+    await this.saveRoom(room);
+    if (!this.env?.DB) {
+      return;
+    }
+    const delay = Math.min(30_000 * 2 ** Math.max(room.recordRetryCount - 1, 0), 15 * 60_000);
+    await this.state.storage.setAlarm(Date.now() + delay);
+  }
+
+  async alarm() {
+    if (!this.env?.DB) {
+      return;
+    }
+    const room = await this.getRoom();
+    if (!room?.game || room.game.phase !== "finished" || room.profileRecordedAt) {
+      await this.state.storage.deleteAlarm?.();
+      return;
+    }
+    try {
+      await this.recordFinishedOnlineBattle(room);
+    } catch (error) {
+      await this.scheduleRecordRetry(room, error);
+    }
   }
 }
 
@@ -412,8 +459,10 @@ function startRematch(room, preset) {
   });
   next.rematchRound = (room.rematchRound ?? 0) + 1;
   delete next.finishedAt;
+  delete next.replayId;
   delete next.profileRecordedAt;
   delete next.profileRecordErrorAt;
+  delete next.recordRetryCount;
   delete next.ratingChanges;
   delete next.rematch;
   return next;
@@ -435,6 +484,12 @@ function routeRequest(url) {
   }
   if (parts.length === 2 && parts[0] === "profile" && parts[1] === "matches") {
     return { kind: "profileMatches" };
+  }
+  if (parts.length === 2 && parts[0] === "profile" && parts[1] === "replays") {
+    return { kind: "profileReplays" };
+  }
+  if (parts.length === 2 && parts[0] === "replays" && /^[A-Za-z0-9-]{1,128}$/.test(parts[1])) {
+    return { kind: "replay", replayId: parts[1] };
   }
   if (parts.length === 1 && parts[0] === "leaderboard") {
     return { kind: "leaderboard" };
@@ -515,6 +570,28 @@ async function leaderboard(env) {
   }
 }
 
+async function archivedReplay(request, env, replayId) {
+  try {
+    const user = await requireUser(request, env);
+    return json({ replay: await getAuthorizedReplay(env.DB, replayId, user) });
+  } catch (error) {
+    return json({ error: error.message }, replayErrorStatus(error));
+  }
+}
+
+async function playerReplays(request, env, url) {
+  try {
+    const user = await requireUser(request, env);
+    const archive = await listPlayerReplays(env.DB, user, {
+      limit: url.searchParams.get("limit") || undefined,
+      cursor: url.searchParams.get("cursor") || undefined,
+    });
+    return json({ archive });
+  } catch (error) {
+    return json({ error: error.message }, replayErrorStatus(error));
+  }
+}
+
 async function requireUser(request, env) {
   const token = parseBearerToken(request);
   if (!token) {
@@ -526,6 +603,14 @@ async function requireUser(request, env) {
 function authErrorStatus(error) {
   const message = error.message.toLowerCase();
   return message.includes("authentication") || message.includes("session") ? 401 : 400;
+}
+
+function replayErrorStatus(error) {
+  if (error instanceof HttpError) {
+    return error.status;
+  }
+  const authStatus = authErrorStatus(error);
+  return authStatus === 401 ? 401 : 503;
 }
 
 async function createRoom(request, env) {
@@ -611,7 +696,7 @@ function onlineMatchPayload(room, playerId) {
   };
   const opponent = room.players[opponentId]?.user;
   return {
-    id: `online:${room.code}:${playerId}:${game.winnerId}:${game.log.length}`,
+    id: `online:${room.replayId}:${playerId}`,
     mode: "online",
     presetId: game.presetId,
     result: game.winnerId === playerId ? "win" : "loss",
@@ -625,6 +710,7 @@ function onlineMatchPayload(room, playerId) {
     turns: game.log.length,
     winnerId: game.winnerId,
     playedAt: room.finishedAt,
+    replayId: room.replayId,
   };
 }
 
