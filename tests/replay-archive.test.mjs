@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import {
@@ -199,6 +200,42 @@ test("archive pagination starts from indexed player match rows", () => {
   assert.match(replaySource, /ORDER BY m\.played_at DESC, m\.replay_id DESC/);
 });
 
+test("real SQLite plans use the archive index and cursor tuple range", () => {
+  const script = `
+    import assert from "node:assert/strict";
+    import { readFileSync } from "node:fs";
+    import { DatabaseSync } from "node:sqlite";
+    import { replayArchiveQueries } from ${JSON.stringify(new URL("../worker/replay.js", import.meta.url).href)};
+
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(readFileSync(new URL(${JSON.stringify(new URL("../migrations/0001_player_profiles.sql", import.meta.url).href)}), "utf8"));
+      db.exec(readFileSync(new URL(${JSON.stringify(new URL("../migrations/0002_online_replays.sql", import.meta.url).href)}), "utf8"));
+      const firstPlan = db.prepare(\`EXPLAIN QUERY PLAN \${replayArchiveQueries.firstPage}\`)
+        .all("telegram:101", "telegram:101", "telegram:101", 21);
+      const cursorPlan = db.prepare(\`EXPLAIN QUERY PLAN \${replayArchiveQueries.afterCursor}\`)
+        .all("telegram:101", "telegram:101", "telegram:101", "2026-07-11T12:00:00.000Z", "replay-1", 21);
+      const firstDetails = firstPlan.map((row) => row.detail).join("\\n");
+      const cursorDetails = cursorPlan.map((row) => row.detail).join("\\n");
+      assert.match(firstDetails, /matches_user_mode_played_replay_idx/);
+      assert.match(cursorDetails, /matches_user_mode_played_replay_idx/);
+      assert.match(cursorDetails, /\\(played_at,replay_id\\)<\\(\\?,\\?\\)/);
+      assert.doesNotMatch(replayArchiveQueries.afterCursor, /\\? IS NULL/);
+      assert.match(replayArchiveQueries.afterCursor, /\\(m\\.played_at, m\\.replay_id\\) < \\(\\?, \\?\\)/);
+    } finally {
+      db.close();
+    }
+  `;
+  const result = spawnSync(
+    process.execPath,
+    ["--disable-warning=ExperimentalWarning", "--input-type=module", "--eval", script],
+    { encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stderr, "");
+});
+
 function telegramUser(id) {
   return { provider: "telegram", id, name: `User ${id}`, username: `user${id}` };
 }
@@ -324,7 +361,10 @@ class ReplayStatement {
     if (!this.sql.includes("FROM matches m JOIN battle_replays r ON r.id = m.replay_id")) {
       throw new Error(`Unsupported all SQL: ${this.sql}`);
     }
-    const [userKey, p1UserKey, p2UserKey, cursorFinishedAt, , , cursorId, limit] = this.params;
+    const [userKey, p1UserKey, p2UserKey] = this.params;
+    const cursorFinishedAt = this.params.length === 6 ? this.params[3] : null;
+    const cursorId = this.params.length === 6 ? this.params[4] : null;
+    const limit = this.params.at(-1);
     let rows = this.db.matches
       .filter((match) => match.user_key === userKey && match.mode === "online" && match.replay_id)
       .map((match) => ({

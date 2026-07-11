@@ -5,6 +5,28 @@ const replayUnavailableMessage = "Replay is unavailable";
 const playerIds = new Set(["p1", "p2"]);
 const shotResults = new Set(["miss", "hit", "sunk", "mine", "sweeper"]);
 
+export const replayArchiveQueries = Object.freeze({
+  firstPage: `SELECT m.replay_id, r.preset_id, r.winner_id, m.played_at AS finished_at,
+    m.result, m.opponent, m.total_shots, m.player_shots, m.player_hits,
+    m.player_misses, m.player_sunk, m.accuracy, m.turns
+  FROM matches m
+  JOIN battle_replays r ON r.id = m.replay_id
+  WHERE m.user_key = ? AND m.mode = 'online' AND m.replay_id IS NOT NULL
+    AND (r.p1_user_key = ? OR r.p2_user_key = ?)
+  ORDER BY m.played_at DESC, m.replay_id DESC
+  LIMIT ?`,
+  afterCursor: `SELECT m.replay_id, r.preset_id, r.winner_id, m.played_at AS finished_at,
+    m.result, m.opponent, m.total_shots, m.player_shots, m.player_hits,
+    m.player_misses, m.player_sunk, m.accuracy, m.turns
+  FROM matches m
+  JOIN battle_replays r ON r.id = m.replay_id
+  WHERE m.user_key = ? AND m.mode = 'online' AND m.replay_id IS NOT NULL
+    AND (r.p1_user_key = ? OR r.p2_user_key = ?)
+    AND (m.played_at, m.replay_id) < (?, ?)
+  ORDER BY m.played_at DESC, m.replay_id DESC
+  LIMIT ?`,
+});
+
 export class HttpError extends Error {
   constructor(status, message) {
     super(message);
@@ -130,30 +152,13 @@ export async function listPlayerReplays(db, user, { cursor } = {}) {
   const decodedCursor = cursor ? decodeCursor(cursor) : null;
   const cursorFinishedAt = decodedCursor?.finishedAt ?? null;
   const cursorId = decodedCursor?.id ?? null;
-  const rows = await db
-    .prepare(
-      `SELECT m.replay_id, r.preset_id, r.winner_id, m.played_at AS finished_at,
-        m.result, m.opponent, m.total_shots, m.player_shots, m.player_hits,
-        m.player_misses, m.player_sunk, m.accuracy, m.turns
-      FROM matches m
-      JOIN battle_replays r ON r.id = m.replay_id
-      WHERE m.user_key = ? AND m.mode = 'online' AND m.replay_id IS NOT NULL
-        AND (r.p1_user_key = ? OR r.p2_user_key = ?)
-        AND (? IS NULL OR m.played_at < ? OR (m.played_at = ? AND m.replay_id < ?))
-      ORDER BY m.played_at DESC, m.replay_id DESC
-      LIMIT ?`,
-    )
-    .bind(
-      userKey,
-      userKey,
-      userKey,
-      cursorFinishedAt,
-      cursorFinishedAt,
-      cursorFinishedAt,
-      cursorId,
-      pageLimit + 1,
-    )
-    .all();
+  const statement = db.prepare(
+    decodedCursor ? replayArchiveQueries.afterCursor : replayArchiveQueries.firstPage,
+  );
+  const rows = await (decodedCursor
+    ? statement.bind(userKey, userKey, userKey, cursorFinishedAt, cursorId, pageLimit + 1)
+    : statement.bind(userKey, userKey, userKey, pageLimit + 1)
+  ).all();
   const pageRows = (rows.results ?? []).slice(0, pageLimit);
   const items = pageRows.map(publicArchiveItem);
   const last = pageRows.at(-1);

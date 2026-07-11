@@ -25,7 +25,9 @@ import {
 
 const archiveOutboxPrefix = "replayArchiveOutbox:";
 const archiveDeadLetterPrefix = "replayArchiveDeadLetter:";
+const archiveSchedulePrefix = "replayArchiveSchedule:";
 const archiveMaxAttempts = 12;
+const archiveAlarmBatchSize = 10;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -243,9 +245,10 @@ export class BattleRoom {
           room.finishedAt = new Date().toISOString();
           room.replayId ||= crypto.randomUUID();
         }
-        await this.saveRoom(room);
         if (finishedNow) {
           await this.recordFinishedOnlineBattle(room);
+        } else {
+          await this.saveRoom(room);
         }
         await this.broadcast(await this.requireRoom());
         return;
@@ -306,35 +309,98 @@ export class BattleRoom {
       return;
     }
     const players = Object.entries(room.players).filter(([, player]) => player?.user);
-    if (players.length !== 2) {
-      console.error("Replay archive job is missing participants", { replayId: room.replayId || "unassigned" });
-      return;
-    }
-
     room.replayId ||= crypto.randomUUID();
     room.finishedAt ||= new Date().toISOString();
-    const key = archiveOutboxKey(room.replayId);
-    let pending = await this.state.storage.get(key);
-    if (!pending) {
-      pending = {
+    let envelope;
+    try {
+      if (players.length !== 2) {
+        throw new Error("Two online replay participants are required");
+      }
+      envelope = {
         replay: createOnlineReplayRecord(room, room.replayId),
         playerMatches: players.map(([playerId, player]) => ({
           playerId,
-          user: { ...player.user },
+          user: publicUser(player.user),
           payload: onlineMatchPayload(room, playerId),
         })),
-        attempts: 0,
         createdAt: new Date().toISOString(),
-        nextAttemptAt: null,
       };
-      await this.state.storage.put(key, pending);
+    } catch (error) {
+      await this.persistTerminalPayloadFailure(room, error);
+      return false;
     }
-    await this.processArchiveOutbox(pending);
+
+    const dueAt = Date.now();
+    const job = {
+      envelope,
+      retry: {
+        attempts: 0,
+        errorMessage: "",
+        errorAt: null,
+        nextAttemptAt: dueAt,
+      },
+    };
+    const jobKey = archiveOutboxKey(room.replayId);
+    const dueKey = archiveScheduleKey(dueAt, room.replayId);
+    let persistedJob = job;
+    let persistedScheduleKey = dueKey;
+    await this.state.storage.setAlarm(dueAt);
+    await this.state.storage.transaction(async (transaction) => {
+      const existing = await transaction.get(jobKey);
+      if (existing) {
+        persistedJob = existing;
+        const existingDueAt = existing.retry.nextAttemptAt;
+        persistedScheduleKey = archiveScheduleKey(existingDueAt, room.replayId);
+        return;
+      }
+      await transaction.put("room", room);
+      await transaction.put(jobKey, job);
+      await transaction.put(dueKey, { replayId: room.replayId, dueAt });
+    });
+    return this.processArchiveOutbox(persistedJob, persistedScheduleKey);
   }
 
-  async processArchiveOutbox(pending, { schedule = true } = {}) {
+  async persistTerminalPayloadFailure(room, error) {
+    const failedAt = new Date().toISOString();
+    const errorMessage = error?.message || "Replay payload is invalid";
+    console.error("Replay archive payload is invalid", {
+      replayId: room.replayId,
+      classification: "invalid_payload",
+      error: errorMessage,
+    });
+    await this.state.storage.transaction(async (transaction) => {
+      await transaction.put("room", room);
+      await transaction.put(archiveDeadLetterKey(room.replayId), {
+        replayId: room.replayId,
+        classification: "invalid_payload",
+        attempts: 0,
+        errorMessage,
+        failedAt,
+        envelope: null,
+        terminalData: {
+          finishedAt: room.finishedAt,
+          presetId: room.game?.presetId || "",
+          winnerId: room.game?.winnerId || null,
+          players: {
+            p1: { user: publicUser(room.players?.p1?.user) },
+            p2: { user: publicUser(room.players?.p2?.user) },
+          },
+          game: room.game
+            ? structuredClone({
+                presetId: room.game.presetId,
+                winnerId: room.game.winnerId,
+                players: room.game.players,
+                log: room.game.log,
+              })
+            : null,
+        },
+      });
+    });
+  }
+
+  async processArchiveOutbox(job, scheduleKey, { schedule = true } = {}) {
     if (!this.env?.DB) {
-      await this.failArchiveOutbox(pending, new Error("Replay storage is not configured"), {
+      await this.failArchiveOutbox(job, scheduleKey, new Error("Replay storage is not configured"), {
         classification: "configuration",
         terminal: true,
         schedule,
@@ -342,48 +408,73 @@ export class BattleRoom {
       return false;
     }
     try {
-      const recorded = await recordOnlineReplayBatch(this.env.DB, pending.replay, pending.playerMatches);
-      await this.state.storage.delete(archiveOutboxKey(pending.replay.id));
-      await this.markArchiveRecorded(pending, recorded);
+      const recorded = await recordOnlineReplayBatch(
+        this.env.DB,
+        job.envelope.replay,
+        job.envelope.playerMatches,
+      );
+      await this.markArchiveRecorded(job, scheduleKey, recorded);
       if (schedule) {
         await this.scheduleArchiveAlarm();
       }
       return true;
     } catch (error) {
-      await this.failArchiveOutbox(pending, error, { classification: "transient", schedule });
+      await this.failArchiveOutbox(job, scheduleKey, error, { classification: "transient", schedule });
       return false;
     }
   }
 
-  async failArchiveOutbox(pending, error, { classification, terminal = false, schedule = true }) {
-    const attempts = pending.attempts + 1;
+  async failArchiveOutbox(job, scheduleKey, error, { classification, terminal = false, schedule = true }) {
+    const attempts = job.retry.attempts + 1;
     const exhausted = attempts >= archiveMaxAttempts;
     const finalClassification = exhausted ? "retry_exhausted" : classification;
     const errorMessage = error?.message || "Replay archive persistence failed";
     const failedAt = new Date().toISOString();
     console.error("Replay archive persistence failed", {
-      replayId: pending.replay.id,
+      replayId: job.envelope.replay.id,
       classification: finalClassification,
       attempts,
       error: errorMessage,
     });
     if (terminal || exhausted) {
-      await this.state.storage.put(archiveDeadLetterKey(pending.replay.id), {
-        replayId: pending.replay.id,
-        classification: finalClassification,
-        attempts,
-        errorMessage,
-        failedAt,
+      await this.state.storage.transaction(async (transaction) => {
+        await transaction.put(archiveDeadLetterKey(job.envelope.replay.id), {
+          replayId: job.envelope.replay.id,
+          classification: finalClassification,
+          attempts,
+          errorMessage,
+          failedAt,
+          envelope: job.envelope,
+          retry: {
+            ...job.retry,
+            attempts,
+            errorMessage,
+            errorAt: failedAt,
+            nextAttemptAt: null,
+          },
+        });
+        await transaction.delete(archiveOutboxKey(job.envelope.replay.id));
+        await transaction.delete(scheduleKey);
       });
-      await this.state.storage.delete(archiveOutboxKey(pending.replay.id));
     } else {
       const delay = archiveRetryDelay(attempts);
-      await this.state.storage.put(archiveOutboxKey(pending.replay.id), {
-        ...pending,
-        attempts,
-        errorMessage,
-        errorAt: failedAt,
-        nextAttemptAt: Date.now() + delay,
+      const nextAttemptAt = Date.now() + delay;
+      const nextScheduleKey = archiveScheduleKey(nextAttemptAt, job.envelope.replay.id);
+      const updatedJob = {
+        ...job,
+        retry: {
+          ...job.retry,
+          attempts,
+          errorMessage,
+          errorAt: failedAt,
+          nextAttemptAt,
+        },
+      };
+      await this.state.storage.setAlarm(nextAttemptAt);
+      await this.state.storage.transaction(async (transaction) => {
+        await transaction.put(archiveOutboxKey(job.envelope.replay.id), updatedJob);
+        await transaction.put(nextScheduleKey, { replayId: job.envelope.replay.id, dueAt: nextAttemptAt });
+        await transaction.delete(scheduleKey);
       });
     }
     if (schedule) {
@@ -391,43 +482,107 @@ export class BattleRoom {
     }
   }
 
-  async markArchiveRecorded(pending, recorded) {
+  async markArchiveRecorded(job, scheduleKey, recorded) {
     await this.state.storage.transaction(async (transaction) => {
       const latest = await transaction.get("room");
-      if (latest?.replayId !== pending.replay.id) {
-        return;
+      if (latest?.replayId === job.envelope.replay.id) {
+        latest.ratingChanges = Object.fromEntries(
+          recorded.filter(({ match }) => match.rating).map(({ playerId, match }) => [playerId, match.rating]),
+        );
+        latest.replayRecordedAt = job.envelope.replay.finishedAt;
+        latest.profileRecordedAt = job.envelope.replay.finishedAt;
+        delete latest.recordRetryCount;
+        delete latest.profileRecordErrorAt;
+        delete latest.profileRecordError;
+        await transaction.put("room", latest);
       }
-      latest.ratingChanges = Object.fromEntries(
-        recorded.filter(({ match }) => match.rating).map(({ playerId, match }) => [playerId, match.rating]),
-      );
-      latest.replayRecordedAt = pending.replay.finishedAt;
-      latest.profileRecordedAt = pending.replay.finishedAt;
-      delete latest.recordRetryCount;
-      delete latest.profileRecordErrorAt;
-      delete latest.profileRecordError;
-      await transaction.put("room", latest);
+      await transaction.delete(archiveOutboxKey(job.envelope.replay.id));
+      await transaction.delete(scheduleKey);
     });
   }
 
   async scheduleArchiveAlarm() {
-    const pending = [...(await this.state.storage.list({ prefix: archiveOutboxPrefix })).values()];
-    if (pending.length === 0) {
+    const scheduled = await this.state.storage.list({ prefix: archiveSchedulePrefix, limit: 1 });
+    const first = scheduled.values().next().value;
+    if (!first) {
       await this.state.storage.deleteAlarm?.();
       return;
     }
-    const nextAlarm = Math.min(...pending.map((entry) => entry.nextAttemptAt ?? Date.now()));
-    await this.state.storage.setAlarm(nextAlarm);
+    await this.state.storage.setAlarm(first.dueAt);
   }
 
   async alarm() {
-    const pending = [...(await this.state.storage.list({ prefix: archiveOutboxPrefix })).values()];
     const now = Date.now();
-    for (const entry of pending) {
-      if (entry.nextAttemptAt === null || entry.nextAttemptAt <= now) {
-        await this.processArchiveOutbox(entry, { schedule: false });
+    const end = archiveScheduleEnd(now);
+    const due = await this.state.storage.list({
+      prefix: archiveSchedulePrefix,
+      end,
+      limit: archiveAlarmBatchSize,
+    });
+    for (const [scheduleKey, item] of due) {
+      const job = await this.state.storage.get(archiveOutboxKey(item.replayId));
+      if (job) {
+        await this.processArchiveOutbox(job, scheduleKey, { schedule: false });
+      } else {
+        await this.state.storage.delete(scheduleKey);
       }
     }
-    await this.scheduleArchiveAlarm();
+    const moreDue = await this.state.storage.list({ prefix: archiveSchedulePrefix, end, limit: 1 });
+    if (moreDue.size > 0) {
+      await this.state.storage.setAlarm(now);
+    } else {
+      const scheduled = await this.state.storage.list({ prefix: archiveSchedulePrefix, limit: 1 });
+      if (scheduled.size === 0) {
+        await this.recoverFinishedArchive();
+      }
+      await this.scheduleArchiveAlarm();
+    }
+  }
+
+  async recoverFinishedArchive() {
+    const room = await this.state.storage.get("room");
+    if (room?.game?.phase !== "finished" || recordingComplete(room)) {
+      return false;
+    }
+    if (room.replayId) {
+      const pending = await this.state.storage.get(archiveOutboxKey(room.replayId));
+      const deadLetter = await this.state.storage.get(archiveDeadLetterKey(room.replayId));
+      if (pending || deadLetter) {
+        return false;
+      }
+    }
+    await this.recordFinishedOnlineBattle(room);
+    return true;
+  }
+
+  async requeueArchiveDeadLetter(replayId) {
+    const deadLetterKey = archiveDeadLetterKey(replayId);
+    const deadLetter = await this.state.storage.get(deadLetterKey);
+    if (!deadLetter?.envelope) {
+      return false;
+    }
+    const dueAt = Date.now();
+    const job = {
+      envelope: deadLetter.envelope,
+      retry: {
+        attempts: 0,
+        errorMessage: "",
+        errorAt: null,
+        nextAttemptAt: dueAt,
+        requeuedAt: new Date().toISOString(),
+      },
+    };
+    await this.state.storage.setAlarm(dueAt);
+    await this.state.storage.transaction(async (transaction) => {
+      await transaction.put(archiveOutboxKey(replayId), job);
+      await transaction.put(archiveScheduleKey(dueAt, replayId), { replayId, dueAt });
+      await transaction.delete(deadLetterKey);
+    });
+    return true;
+  }
+
+  async drainArchiveOutbox() {
+    await this.alarm();
   }
 }
 
@@ -792,6 +947,14 @@ function archiveOutboxKey(replayId) {
 
 function archiveDeadLetterKey(replayId) {
   return `${archiveDeadLetterPrefix}${replayId}`;
+}
+
+function archiveScheduleKey(dueAt, replayId) {
+  return `${archiveSchedulePrefix}${String(dueAt).padStart(13, "0")}:${replayId}`;
+}
+
+function archiveScheduleEnd(dueAt) {
+  return `${archiveSchedulePrefix}${String(dueAt).padStart(13, "0")}:\uffff`;
 }
 
 function archiveRetryDelay(attempts) {
