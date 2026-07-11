@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   HttpError,
@@ -100,10 +101,19 @@ test("replay storage is idempotent and participant-only", async () => {
     (error) => error.status === 404,
   );
   db.replays[0].data_json = "bad";
-  await assert.rejects(
-    () => getAuthorizedReplay(db, "replay-1", telegramUser("101")),
-    (error) => error.status === 404,
-  );
+  const logged = [];
+  const originalError = console.error;
+  console.error = (...args) => logged.push(args);
+  try {
+    await assert.rejects(
+      () => getAuthorizedReplay(db, "replay-1", telegramUser("101")),
+      (error) => error.status === 503,
+    );
+  } finally {
+    console.error = originalError;
+  }
+  assert.match(JSON.stringify(logged), /replay-1/);
+  assert.doesNotMatch(JSON.stringify(logged), /bad/);
 });
 
 test("archive pagination joins the viewer match and uses a stable cursor", async () => {
@@ -146,6 +156,8 @@ test("archive SQL excludes replays belonging only to another user", async () => 
     id: "online:outsider-replay:p1",
     replay_id: "outsider-replay",
     user_key: "telegram:101",
+    mode: "online",
+    played_at: "2026-07-12T12:00:00.000Z",
     result: "win",
     opponent: "Should Not Leak",
   });
@@ -172,6 +184,19 @@ test("archive pagination rejects malformed cursors", async () => {
       (error) => error.status === 400,
     );
   }
+});
+
+test("archive pagination starts from indexed player match rows", () => {
+  const migration = readFileSync(new URL("../migrations/0002_online_replays.sql", import.meta.url), "utf8");
+  const replaySource = readFileSync(new URL("../worker/replay.js", import.meta.url), "utf8");
+
+  assert.match(
+    migration,
+    /matches\s*\(user_key, mode, played_at DESC, replay_id DESC\)/,
+  );
+  assert.match(replaySource, /FROM matches m\s+JOIN battle_replays r ON r\.id = m\.replay_id/);
+  assert.match(replaySource, /m\.user_key = \? AND m\.mode = 'online'/);
+  assert.match(replaySource, /ORDER BY m\.played_at DESC, m\.replay_id DESC/);
 });
 
 function telegramUser(id) {
@@ -233,6 +258,8 @@ function replayArchiveD1(count) {
       id: `online:${id}:p1`,
       replay_id: id,
       user_key: "telegram:101",
+      mode: "online",
+      played_at: finishedAt,
       result: "win",
       opponent: `Opponent ${index}`,
       player_shots: index + 1,
@@ -294,18 +321,18 @@ class ReplayStatement {
   }
 
   async all() {
-    if (!this.sql.includes("JOIN matches m ON m.replay_id = r.id")) {
+    if (!this.sql.includes("FROM matches m JOIN battle_replays r ON r.id = m.replay_id")) {
       throw new Error(`Unsupported all SQL: ${this.sql}`);
     }
     const [userKey, p1UserKey, p2UserKey, cursorFinishedAt, , , cursorId, limit] = this.params;
-    let rows = this.db.replays
-      .filter((row) => row.p1_user_key === p1UserKey || row.p2_user_key === p2UserKey)
-      .map((row) => ({
-        ...row,
-        replay_id: row.id,
-        ...this.db.matches.find((match) => match.replay_id === row.id && match.user_key === userKey),
+    let rows = this.db.matches
+      .filter((match) => match.user_key === userKey && match.mode === "online" && match.replay_id)
+      .map((match) => ({
+        ...this.db.replays.find((replay) => replay.id === match.replay_id),
+        ...match,
+        finished_at: match.played_at,
       }))
-      .filter((row) => row.user_key);
+      .filter((row) => row.p1_user_key === p1UserKey || row.p2_user_key === p2UserKey);
     if (cursorFinishedAt) {
       rows = rows.filter(
         (row) =>

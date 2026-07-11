@@ -15,14 +15,17 @@ import {
   verifySessionToken,
   verifyTelegramLoginPayload,
 } from "./auth.js";
-import { getLeaderboard, getPlayerProfile, recordCompletedMatch } from "./profile.js";
+import { getLeaderboard, getPlayerProfile, recordCompletedMatch, recordOnlineReplayBatch } from "./profile.js";
 import {
   HttpError,
   createOnlineReplayRecord,
   getAuthorizedReplay,
   listPlayerReplays,
-  saveOnlineReplay,
 } from "./replay.js";
+
+const archiveOutboxPrefix = "replayArchiveOutbox:";
+const archiveDeadLetterPrefix = "replayArchiveDeadLetter:";
+const archiveMaxAttempts = 12;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -221,15 +224,6 @@ export class BattleRoom {
           },
         };
         if (room.rematch.requests.p1?.board && room.rematch.requests.p2?.board) {
-          if (!recordingComplete(room)) {
-            try {
-              await this.recordFinishedOnlineBattle(room);
-            } catch (error) {
-              await this.scheduleRecordRetry(room, error);
-              await this.broadcast(room);
-              return;
-            }
-          }
           room = startRematch(room, preset);
         }
         await this.saveRoom(room);
@@ -251,13 +245,9 @@ export class BattleRoom {
         }
         await this.saveRoom(room);
         if (finishedNow) {
-          try {
-            await this.recordFinishedOnlineBattle(room);
-          } catch (error) {
-            await this.scheduleRecordRetry(room, error);
-          }
+          await this.recordFinishedOnlineBattle(room);
         }
-        await this.broadcast(room);
+        await this.broadcast(await this.requireRoom());
         return;
       }
 
@@ -315,74 +305,129 @@ export class BattleRoom {
     if (!room.game || room.game.phase !== "finished" || recordingComplete(room)) {
       return;
     }
-    if (!this.env?.DB) {
-      throw new Error("Replay storage is not configured");
-    }
-
     const players = Object.entries(room.players).filter(([, player]) => player?.user);
-    if (players.length === 0) {
+    if (players.length !== 2) {
+      console.error("Replay archive job is missing participants", { replayId: room.replayId || "unassigned" });
       return;
     }
 
     room.replayId ||= crypto.randomUUID();
     room.finishedAt ||= new Date().toISOString();
-    await saveOnlineReplay(this.env.DB, createOnlineReplayRecord(room, room.replayId));
-
-    const recordedMatches = await Promise.all(
-      players.map(async ([playerId, player]) => [
-        playerId,
-        await recordCompletedMatch(this.env.DB, player.user, onlineMatchPayload(room, playerId), {
-          source: "server",
-        }),
-      ]),
-    );
-    room.ratingChanges = Object.fromEntries(
-      recordedMatches
-        .filter(([, match]) => match.rating)
-        .map(([playerId, match]) => [playerId, match.rating]),
-    );
-    room.replayRecordedAt = room.finishedAt;
-    room.profileRecordedAt = room.finishedAt;
-    delete room.recordRetryCount;
-    delete room.profileRecordErrorAt;
-    delete room.profileRecordError;
-    await this.saveRoom(room);
-    await this.state.storage.deleteAlarm?.();
+    const key = archiveOutboxKey(room.replayId);
+    let pending = await this.state.storage.get(key);
+    if (!pending) {
+      pending = {
+        replay: createOnlineReplayRecord(room, room.replayId),
+        playerMatches: players.map(([playerId, player]) => ({
+          playerId,
+          user: { ...player.user },
+          payload: onlineMatchPayload(room, playerId),
+        })),
+        attempts: 0,
+        createdAt: new Date().toISOString(),
+        nextAttemptAt: null,
+      };
+      await this.state.storage.put(key, pending);
+    }
+    await this.processArchiveOutbox(pending);
   }
 
-  async scheduleRecordRetry(room, error) {
-    room.recordRetryCount = (room.recordRetryCount ?? 0) + 1;
-    room.profileRecordErrorAt = new Date().toISOString();
-    room.profileRecordError = error?.message || "Replay recording failed";
-    await this.saveRoom(room);
+  async processArchiveOutbox(pending, { schedule = true } = {}) {
     if (!this.env?.DB) {
+      await this.failArchiveOutbox(pending, new Error("Replay storage is not configured"), {
+        classification: "configuration",
+        terminal: true,
+        schedule,
+      });
+      return false;
+    }
+    try {
+      const recorded = await recordOnlineReplayBatch(this.env.DB, pending.replay, pending.playerMatches);
+      await this.state.storage.delete(archiveOutboxKey(pending.replay.id));
+      await this.markArchiveRecorded(pending, recorded);
+      if (schedule) {
+        await this.scheduleArchiveAlarm();
+      }
+      return true;
+    } catch (error) {
+      await this.failArchiveOutbox(pending, error, { classification: "transient", schedule });
+      return false;
+    }
+  }
+
+  async failArchiveOutbox(pending, error, { classification, terminal = false, schedule = true }) {
+    const attempts = pending.attempts + 1;
+    const exhausted = attempts >= archiveMaxAttempts;
+    const finalClassification = exhausted ? "retry_exhausted" : classification;
+    const errorMessage = error?.message || "Replay archive persistence failed";
+    const failedAt = new Date().toISOString();
+    console.error("Replay archive persistence failed", {
+      replayId: pending.replay.id,
+      classification: finalClassification,
+      attempts,
+      error: errorMessage,
+    });
+    if (terminal || exhausted) {
+      await this.state.storage.put(archiveDeadLetterKey(pending.replay.id), {
+        replayId: pending.replay.id,
+        classification: finalClassification,
+        attempts,
+        errorMessage,
+        failedAt,
+      });
+      await this.state.storage.delete(archiveOutboxKey(pending.replay.id));
+    } else {
+      const delay = archiveRetryDelay(attempts);
+      await this.state.storage.put(archiveOutboxKey(pending.replay.id), {
+        ...pending,
+        attempts,
+        errorMessage,
+        errorAt: failedAt,
+        nextAttemptAt: Date.now() + delay,
+      });
+    }
+    if (schedule) {
+      await this.scheduleArchiveAlarm();
+    }
+  }
+
+  async markArchiveRecorded(pending, recorded) {
+    await this.state.storage.transaction(async (transaction) => {
+      const latest = await transaction.get("room");
+      if (latest?.replayId !== pending.replay.id) {
+        return;
+      }
+      latest.ratingChanges = Object.fromEntries(
+        recorded.filter(({ match }) => match.rating).map(({ playerId, match }) => [playerId, match.rating]),
+      );
+      latest.replayRecordedAt = pending.replay.finishedAt;
+      latest.profileRecordedAt = pending.replay.finishedAt;
+      delete latest.recordRetryCount;
+      delete latest.profileRecordErrorAt;
+      delete latest.profileRecordError;
+      await transaction.put("room", latest);
+    });
+  }
+
+  async scheduleArchiveAlarm() {
+    const pending = [...(await this.state.storage.list({ prefix: archiveOutboxPrefix })).values()];
+    if (pending.length === 0) {
+      await this.state.storage.deleteAlarm?.();
       return;
     }
-    const delay = Math.min(30_000 * 2 ** Math.max(room.recordRetryCount - 1, 0), 15 * 60_000);
-    await this.state.storage.setAlarm(Date.now() + delay);
+    const nextAlarm = Math.min(...pending.map((entry) => entry.nextAttemptAt ?? Date.now()));
+    await this.state.storage.setAlarm(nextAlarm);
   }
 
   async alarm() {
-    const room = await this.getRoom();
-    if (!room?.game || room.game.phase !== "finished") {
-      await this.state.storage.deleteAlarm?.();
-      return;
-    }
-    if (!recordingComplete(room)) {
-      try {
-        await this.recordFinishedOnlineBattle(room);
-      } catch (error) {
-        await this.scheduleRecordRetry(room, error);
-        return;
+    const pending = [...(await this.state.storage.list({ prefix: archiveOutboxPrefix })).values()];
+    const now = Date.now();
+    for (const entry of pending) {
+      if (entry.nextAttemptAt === null || entry.nextAttemptAt <= now) {
+        await this.processArchiveOutbox(entry, { schedule: false });
       }
     }
-    if (rematchReady(room)) {
-      const restarted = startRematch(room, getGamePreset(room.game.presetId || room.presetId));
-      await this.saveRoom(restarted);
-      await this.broadcast(restarted);
-    } else {
-      await this.state.storage.deleteAlarm?.();
-    }
+    await this.scheduleArchiveAlarm();
   }
 }
 
@@ -741,8 +786,16 @@ function recordingComplete(room) {
   return Boolean(room.replayRecordedAt && room.profileRecordedAt);
 }
 
-function rematchReady(room) {
-  return Boolean(room.rematch?.requests?.p1?.board && room.rematch?.requests?.p2?.board);
+function archiveOutboxKey(replayId) {
+  return `${archiveOutboxPrefix}${replayId}`;
+}
+
+function archiveDeadLetterKey(replayId) {
+  return `${archiveDeadLetterPrefix}${replayId}`;
+}
+
+function archiveRetryDelay(attempts) {
+  return Math.min(30_000 * 2 ** Math.max(attempts - 1, 0), 15 * 60_000);
 }
 
 function json(payload, status = 200) {

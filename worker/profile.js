@@ -169,7 +169,109 @@ export async function recordCompletedMatch(db, user, payload, { source = "client
   await upsertUser(db, user);
   const beforeRating =
     match.mode === "online" ? summarizeOnlineRating(await onlineRatingRows(db, userKey), new Date(match.playedAt)) : null;
-  await db
+  await matchInsertStatement(db, userKey, match).run();
+
+  const recordedMatch = withAchievements(match);
+
+  if (match.mode === "online") {
+    const afterRating = summarizeOnlineRating(await onlineRatingRows(db, userKey), new Date(match.playedAt));
+    return {
+      ...recordedMatch,
+      rating: ratingMovement(beforeRating, afterRating),
+    };
+  }
+
+  return recordedMatch;
+}
+
+export async function recordOnlineReplayBatch(db, replay, playerMatches) {
+  assertProfileDb(db);
+  if (typeof db.batch !== "function") {
+    throw new Error("Atomic replay storage is not configured");
+  }
+  if (!Array.isArray(playerMatches) || playerMatches.length !== 2) {
+    throw new Error("Two online replay participants are required");
+  }
+
+  const normalized = playerMatches.map(({ playerId, user, payload }) => ({
+    playerId,
+    user,
+    userKey: userSubject(user),
+    match: normalizeMatch(payload, { source: "server" }),
+  }));
+  if (normalized.some(({ match }) => match.mode !== "online" || match.replayId !== replay.id)) {
+    throw new Error("Online replay match linkage is invalid");
+  }
+
+  const now = new Date().toISOString();
+  const statements = [
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO battle_replays
+          (id, p1_user_key, p2_user_key, preset_id, winner_id, finished_at, data_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        replay.id,
+        replay.p1UserKey,
+        replay.p2UserKey,
+        replay.presetId,
+        replay.winnerId,
+        replay.finishedAt,
+        JSON.stringify(replay.payload),
+      ),
+    ...normalized.map(({ user }) => userUpsertStatement(db, user, now)),
+    ...normalized.map(({ userKey, match }) => matchInsertStatement(db, userKey, match)),
+  ];
+  await db.batch(statements);
+
+  return Promise.all(
+    normalized.map(async ({ playerId, userKey, match }) => ({
+      playerId,
+      match: {
+        ...withAchievements(match),
+        rating: await deterministicReplayRating(db, userKey, match.id, new Date(match.playedAt)),
+      },
+    })),
+  );
+}
+
+export function userSubject(user) {
+  return `${user.provider}:${user.id}`;
+}
+
+async function upsertUser(db, user) {
+  const now = new Date().toISOString();
+  await userUpsertStatement(db, user, now).run();
+}
+
+function userUpsertStatement(db, user, now) {
+  return db
+    .prepare(
+      `INSERT INTO users (
+        user_key, provider, provider_id, name, username, photo_url, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_key) DO UPDATE SET
+        name = excluded.name,
+        username = excluded.username,
+        photo_url = excluded.photo_url,
+        updated_at = excluded.updated_at`,
+    )
+    .bind(
+      userSubject(user),
+      user.provider,
+      String(user.id),
+      user.name || "",
+      user.username || "",
+      user.photoUrl || "",
+      now,
+      now,
+    );
+}
+
+function matchInsertStatement(db, userKey, match) {
+  return db
     .prepare(
       `INSERT OR IGNORE INTO matches (
         id, user_key, mode, preset_id, result, opponent, total_shots, player_shots,
@@ -194,51 +296,7 @@ export async function recordCompletedMatch(db, user, payload, { source = "client
       match.winnerId,
       match.playedAt,
       match.replayId,
-    )
-    .run();
-
-  const recordedMatch = withAchievements(match);
-
-  if (match.mode === "online") {
-    const afterRating = summarizeOnlineRating(await onlineRatingRows(db, userKey), new Date(match.playedAt));
-    return {
-      ...recordedMatch,
-      rating: ratingMovement(beforeRating, afterRating),
-    };
-  }
-
-  return recordedMatch;
-}
-
-export function userSubject(user) {
-  return `${user.provider}:${user.id}`;
-}
-
-async function upsertUser(db, user) {
-  const now = new Date().toISOString();
-  await db
-    .prepare(
-      `INSERT INTO users (
-        user_key, provider, provider_id, name, username, photo_url, created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(user_key) DO UPDATE SET
-        name = excluded.name,
-        username = excluded.username,
-        photo_url = excluded.photo_url,
-        updated_at = excluded.updated_at`,
-    )
-    .bind(
-      userSubject(user),
-      user.provider,
-      String(user.id),
-      user.name || "",
-      user.username || "",
-      user.photoUrl || "",
-      now,
-      now,
-    )
-    .run();
+    );
 }
 
 function summarizeProfile(row, modeRows, streakRows) {
@@ -503,6 +561,26 @@ async function onlineRatingRows(db, userKey) {
     .bind(userKey)
     .all();
   return rows.results ?? [];
+}
+
+async function deterministicReplayRating(db, userKey, matchId, playedAt) {
+  const rows = await db
+    .prepare(
+      `SELECT id, result, played_at
+      FROM matches
+      WHERE user_key = ? AND mode = 'online'
+      ORDER BY played_at ASC, id ASC`,
+    )
+    .bind(userKey)
+    .all();
+  const ordered = rows.results ?? [];
+  const index = ordered.findIndex((row) => row.id === matchId);
+  if (index < 0) {
+    throw new Error("Recorded online replay match is unavailable");
+  }
+  const before = summarizeOnlineRating(ordered.slice(0, index), playedAt);
+  const after = summarizeOnlineRating(ordered.slice(0, index + 1), playedAt);
+  return ratingMovement(before, after);
 }
 
 function ratingMovement(before, after) {

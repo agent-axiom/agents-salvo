@@ -195,6 +195,7 @@ test("worker replay routes require auth and enforce replay statuses", async () =
     replay_id: "replay-route",
     user_key: "telegram:1",
     mode: "online",
+    played_at: "2026-07-11T12:00:00.000Z",
     preset_id: "classic",
     result: "win",
     opponent: "Two",
@@ -249,11 +250,17 @@ test("worker replay routes require auth and enforce replay statuses", async () =
   );
 
   db.replays[0].data_json = "corrupt";
-  assert.equal(
-    (await worker.fetch(new Request("https://worker.test/replays/replay-route", { headers: participantHeaders }), env))
-      .status,
-    404,
-  );
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    assert.equal(
+      (await worker.fetch(new Request("https://worker.test/replays/replay-route", { headers: participantHeaders }), env))
+        .status,
+      503,
+    );
+  } finally {
+    console.error = originalError;
+  }
   assert.equal(
     (
       await worker.fetch(new Request("https://worker.test/replays/replay-route", { headers: participantHeaders }), {
@@ -502,7 +509,9 @@ test("BattleRoom places fleets, starts games, and reports setup message errors",
   const room = new BattleRoom({ storage });
   const sent = [];
   const previousWebSocket = globalThis.WebSocket;
+  const originalError = console.error;
   globalThis.WebSocket = { OPEN: 1 };
+  console.error = () => {};
 
   try {
     room.sessions.set("p1-session", { playerId: "p1", socket: recordingSocket(sent) });
@@ -514,6 +523,7 @@ test("BattleRoom places fleets, starts games, and reports setup message errors",
     await room.handleMessage("p2-session", JSON.stringify({ type: "placeFleet", board: p2Board, presetId: "quick" }));
   } finally {
     globalThis.WebSocket = previousWebSocket;
+    console.error = originalError;
   }
 
   const savedRoom = await storage.get("room");
@@ -750,7 +760,9 @@ test("BattleRoom still broadcasts finished games when profile storage fails", as
   const room = new BattleRoom({ storage }, { DB: new FailingD1() });
   const sent = [];
   const previousWebSocket = globalThis.WebSocket;
+  const originalError = console.error;
   globalThis.WebSocket = { OPEN: 1 };
+  console.error = () => {};
 
   try {
     room.sessions.set("session-1", {
@@ -765,30 +777,32 @@ test("BattleRoom still broadcasts finished games when profile storage fails", as
     await room.handleMessage("session-1", JSON.stringify({ type: "fire", coordinate: { row: 1, col: 1 } }));
   } finally {
     globalThis.WebSocket = previousWebSocket;
+    console.error = originalError;
   }
 
   const savedRoom = await storage.get("room");
   assert.equal(savedRoom.game.phase, "finished");
   assert.equal(savedRoom.profileRecordedAt, undefined);
-  assert.equal(savedRoom.recordRetryCount, 1);
-  assert.ok(savedRoom.profileRecordErrorAt);
+  const [pending] = await archiveOutboxEntries(storage);
+  assert.equal(pending.attempts, 1);
+  assert.equal(pending.errorMessage, "D1 unavailable");
   assert.ok(storage.alarmAt >= Date.now() + 29_000);
   assert.equal(sent.some((message) => message.type === "error"), false);
   assert.equal(sent.at(-1)?.type, "snapshot");
   assert.equal(sent.at(-1)?.snapshot.phase, "finished");
 
-  await room.alarm();
-  const failedRetryRoom = await storage.get("room");
-  assert.equal(failedRetryRoom.recordRetryCount, 2);
+  await fireArchiveAlarm(room, storage);
+  const [failedRetry] = await archiveOutboxEntries(storage);
+  assert.equal(failedRetry.attempts, 2);
   assert.ok(storage.alarmAt >= Date.now() + 59_000);
 
   room.env.DB = new RecordingD1();
-  await room.alarm();
+  await fireArchiveAlarm(room, storage);
   await room.alarm();
   const retriedRoom = await storage.get("room");
   assert.equal(retriedRoom.profileRecordedAt, retriedRoom.finishedAt);
-  assert.equal(retriedRoom.recordRetryCount, undefined);
-  assert.equal(retriedRoom.profileRecordErrorAt, undefined);
+  assert.equal(retriedRoom.replayRecordedAt, retriedRoom.finishedAt);
+  assert.deepEqual(await archiveOutboxEntries(storage), []);
   assert.equal(room.env.DB.replays.length, 1);
   assert.equal(room.env.DB.matches.length, 2);
 });
@@ -797,30 +811,54 @@ test("BattleRoom does not schedule replay retries without D1", async () => {
   const storage = new MemoryStorage({ room: finishedOnlineRoom() });
   const room = new BattleRoom({ storage });
 
-  await room.alarm();
-
-  assert.equal(storage.alarmAt, undefined);
-  const savedRoom = await storage.get("room");
-  assert.ok(savedRoom.profileRecordErrorAt);
-  assert.equal(savedRoom.profileRecordError, "Replay storage is not configured");
-});
-
-test("BattleRoom replay retry delay caps at exactly fifteen minutes", async () => {
-  const storage = new MemoryStorage();
-  const room = new BattleRoom({ storage }, { DB: new FailingD1() });
-  const state = { ...finishedOnlineRoom(), recordRetryCount: 99 };
-  const originalNow = Date.now;
-  Date.now = () => 1_000_000;
+  const originalError = console.error;
+  console.error = () => {};
   try {
-    await room.scheduleRecordRetry(state, new Error("D1 unavailable"));
+    await room.recordFinishedOnlineBattle(await storage.get("room"));
   } finally {
-    Date.now = originalNow;
+    console.error = originalError;
   }
 
-  assert.equal(storage.alarmAt, 1_900_000);
+  assert.equal(storage.alarmAt, undefined);
+  assert.deepEqual(await archiveOutboxEntries(storage), []);
+  const [deadLetter] = await archiveDeadLetterEntries(storage);
+  assert.equal(deadLetter.classification, "configuration");
+  assert.equal(deadLetter.errorMessage, "Replay storage is not configured");
+  assert.ok(deadLetter.failedAt);
 });
 
-test("BattleRoom holds a ready rematch until recording succeeds in an alarm", async () => {
+test("BattleRoom caps retries at fifteen minutes and dead-letters after twelve attempts", async () => {
+  const storage = new MemoryStorage({ room: finishedOnlineRoom() });
+  const room = new BattleRoom({ storage }, { DB: new FailingD1() });
+  const originalNow = Date.now;
+  const originalError = console.error;
+  let now = 1_000_000;
+  Date.now = () => now;
+  console.error = () => {};
+  try {
+    await room.recordFinishedOnlineBattle(await storage.get("room"));
+    for (let attempt = 2; attempt <= 6; attempt += 1) {
+      now = storage.alarmAt;
+      await room.alarm();
+    }
+    assert.equal(storage.alarmAt - now, 900_000);
+    for (let attempt = 7; attempt <= 12; attempt += 1) {
+      now = storage.alarmAt;
+      await room.alarm();
+    }
+  } finally {
+    Date.now = originalNow;
+    console.error = originalError;
+  }
+
+  assert.equal(storage.alarmAt, undefined);
+  assert.deepEqual(await archiveOutboxEntries(storage), []);
+  const [deadLetter] = await archiveDeadLetterEntries(storage);
+  assert.equal(deadLetter.attempts, 12);
+  assert.equal(deadLetter.classification, "retry_exhausted");
+});
+
+test("BattleRoom keeps archival retries independent from a ready rematch", async () => {
   const firstP1Board = randomlyPlaceSetup(gamePresets.quick, () => 0.19);
   const firstP2Board = randomlyPlaceSetup(gamePresets.quick, () => 0.79);
   const nextP1Board = randomlyPlaceSetup(gamePresets.quick, () => 0.31);
@@ -832,7 +870,10 @@ test("BattleRoom holds a ready rematch until recording succeeds in an alarm", as
   const sent = [];
   const previousWebSocket = globalThis.WebSocket;
   globalThis.WebSocket = { OPEN: 1 };
+  const originalError = console.error;
+  console.error = () => {};
   try {
+    await room.recordFinishedOnlineBattle(await storage.get("room"));
     room.sessions.set("p1-session", { playerId: "p1", socket: recordingSocket(sent) });
     room.sessions.set("p2-session", { playerId: "p2", socket: recordingSocket(sent) });
     await room.handleMessage(
@@ -844,27 +885,80 @@ test("BattleRoom holds a ready rematch until recording succeeds in an alarm", as
       JSON.stringify({ type: "requestRematch", board: nextP2Board, presetId: "quick" }),
     );
 
-    const pending = await storage.get("room");
-    assert.equal(pending.game.phase, "finished");
-    assert.ok(pending.rematch.requests.p1.board);
-    assert.ok(pending.rematch.requests.p2.board);
-    assert.equal(pending.recordRetryCount, 1);
+    const restarted = await storage.get("room");
+    assert.equal(restarted.game.phase, "playing");
+    assert.equal(restarted.rematchRound, 1);
+    assert.equal(restarted.rematch, undefined);
+    assert.equal((await archiveOutboxEntries(storage)).length, 1);
     assert.ok(storage.alarmAt);
 
     room.env.DB = new RecordingD1();
-    await room.alarm();
+    await fireArchiveAlarm(room, storage);
   } finally {
     globalThis.WebSocket = previousWebSocket;
+    console.error = originalError;
   }
 
   const restarted = await storage.get("room");
   assert.equal(restarted.game.phase, "playing");
   assert.equal(restarted.rematchRound, 1);
   assert.equal(restarted.rematch, undefined);
-  assert.equal(restarted.recordRetryCount, undefined);
-  assert.equal(sent.at(-1).snapshot.phase, "playing");
+  assert.equal(restarted.replayRecordedAt, undefined);
+  assert.deepEqual(await archiveOutboxEntries(storage), []);
   assert.equal(room.env.DB.replays.length, 1);
   assert.equal(room.env.DB.matches.length, 2);
+});
+
+test("BattleRoom archive completion never overwrites concurrent rematch state", async () => {
+  const storage = new MemoryStorage({ room: finishedOnlineRoom() });
+  const db = new DeferredRecordingD1();
+  const room = new BattleRoom({ storage }, { DB: db });
+  const initialRoom = await storage.get("room");
+
+  const recording = room.recordFinishedOnlineBattle(initialRoom);
+  await db.writeStarted;
+  const concurrentRoom = {
+    ...(await storage.get("room")),
+    rematch: { requests: { p1: { board: initialRoom.players.p1.board, requestedAt: "later" } } },
+  };
+  await storage.put("room", concurrentRoom);
+  db.releaseWrite();
+  await recording;
+
+  const savedRoom = await storage.get("room");
+  assert.equal(savedRoom.rematch.requests.p1.requestedAt, "later");
+  assert.equal(savedRoom.replayRecordedAt, savedRoom.finishedAt);
+});
+
+test("BattleRoom retries an atomic batch without partial profiles or rating drift", async () => {
+  const storage = new MemoryStorage({ room: finishedOnlineRoom() });
+  const db = new AtomicFailOnceD1();
+  const room = new BattleRoom({ storage }, { DB: db });
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    await room.recordFinishedOnlineBattle(await storage.get("room"));
+    assert.equal(db.replays.length, 0);
+    assert.equal(db.matches.length, 0);
+    assert.equal((await archiveOutboxEntries(storage))[0].attempts, 1);
+
+    await fireArchiveAlarm(room, storage);
+    const recordedRoom = await storage.get("room");
+    const ratingChanges = structuredClone(recordedRoom.ratingChanges);
+    assert.equal(db.replays.length, 1);
+    assert.equal(db.matches.length, 2);
+    assert.deepEqual(db.matches.map((match) => match.result).sort(), ["loss", "win"]);
+
+    delete recordedRoom.replayRecordedAt;
+    delete recordedRoom.profileRecordedAt;
+    await storage.put("room", recordedRoom);
+    await room.recordFinishedOnlineBattle(recordedRoom);
+    assert.equal(db.replays.length, 1);
+    assert.equal(db.matches.length, 2);
+    assert.deepEqual((await storage.get("room")).ratingChanges, ratingChanges);
+  } finally {
+    console.error = originalError;
+  }
 });
 
 test("BattleRoom finishing a rematch assigns a new replay id", async () => {
@@ -936,6 +1030,16 @@ async function authHeaders(user, env) {
   return { Authorization: `Bearer ${await createSessionToken(user, env.SESSION_SECRET)}` };
 }
 
+async function fireArchiveAlarm(room, storage) {
+  const originalNow = Date.now;
+  Date.now = () => storage.alarmAt ?? originalNow();
+  try {
+    await room.alarm();
+  } finally {
+    Date.now = originalNow;
+  }
+}
+
 function finishedOnlineRoom({ p1Board, p2Board, presetId = "classic" } = {}) {
   const firstBoard =
     p1Board ?? placeShip(createBoard(2), { id: "p1-patrol", length: 1 }, { row: 0, col: 0 }, "horizontal");
@@ -963,6 +1067,14 @@ function finishedOnlineRoom({ p1Board, p2Board, presetId = "classic" } = {}) {
   };
 }
 
+async function archiveOutboxEntries(storage) {
+  return [...(await storage.list({ prefix: "replayArchiveOutbox:" })).values()];
+}
+
+async function archiveDeadLetterEntries(storage) {
+  return [...(await storage.list({ prefix: "replayArchiveDeadLetter:" })).values()];
+}
+
 class MemoryStorage {
   constructor(initial = {}) {
     this.values = new Map(Object.entries(initial));
@@ -974,6 +1086,18 @@ class MemoryStorage {
 
   async put(key, value) {
     this.values.set(key, value);
+  }
+
+  async delete(key) {
+    this.values.delete(key);
+  }
+
+  async list({ prefix = "" } = {}) {
+    return new Map([...this.values].filter(([key]) => key.startsWith(prefix)));
+  }
+
+  async transaction(callback) {
+    return callback(this);
   }
 
   async setAlarm(alarmAt) {
@@ -1087,10 +1211,72 @@ class RecordingD1 {
   prepare(sql) {
     return new RecordingStatement(this, sql);
   }
+
+  async batch(statements) {
+    const snapshot = {
+      users: structuredClone(this.users),
+      matches: structuredClone(this.matches),
+      replays: structuredClone(this.replays),
+    };
+    this.batchCalls = (this.batchCalls ?? 0) + 1;
+    try {
+      const results = [];
+      for (let index = 0; index < statements.length; index += 1) {
+        if (this.failBatchAt === index) {
+          this.failBatchAt = undefined;
+          throw new Error("D1 batch failed");
+        }
+        results.push(await statements[index].run());
+      }
+      return results;
+    } catch (error) {
+      this.users = snapshot.users;
+      this.matches = snapshot.matches;
+      this.replays = snapshot.replays;
+      throw error;
+    }
+  }
+}
+
+class DeferredRecordingD1 extends RecordingD1 {
+  constructor() {
+    super();
+    this.writeStarted = new Promise((resolve) => {
+      this.markWriteStarted = resolve;
+    });
+    this.writeRelease = new Promise((resolve) => {
+      this.releaseWrite = resolve;
+    });
+  }
+
+  async waitForWrite() {
+    if (this.didWait) {
+      return;
+    }
+    this.didWait = true;
+    this.markWriteStarted();
+    await this.writeRelease;
+  }
+
+  async batch(statements) {
+    await this.waitForWrite();
+    return super.batch(statements);
+  }
+}
+
+class AtomicFailOnceD1 extends RecordingD1 {
+  constructor() {
+    super();
+    this.failBatchAt = 4;
+  }
 }
 
 class FailingD1 {
   prepare() {
+    return { bind() { return this; }, run() { throw new Error("D1 unavailable"); } };
+  }
+
+  async batch() {
     throw new Error("D1 unavailable");
   }
 }
@@ -1157,6 +1343,7 @@ class RecordingStatement {
       return { success: true };
     }
     if (this.sql.startsWith("INSERT OR IGNORE INTO battle_replays")) {
+      await this.db.waitForWrite?.();
       const [id, p1UserKey, p2UserKey, presetId, winnerId, finishedAt, dataJson] = this.params;
       if (!this.db.replays.some((replay) => replay.id === id)) {
         this.db.replays.push({
@@ -1175,16 +1362,16 @@ class RecordingStatement {
   }
 
   async all() {
-    if (this.sql.includes("JOIN matches m ON m.replay_id = r.id")) {
+    if (this.sql.includes("FROM matches m JOIN battle_replays r ON r.id = m.replay_id")) {
       const [userKey, p1UserKey, p2UserKey, cursorFinishedAt, , , cursorId, limit] = this.params;
-      let rows = this.db.replays
-        .filter((replay) => replay.p1_user_key === p1UserKey || replay.p2_user_key === p2UserKey)
-        .map((replay) => ({
-          ...replay,
-          replay_id: replay.id,
-          ...this.db.matches.find((match) => match.replay_id === replay.id && match.user_key === userKey),
+      let rows = this.db.matches
+        .filter((match) => match.user_key === userKey && match.mode === "online" && match.replay_id)
+        .map((match) => ({
+          ...this.db.replays.find((replay) => replay.id === match.replay_id),
+          ...match,
+          finished_at: match.played_at,
         }))
-        .filter((row) => row.user_key);
+        .filter((row) => row.p1_user_key === p1UserKey || row.p2_user_key === p2UserKey);
       if (cursorFinishedAt) {
         rows = rows.filter(
           (row) =>
@@ -1206,6 +1393,19 @@ class RecordingStatement {
           .filter((match) => match.user_key === userKey && match.mode === "online")
           .sort((first, second) => first.played_at.localeCompare(second.played_at))
           .map((match) => ({ result: match.result, played_at: match.played_at })),
+      };
+    }
+    if (this.sql.startsWith("SELECT id, result, played_at")) {
+      const [userKey] = this.params;
+      return {
+        success: true,
+        results: this.db.matches
+          .filter((match) => match.user_key === userKey && match.mode === "online")
+          .sort(
+            (first, second) =>
+              first.played_at.localeCompare(second.played_at) || first.id.localeCompare(second.id),
+          )
+          .map((match) => ({ id: match.id, result: match.result, played_at: match.played_at })),
       };
     }
     throw new Error(`Unsupported all SQL: ${this.sql}`);

@@ -113,7 +113,13 @@ export async function getAuthorizedReplay(db, id, user) {
   if (!viewerPlayerId) {
     throw new HttpError(403, "Replay access is forbidden");
   }
-  const payload = parseReplayPayload(row.data_json);
+  let payload;
+  try {
+    payload = parseReplayPayload(row.data_json);
+  } catch {
+    console.error("Stored replay payload is invalid", { replayId: row.id });
+    throw new HttpError(503, "Replay storage is unavailable");
+  }
   return { id: row.id, ...payload, viewerPlayerId };
 }
 
@@ -126,14 +132,15 @@ export async function listPlayerReplays(db, user, { cursor } = {}) {
   const cursorId = decodedCursor?.id ?? null;
   const rows = await db
     .prepare(
-      `SELECT r.id AS replay_id, r.preset_id, r.winner_id, r.finished_at,
+      `SELECT m.replay_id, r.preset_id, r.winner_id, m.played_at AS finished_at,
         m.result, m.opponent, m.total_shots, m.player_shots, m.player_hits,
         m.player_misses, m.player_sunk, m.accuracy, m.turns
-      FROM battle_replays r
-      JOIN matches m ON m.replay_id = r.id AND m.user_key = ?
-      WHERE (r.p1_user_key = ? OR r.p2_user_key = ?)
-        AND (? IS NULL OR r.finished_at < ? OR (r.finished_at = ? AND r.id < ?))
-      ORDER BY r.finished_at DESC, r.id DESC
+      FROM matches m
+      JOIN battle_replays r ON r.id = m.replay_id
+      WHERE m.user_key = ? AND m.mode = 'online' AND m.replay_id IS NOT NULL
+        AND (r.p1_user_key = ? OR r.p2_user_key = ?)
+        AND (? IS NULL OR m.played_at < ? OR (m.played_at = ? AND m.replay_id < ?))
+      ORDER BY m.played_at DESC, m.replay_id DESC
       LIMIT ?`,
     )
     .bind(
