@@ -19,5 +19,5 @@ ALTER TABLE matches ADD COLUMN replay_id TEXT;
 
 CREATE INDEX IF NOT EXISTS matches_replay_id_idx ON matches (replay_id);
 
-CREATE INDEX IF NOT EXISTS matches_user_mode_played_replay_idx
-  ON matches (user_key, mode, played_at DESC, replay_id DESC);
+CREATE INDEX IF NOT EXISTS matches_user_mode_played_id_idx
+  ON matches (user_key, mode, played_at DESC, id DESC);

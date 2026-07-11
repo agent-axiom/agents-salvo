@@ -235,7 +235,9 @@ test("worker replay routes require auth and enforce replay statuses", async () =
     env,
   );
   assert.equal(archive.status, 200);
-  assert.equal((await archive.json()).archive.items[0].id, "replay-route");
+  const archiveItem = (await archive.json()).archive.items[0];
+  assert.equal(archiveItem.id, "online:replay-route:p1");
+  assert.equal(archiveItem.replayId, "replay-route");
   assert.equal(
     (await worker.fetch(new Request("https://worker.test/profile/replays?cursor=bad", { headers: participantHeaders }), env))
       .status,
@@ -839,14 +841,19 @@ test("BattleRoom still broadcasts finished games when profile storage fails", as
   assert.equal(sent.at(-1)?.type, "snapshot");
   assert.equal(sent.at(-1)?.snapshot.phase, "finished");
 
-  await fireArchiveAlarm(room, storage);
-  const [failedRetry] = await archiveOutboxEntries(storage);
-  assert.equal(failedRetry.retry.attempts, 2);
-  assert.ok(storage.alarmAt >= Date.now() + 59_000);
+  console.error = () => {};
+  try {
+    await fireArchiveAlarm(room, storage);
+    const [failedRetry] = await archiveOutboxEntries(storage);
+    assert.equal(failedRetry.retry.attempts, 2);
+    assert.ok(storage.alarmAt >= Date.now() + 59_000);
 
-  room.env.DB = new RecordingD1();
-  await fireArchiveAlarm(room, storage);
-  await room.alarm();
+    room.env.DB = new RecordingD1();
+    await fireArchiveAlarm(room, storage);
+    await room.alarm();
+  } finally {
+    console.error = originalError;
+  }
   const retriedRoom = await storage.get("room");
   assert.equal(retriedRoom.profileRecordedAt, retriedRoom.finishedAt);
   assert.equal(retriedRoom.replayRecordedAt, retriedRoom.finishedAt);
@@ -1189,6 +1196,41 @@ test("BattleRoom retries an atomic batch without partial profiles or rating drif
   }
 });
 
+test("BattleRoom computes deterministic replay rating with indexed aggregate queries", async () => {
+  const storage = new MemoryStorage({ room: finishedOnlineRoom() });
+  const db = new RecordingD1();
+  for (let index = 0; index < 10_000; index += 1) {
+    db.matches.push({
+      id: `history-${String(index).padStart(5, "0")}`,
+      user_key: "telegram:1",
+      mode: "online",
+      result: index >= 9_990 || index % 2 === 0 ? "win" : "loss",
+      played_at: new Date(Date.UTC(2025, 0, 1, 0, 0, index)).toISOString(),
+    });
+  }
+  db.preparedSql.length = 0;
+  const room = new BattleRoom({ storage }, { DB: db });
+
+  await room.recordFinishedOnlineBattle(await storage.get("room"));
+
+  assert.deepEqual((await storage.get("room")).ratingChanges.p1, {
+    before: 41200,
+    after: 41224,
+    delta: 24,
+    label: "admiral",
+    onlineMatches: 10001,
+    onlineWins: 5006,
+    onlineLosses: 4995,
+    onlineWinRate: 50,
+    currentOnlineWinStreak: 11,
+  });
+  const ratingSql = db.preparedSql.filter((sql) => sql.includes("FROM matches"));
+  assert.equal(ratingSql.some((sql) => sql.startsWith("SELECT id, result, played_at")), false);
+  assert.ok(ratingSql.some((sql) => sql.includes("COUNT(*) AS online_matches") && sql.includes("(played_at, id) <= (?, ?)")));
+  assert.ok(ratingSql.some((sql) => sql.includes("result = 'loss'") && sql.includes("LIMIT 1")));
+  assert.ok(ratingSql.some((sql) => sql.includes("COUNT(*) AS current_streak") && sql.includes("(played_at, id) > (?, ?)")));
+});
+
 test("BattleRoom finishing a rematch assigns a new replay id", async () => {
   const p1Board = randomlyPlaceSetup(gamePresets.quick, () => 0.13);
   const p2Board = randomlyPlaceSetup(gamePresets.quick, () => 0.83);
@@ -1492,9 +1534,11 @@ class RecordingD1 {
     this.users = [];
     this.matches = [];
     this.replays = [];
+    this.preparedSql = [];
   }
 
   prepare(sql) {
+    this.preparedSql.push(sql.replace(/\s+/g, " ").trim());
     return new RecordingStatement(this, sql);
   }
 
@@ -1655,29 +1699,27 @@ class RecordingStatement {
   }
 
   async all() {
-    if (this.sql.includes("FROM matches m JOIN battle_replays r ON r.id = m.replay_id")) {
+    if (this.sql.includes("FROM matches m LEFT JOIN battle_replays r ON r.id = m.replay_id")) {
       const [userKey, p1UserKey, p2UserKey] = this.params;
       const cursorFinishedAt = this.params.length === 6 ? this.params[3] : null;
       const cursorId = this.params.length === 6 ? this.params[4] : null;
       const limit = this.params.at(-1);
       let rows = this.db.matches
-        .filter((match) => match.user_key === userKey && match.mode === "online" && match.replay_id)
-        .map((match) => ({
-          ...this.db.replays.find((replay) => replay.id === match.replay_id),
-          ...match,
-          finished_at: match.played_at,
-        }))
-        .filter((row) => row.p1_user_key === p1UserKey || row.p2_user_key === p2UserKey);
+        .filter((match) => match.user_key === userKey && match.mode === "online")
+        .map((match) => ({ match, replay: this.db.replays.find((replay) => replay.id === match.replay_id) }))
+        .filter(({ match, replay }) =>
+          match.replay_id == null || (replay && (replay.p1_user_key === p1UserKey || replay.p2_user_key === p2UserKey)))
+        .map(({ match }) => ({ ...match, match_id: match.id, finished_at: match.played_at }));
       if (cursorFinishedAt) {
         rows = rows.filter(
           (row) =>
             row.finished_at < cursorFinishedAt ||
-            (row.finished_at === cursorFinishedAt && row.replay_id < cursorId),
+            (row.finished_at === cursorFinishedAt && row.match_id < cursorId),
         );
       }
       rows.sort(
         (first, second) =>
-          second.finished_at.localeCompare(first.finished_at) || second.replay_id.localeCompare(first.replay_id),
+          second.finished_at.localeCompare(first.finished_at) || second.match_id.localeCompare(first.match_id),
       );
       return { success: true, results: rows.slice(0, limit) };
     }
@@ -1708,11 +1750,59 @@ class RecordingStatement {
   }
 
   async first() {
+    if (this.sql.startsWith("SELECT COUNT(*) AS online_matches")) {
+      const [targetId, targetPlayedAt, userKey, upperPlayedAt, upperId] = this.params;
+      const rows = this.db.matches.filter(
+        (match) =>
+          match.user_key === userKey &&
+          match.mode === "online" &&
+          compareMatchTuple(match, upperPlayedAt, upperId) <= 0,
+      );
+      return {
+        online_matches: rows.length,
+        online_wins: rows.filter((match) => match.result === "win").length,
+        online_losses: rows.filter((match) => match.result === "loss").length,
+        target_result: rows.find((match) => match.id === targetId && match.played_at === targetPlayedAt)?.result ?? null,
+      };
+    }
+    if (this.sql.startsWith("SELECT played_at, id") && this.sql.includes("result = 'loss'")) {
+      const [userKey, upperPlayedAt, upperId] = this.params;
+      return this.db.matches
+        .filter(
+          (match) =>
+            match.user_key === userKey &&
+            match.mode === "online" &&
+            match.result === "loss" &&
+            compareMatchTuple(match, upperPlayedAt, upperId) <= 0,
+        )
+        .sort((first, second) => compareRowsDescending(first, second))[0] ?? null;
+    }
+    if (this.sql.startsWith("SELECT COUNT(*) AS current_streak")) {
+      const [userKey, lowerPlayedAt, lowerId, upperPlayedAt, upperId] = this.params;
+      return {
+        current_streak: this.db.matches.filter(
+          (match) =>
+            match.user_key === userKey &&
+            match.mode === "online" &&
+            match.result === "win" &&
+            compareMatchTuple(match, lowerPlayedAt, lowerId) > 0 &&
+            compareMatchTuple(match, upperPlayedAt, upperId) <= 0,
+        ).length,
+      };
+    }
     if (this.sql.includes("FROM battle_replays") && this.sql.includes("WHERE id = ?")) {
       return this.db.replays.find((replay) => replay.id === this.params[0]) ?? null;
     }
     throw new Error(`Unsupported first SQL: ${this.sql}`);
   }
+}
+
+function compareMatchTuple(match, playedAt, id) {
+  return match.played_at.localeCompare(playedAt) || match.id.localeCompare(id);
+}
+
+function compareRowsDescending(first, second) {
+  return second.played_at.localeCompare(first.played_at) || second.id.localeCompare(first.id);
 }
 
 function replayPayload() {

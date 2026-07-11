@@ -124,6 +124,8 @@ test("archive pagination joins the viewer match and uses a stable cursor", async
   assert.ok(first.nextCursor);
   assert.equal(first.items[0].result, "win");
   assert.equal(first.items[0].opponent, "Opponent 24");
+  assert.equal(first.items[0].id, "online:replay-24:p1");
+  assert.equal(first.items[0].replayId, "replay-24");
   assert.equal("p1UserKey" in first.items[0], false);
 
   const second = await listPlayerReplays(db, telegramUser("101"), {
@@ -135,11 +137,87 @@ test("archive pagination joins the viewer match and uses a stable cursor", async
   assert.equal(new Set([...first.items, ...second.items].map((item) => item.id)).size, 25);
 });
 
+test("archive includes legacy null replay rows but excludes dangling and foreign replay links", async () => {
+  const db = replayArchiveD1(1);
+  db.matches.push(
+    {
+      id: "legacy-online-match",
+      replay_id: null,
+      user_key: "telegram:101",
+      mode: "online",
+      preset_id: "salvo",
+      winner_id: "p2",
+      played_at: "2026-07-13T12:00:00.000Z",
+      result: "loss",
+      opponent: "Legacy Captain",
+    },
+    {
+      id: "dangling-online-match",
+      replay_id: "missing-replay",
+      user_key: "telegram:101",
+      mode: "online",
+      played_at: "2026-07-14T12:00:00.000Z",
+      result: "win",
+      opponent: "Must Not Leak",
+    },
+  );
+  db.replays.push({
+    id: "foreign-replay",
+    p1_user_key: "telegram:303",
+    p2_user_key: "telegram:404",
+    preset_id: "classic",
+    winner_id: "p1",
+  });
+  db.matches.push({
+    id: "foreign-online-match",
+    replay_id: "foreign-replay",
+    user_key: "telegram:101",
+    mode: "online",
+    played_at: "2026-07-15T12:00:00.000Z",
+    result: "win",
+    opponent: "Must Not Leak Either",
+  });
+
+  const page = await listPlayerReplays(db, telegramUser("101"));
+
+  assert.deepEqual(page.items.map(({ id, replayId }) => [id, replayId]), [
+    ["legacy-online-match", null],
+    ["online:replay-00:p1", "replay-00"],
+  ]);
+  assert.equal(page.items[0].presetId, "salvo");
+  assert.equal(page.items[0].winnerId, "p2");
+});
+
 test("archive page size is fixed at twenty", async () => {
   const page = await listPlayerReplays(replayArchiveD1(25), telegramUser("101"), { limit: 5 });
 
   assert.equal(page.items.length, 20);
   assert.ok(page.nextCursor);
+});
+
+test("legacy archive pagination uses match ids to break equal timestamps", async () => {
+  const db = new ReplayD1();
+  for (let index = 0; index < 21; index += 1) {
+    db.matches.push({
+      id: `legacy-${String(index).padStart(2, "0")}`,
+      replay_id: null,
+      user_key: "telegram:101",
+      mode: "online",
+      preset_id: "classic",
+      winner_id: "p1",
+      played_at: "2026-07-11T12:00:00.000Z",
+      result: "win",
+      opponent: "Legacy Captain",
+    });
+  }
+
+  const first = await listPlayerReplays(db, telegramUser("101"));
+  const second = await listPlayerReplays(db, telegramUser("101"), { cursor: first.nextCursor });
+
+  assert.equal(first.items.length, 20);
+  assert.deepEqual(second.items.map((item) => item.id), ["legacy-00"]);
+  assert.equal(second.items[0].replayId, null);
+  assert.equal(second.nextCursor, null);
 });
 
 test("archive SQL excludes replays belonging only to another user", async () => {
@@ -165,7 +243,7 @@ test("archive SQL excludes replays belonging only to another user", async () => 
 
   const page = await listPlayerReplays(db, telegramUser("101"));
 
-  assert.deepEqual(page.items.map((item) => item.id), ["replay-00"]);
+  assert.deepEqual(page.items.map((item) => item.id), ["online:replay-00:p1"]);
 });
 
 test("archive output sanitizes legacy provider id opponents", async () => {
@@ -193,11 +271,12 @@ test("archive pagination starts from indexed player match rows", () => {
 
   assert.match(
     migration,
-    /matches\s*\(user_key, mode, played_at DESC, replay_id DESC\)/,
+    /matches\s*\(user_key, mode, played_at DESC, id DESC\)/,
   );
-  assert.match(replaySource, /FROM matches m\s+JOIN battle_replays r ON r\.id = m\.replay_id/);
+  assert.match(replaySource, /FROM matches m\s+LEFT JOIN battle_replays r ON r\.id = m\.replay_id/);
   assert.match(replaySource, /m\.user_key = \? AND m\.mode = 'online'/);
-  assert.match(replaySource, /ORDER BY m\.played_at DESC, m\.replay_id DESC/);
+  assert.match(replaySource, /m\.replay_id IS NULL OR \(r\.id IS NOT NULL/);
+  assert.match(replaySource, /ORDER BY m\.played_at DESC, m\.id DESC/);
 });
 
 test("real SQLite plans use the archive index and cursor tuple range", () => {
@@ -217,11 +296,11 @@ test("real SQLite plans use the archive index and cursor tuple range", () => {
         .all("telegram:101", "telegram:101", "telegram:101", "2026-07-11T12:00:00.000Z", "replay-1", 21);
       const firstDetails = firstPlan.map((row) => row.detail).join("\\n");
       const cursorDetails = cursorPlan.map((row) => row.detail).join("\\n");
-      assert.match(firstDetails, /matches_user_mode_played_replay_idx/);
-      assert.match(cursorDetails, /matches_user_mode_played_replay_idx/);
-      assert.match(cursorDetails, /\\(played_at,replay_id\\)<\\(\\?,\\?\\)/);
+      assert.match(firstDetails, /matches_user_mode_played_id_idx/);
+      assert.match(cursorDetails, /matches_user_mode_played_id_idx/);
+      assert.match(cursorDetails, /\\(played_at,id\\)<\\(\\?,\\?\\)/);
       assert.doesNotMatch(replayArchiveQueries.afterCursor, /\\? IS NULL/);
-      assert.match(replayArchiveQueries.afterCursor, /\\(m\\.played_at, m\\.replay_id\\) < \\(\\?, \\?\\)/);
+      assert.match(replayArchiveQueries.afterCursor, /\\(m\\.played_at, m\\.id\\) < \\(\\?, \\?\\)/);
     } finally {
       db.close();
     }
@@ -296,6 +375,8 @@ function replayArchiveD1(count) {
       replay_id: id,
       user_key: "telegram:101",
       mode: "online",
+      preset_id: "classic",
+      winner_id: "p1",
       played_at: finishedAt,
       result: "win",
       opponent: `Opponent ${index}`,
@@ -358,7 +439,7 @@ class ReplayStatement {
   }
 
   async all() {
-    if (!this.sql.includes("FROM matches m JOIN battle_replays r ON r.id = m.replay_id")) {
+    if (!this.sql.includes("FROM matches m LEFT JOIN battle_replays r ON r.id = m.replay_id")) {
       throw new Error(`Unsupported all SQL: ${this.sql}`);
     }
     const [userKey, p1UserKey, p2UserKey] = this.params;
@@ -366,23 +447,21 @@ class ReplayStatement {
     const cursorId = this.params.length === 6 ? this.params[4] : null;
     const limit = this.params.at(-1);
     let rows = this.db.matches
-      .filter((match) => match.user_key === userKey && match.mode === "online" && match.replay_id)
-      .map((match) => ({
-        ...this.db.replays.find((replay) => replay.id === match.replay_id),
-        ...match,
-        finished_at: match.played_at,
-      }))
-      .filter((row) => row.p1_user_key === p1UserKey || row.p2_user_key === p2UserKey);
+      .filter((match) => match.user_key === userKey && match.mode === "online")
+      .map((match) => ({ match, replay: this.db.replays.find((replay) => replay.id === match.replay_id) }))
+      .filter(({ match, replay }) =>
+        match.replay_id == null || (replay && (replay.p1_user_key === p1UserKey || replay.p2_user_key === p2UserKey)))
+      .map(({ match }) => ({ ...match, match_id: match.id, finished_at: match.played_at }));
     if (cursorFinishedAt) {
       rows = rows.filter(
         (row) =>
           row.finished_at < cursorFinishedAt ||
-          (row.finished_at === cursorFinishedAt && row.replay_id < cursorId),
+          (row.finished_at === cursorFinishedAt && row.match_id < cursorId),
       );
     }
     rows.sort(
       (first, second) =>
-        second.finished_at.localeCompare(first.finished_at) || second.replay_id.localeCompare(first.replay_id),
+        second.finished_at.localeCompare(first.finished_at) || second.match_id.localeCompare(first.match_id),
     );
     return { success: true, results: rows.slice(0, limit) };
   }

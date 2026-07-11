@@ -6,24 +6,24 @@ const playerIds = new Set(["p1", "p2"]);
 const shotResults = new Set(["miss", "hit", "sunk", "mine", "sweeper"]);
 
 export const replayArchiveQueries = Object.freeze({
-  firstPage: `SELECT m.replay_id, r.preset_id, r.winner_id, m.played_at AS finished_at,
+  firstPage: `SELECT m.id AS match_id, m.replay_id, m.preset_id, m.winner_id, m.played_at AS finished_at,
     m.result, m.opponent, m.total_shots, m.player_shots, m.player_hits,
     m.player_misses, m.player_sunk, m.accuracy, m.turns
   FROM matches m
-  JOIN battle_replays r ON r.id = m.replay_id
-  WHERE m.user_key = ? AND m.mode = 'online' AND m.replay_id IS NOT NULL
-    AND (r.p1_user_key = ? OR r.p2_user_key = ?)
-  ORDER BY m.played_at DESC, m.replay_id DESC
+  LEFT JOIN battle_replays r ON r.id = m.replay_id
+  WHERE m.user_key = ? AND m.mode = 'online'
+    AND (m.replay_id IS NULL OR (r.id IS NOT NULL AND (r.p1_user_key = ? OR r.p2_user_key = ?)))
+  ORDER BY m.played_at DESC, m.id DESC
   LIMIT ?`,
-  afterCursor: `SELECT m.replay_id, r.preset_id, r.winner_id, m.played_at AS finished_at,
+  afterCursor: `SELECT m.id AS match_id, m.replay_id, m.preset_id, m.winner_id, m.played_at AS finished_at,
     m.result, m.opponent, m.total_shots, m.player_shots, m.player_hits,
     m.player_misses, m.player_sunk, m.accuracy, m.turns
   FROM matches m
-  JOIN battle_replays r ON r.id = m.replay_id
-  WHERE m.user_key = ? AND m.mode = 'online' AND m.replay_id IS NOT NULL
-    AND (r.p1_user_key = ? OR r.p2_user_key = ?)
-    AND (m.played_at, m.replay_id) < (?, ?)
-  ORDER BY m.played_at DESC, m.replay_id DESC
+  LEFT JOIN battle_replays r ON r.id = m.replay_id
+  WHERE m.user_key = ? AND m.mode = 'online'
+    AND (m.replay_id IS NULL OR (r.id IS NOT NULL AND (r.p1_user_key = ? OR r.p2_user_key = ?)))
+    AND (m.played_at, m.id) < (?, ?)
+  ORDER BY m.played_at DESC, m.id DESC
   LIMIT ?`,
 });
 
@@ -166,7 +166,7 @@ export async function listPlayerReplays(db, user, { cursor } = {}) {
     items,
     nextCursor:
       (rows.results ?? []).length > pageLimit
-        ? encodeCursor({ finishedAt: last.finished_at, id: replayRowId(last) })
+        ? encodeCursor({ finishedAt: last.finished_at, id: last.match_id })
         : null,
   };
 }
@@ -190,7 +190,8 @@ function publicReplayLogEntry(entry) {
 
 function publicArchiveItem(row) {
   return {
-    id: replayRowId(row),
+    id: row.match_id,
+    replayId: row.replay_id || null,
     presetId: row.preset_id,
     winnerId: row.winner_id,
     finishedAt: row.finished_at,
@@ -204,10 +205,6 @@ function publicArchiveItem(row) {
     accuracy: number(row.accuracy),
     turns: number(row.turns),
   };
-}
-
-function replayRowId(row) {
-  return row.replay_id ?? row.id;
 }
 
 function validPlayer(player) {

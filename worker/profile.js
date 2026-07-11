@@ -564,23 +564,70 @@ async function onlineRatingRows(db, userKey) {
 }
 
 async function deterministicReplayRating(db, userKey, matchId, playedAt) {
-  const rows = await db
+  const targetPlayedAt = playedAt.toISOString();
+  const totals = await db
     .prepare(
-      `SELECT id, result, played_at
+      `SELECT COUNT(*) AS online_matches,
+        COALESCE(SUM(CASE WHEN result = 'win' THEN 1 ELSE 0 END), 0) AS online_wins,
+        COALESCE(SUM(CASE WHEN result = 'loss' THEN 1 ELSE 0 END), 0) AS online_losses,
+        MAX(CASE WHEN id = ? AND played_at = ? THEN result ELSE NULL END) AS target_result
       FROM matches
       WHERE user_key = ? AND mode = 'online'
-      ORDER BY played_at ASC, id ASC`,
+        AND (played_at, id) <= (?, ?)`,
     )
-    .bind(userKey)
-    .all();
-  const ordered = rows.results ?? [];
-  const index = ordered.findIndex((row) => row.id === matchId);
-  if (index < 0) {
+    .bind(matchId, targetPlayedAt, userKey, targetPlayedAt, matchId)
+    .first();
+  if (totals?.target_result !== "win" && totals?.target_result !== "loss") {
     throw new Error("Recorded online replay match is unavailable");
   }
-  const before = summarizeOnlineRating(ordered.slice(0, index), playedAt);
-  const after = summarizeOnlineRating(ordered.slice(0, index + 1), playedAt);
+  const afterWins = number(totals.online_wins);
+  const afterLosses = number(totals.online_losses);
+  const targetWon = totals.target_result === "win";
+  const before = summarizeRatingCounts(afterWins - (targetWon ? 1 : 0), afterLosses - (targetWon ? 0 : 1), 0);
+  const currentStreak = targetWon
+    ? await deterministicWinStreak(db, userKey, targetPlayedAt, matchId)
+    : 0;
+  const after = summarizeRatingCounts(afterWins, afterLosses, currentStreak);
   return ratingMovement(before, after);
+}
+
+async function deterministicWinStreak(db, userKey, targetPlayedAt, matchId) {
+  const latestLoss = await db
+    .prepare(
+      `SELECT played_at, id
+      FROM matches
+      WHERE user_key = ? AND mode = 'online' AND result = 'loss'
+        AND (played_at, id) <= (?, ?)
+      ORDER BY played_at DESC, id DESC
+      LIMIT 1`,
+    )
+    .bind(userKey, targetPlayedAt, matchId)
+    .first();
+  const streak = await db
+    .prepare(
+      `SELECT COUNT(*) AS current_streak
+      FROM matches
+      WHERE user_key = ? AND mode = 'online' AND result = 'win'
+        AND (played_at, id) > (?, ?)
+        AND (played_at, id) <= (?, ?)`,
+    )
+    .bind(userKey, latestLoss?.played_at ?? "", latestLoss?.id ?? "", targetPlayedAt, matchId)
+    .first();
+  return number(streak?.current_streak);
+}
+
+function summarizeRatingCounts(onlineWins, onlineLosses, currentOnlineWinStreak) {
+  const onlineMatches = onlineWins + onlineLosses;
+  const mmr = Math.max(0, ratingBase + onlineWins * ratingWinDelta + onlineLosses * ratingLossDelta);
+  return {
+    mmr,
+    label: ratingLabel(mmr, onlineMatches),
+    onlineMatches,
+    onlineWins,
+    onlineLosses,
+    onlineWinRate: onlineMatches === 0 ? 0 : Math.round((onlineWins / onlineMatches) * 100),
+    currentOnlineWinStreak,
+  };
 }
 
 function ratingMovement(before, after) {
