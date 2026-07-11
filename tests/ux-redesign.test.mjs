@@ -536,6 +536,49 @@ test("mobile setup controls use compact topbar and full-width actions", () => {
   assert.match(css, /\.setup-action-ready:not\(:disabled\)/);
 });
 
+test("private archive renders replay-enabled rows and complete request states", () => {
+  assert.match(app, /function renderReplayArchive\(\)/);
+  assert.match(app, /class="archive-list"/);
+  assert.match(app, /class="archive-row/);
+  assert.match(app, /data-action="archive-load-more"/);
+  assert.match(app, /data-action="archive-retry"/);
+  assert.match(app, /data-action="open-replay"/);
+  assert.match(app, /archive\.signInRequired/);
+  assert.match(app, /archive\.empty/);
+  assert.match(css, /\.archive-screen/);
+  assert.match(css, /\.archive-row/);
+});
+
+test("archived replay uses viewer perspective, two boards, and mobile board tabs", () => {
+  assert.match(app, /archivedReplayFrame\(replay, state\.resultReplayTurn\)/);
+  assert.match(app, /replay\.viewerPlayerId/);
+  assert.match(app, /class="archived-replay-boards"/);
+  assert.match(app, /class="replay-board-view[^\"]*is-own/);
+  assert.match(app, /class="replay-board-view[^\"]*is-opponent/);
+  assert.match(app, /data-action="replay-tab"/);
+  assert.match(app, /data-action="archived-replay-seek"/);
+  assert.match(app, /data-action="replay-copy-link"/);
+  assert.match(app, /aria-live="polite"/);
+  assert.match(css, /\.archived-replay-boards/);
+  assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.replay-board-view:not\(\.is-selected\)\s*\{[\s\S]*?display:\s*none;/);
+});
+
+test("archive replay controls remain touchable and do not force viewport overflow", () => {
+  assert.match(cssRule('.archived-replay-timeline input[type="range"]'), /min-height:\s*44px/);
+  assert.match(cssRule(".archive-screen"), /max-width:\s*100%/);
+  assert.match(cssRule(".archived-replay-screen"), /max-width:\s*100%/);
+  assert.doesNotMatch(cssRule(".archive-screen"), /100vw/);
+  assert.doesNotMatch(cssRule(".archived-replay-screen"), /100vw/);
+  assert.match(css, /\.archive-row-name[\s\S]*?overflow-wrap:\s*anywhere/);
+});
+
+test("archived replay playback preserves keyboard focus between rendered frames", () => {
+  assert.match(app, /function renderArchivedReplayFrame\(\)/);
+  assert.match(app, /\.archived-replay-screen \[data-action\]/);
+  assert.match(app, /focus\(\{ preventScroll: true \}\)/);
+  assert.match(app, /renderActiveReplayFrame\(\)[\s\S]*?renderArchivedReplayFrame\(\)/);
+});
+
 function combinedCssRule(...selectors) {
   const escapedSelectors = selectors.map((selector) =>
     selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),

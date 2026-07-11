@@ -179,6 +179,43 @@ test("i18n translates result modal, theme, and history labels in every language"
     "replay.position",
     "replay.announcement",
     "replay.empty",
+    "archive.open",
+    "archive.kicker",
+    "archive.title",
+    "archive.subtitle",
+    "archive.signInRequired",
+    "archive.signIn",
+    "archive.loading",
+    "archive.loadingMore",
+    "archive.empty",
+    "archive.unavailable",
+    "archive.network",
+    "archive.retry",
+    "archive.loadMore",
+    "archive.back",
+    "archive.watchReplay",
+    "archive.unknownOpponent",
+    "archive.opponent",
+    "archive.accuracy",
+    "archive.shots",
+    "archive.turns",
+    "replayArchive.title",
+    "replayArchive.signInRequired",
+    "replayArchive.loading",
+    "replayArchive.forbidden",
+    "replayArchive.notFound",
+    "replayArchive.unavailable",
+    "replayArchive.network",
+    "replayArchive.copied",
+    "replayArchive.copyFailed",
+    "replayArchive.copyLink",
+    "replayArchive.ownBoard",
+    "replayArchive.opponentBoard",
+    "replayArchive.captains",
+    "replayArchive.winner",
+    "replayArchive.preset",
+    "replayArchive.date",
+    "replayArchive.activeShot",
     "mode.training",
     "training.title",
     "training.subtitle",
@@ -284,6 +321,20 @@ test("replay range positions are announced as natural localized text", () => {
   assert.equal(t("en", "replay.position", { turn: 12, total: 47 }), "Move 12 of 47");
   assert.equal(t("ru", "replay.position", { turn: 12, total: 47 }), "Ход 12 из 47");
   assert.equal(t("zh-CN", "replay.position", { turn: 12, total: 47 }), "第 12 步，共 47 步");
+});
+
+test("private replay errors are distinct and localized in every language", () => {
+  for (const language of languages) {
+    const messages = [
+      t(language.code, "replayArchive.signInRequired"),
+      t(language.code, "replayArchive.forbidden"),
+      t(language.code, "replayArchive.notFound"),
+      t(language.code, "replayArchive.unavailable"),
+      t(language.code, "replayArchive.network"),
+    ];
+    assert.equal(new Set(messages).size, messages.length);
+    assert.ok(messages.every((message) => !message.startsWith("replayArchive.")));
+  }
 });
 
 test("i18n uses localized Wikipedia source URLs", () => {

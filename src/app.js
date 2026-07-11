@@ -17,11 +17,15 @@ import { visibleBattleLog } from "./core/log.js";
 import { gamePresets, getGamePreset } from "./core/presets.js";
 import {
   advanceReplayTurn,
+  archivedReplayFrame,
   createReplayClock,
   nextReplaySpeedIndex,
   normalizeReplayTurn,
+  replayIdFromSearch,
   replayMomentTurn,
+  replayRequestIsCurrent,
   replaySpeeds,
+  replayUrlForId,
   startReplayTurn,
 } from "./core/replay.js";
 import { battleMomentum, buildBattleReport, fleetIntel, summarizeBattleLog, targetIntel } from "./core/stats.js";
@@ -42,11 +46,13 @@ const root = document.querySelector("#app");
 const audio = createAudioController();
 const authTokenStorageKey = "salvo.authToken";
 const trainingProgressStorageKey = "salvo.trainingProgress";
+const canonicalReplayBaseUrl = "https://agent-axiom.github.io/agents-salvo/";
 const resultReplayClock = createReplayClock({
   setInterval: (callback, delay) => window.setInterval(callback, delay),
   clearInterval: (handle) => window.clearInterval(handle),
 });
 let telegramWidgetScheduled = false;
+const initialRequestedReplayId = replayIdFromSearch(window.location.search);
 
 const state = {
   language: getInitialLanguage(),
@@ -57,7 +63,7 @@ const state = {
   settingsOpen: false,
   profileOpen: false,
   leaderboardOpen: false,
-  screen: "menu",
+  screen: initialRequestedReplayId ? "replay" : "menu",
   mode: null,
   presetId: "classic",
   setupPlayerId: "p1",
@@ -96,6 +102,22 @@ const state = {
     data: null,
     loading: false,
     error: "",
+  },
+  archive: {
+    items: [],
+    nextCursor: "",
+    loading: false,
+    error: "",
+    requestId: 0,
+  },
+  replayArchive: {
+    requestedId: initialRequestedReplayId,
+    data: null,
+    loading: false,
+    error: "",
+    tab: "own",
+    copyStatus: "",
+    requestId: 0,
   },
   online: {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
@@ -417,6 +439,12 @@ function renderAuthAvatar(user) {
 }
 
 function renderScreen() {
+  if (state.screen === "archive") {
+    return renderReplayArchive();
+  }
+  if (state.screen === "replay") {
+    return renderArchivedReplay();
+  }
   if (state.screen === "setup") {
     return renderSetup();
   }
@@ -484,6 +512,257 @@ function renderMenu() {
       </figure>
     </section>
   `;
+}
+
+function renderReplayArchive() {
+  const items = state.archive.items;
+  return `
+    <section class="archive-screen">
+      <header class="archive-header">
+        <div>
+          <span>${translate("archive.kicker")}</span>
+          <h2>${translate("archive.title")}</h2>
+          <p>${translate("archive.subtitle")}</p>
+        </div>
+        <button class="ghost-button" data-action="menu">${translate("nav.mainMenu")}</button>
+      </header>
+      ${
+        !state.auth.user
+          ? `<div class="archive-state" role="status">
+              <p>${translate("archive.signInRequired")}</p>
+              <button class="primary-button" data-action="toggle-settings">${translate("archive.signIn")}</button>
+            </div>`
+          : ""
+      }
+      ${state.archive.loading && !items.length ? `<p class="archive-state" role="status">${translate("archive.loading")}</p>` : ""}
+      ${
+        state.auth.user && state.archive.error
+          ? `<div class="archive-state is-error" role="alert">
+              <p>${translate(state.archive.error)}</p>
+              <button data-action="archive-retry">${translate("archive.retry")}</button>
+            </div>`
+          : ""
+      }
+      ${
+        state.auth.user && !state.archive.loading && !state.archive.error && !items.length
+          ? `<p class="archive-state">${translate("archive.empty")}</p>`
+          : ""
+      }
+      ${
+        items.length
+          ? `<ol class="archive-list">
+              ${items.map(renderArchiveRow).join("")}
+            </ol>`
+          : ""
+      }
+      ${
+        state.archive.nextCursor
+          ? `<button class="archive-load-more" data-action="archive-load-more" ${state.archive.loading ? "disabled" : ""}>${translate(
+              state.archive.loading ? "archive.loadingMore" : "archive.loadMore",
+            )}</button>`
+          : ""
+      }
+      ${state.archive.loading && items.length ? `<p class="archive-page-status" role="status">${translate("archive.loadingMore")}</p>` : ""}
+    </section>
+  `;
+}
+
+function renderArchiveRow(item) {
+  const opponent =
+    typeof item.opponent === "string" && item.opponent !== "online"
+      ? item.opponent
+      : translate("archive.unknownOpponent");
+  return `
+    <li class="archive-row is-${item.result === "win" ? "win" : "loss"}">
+      <button data-action="open-replay" data-replay-id="${escapeHtml(item.id)}" aria-label="${translate("archive.watchReplay")}">
+        <span class="archive-row-result">${translate(`profile.result.${item.result}`)}</span>
+        <span class="archive-row-opponent">
+          <small>${translate("archive.opponent")}</small>
+          <strong class="archive-row-name">${escapeHtml(opponent)}</strong>
+        </span>
+        <span class="archive-row-battle">
+          <strong>${archivedPresetName(item.presetId)}</strong>
+          <small>${formatReplayDate(item.finishedAt)}</small>
+        </span>
+        <span class="archive-row-stat">
+          <small>${translate("archive.accuracy")}</small>
+          <strong>${Number(item.accuracy) || 0}%</strong>
+        </span>
+        <span class="archive-row-stat">
+          <small>${translate("archive.shots")}</small>
+          <strong>${Number(item.playerHits) || 0}/${Number(item.playerShots) || 0}</strong>
+        </span>
+        <span class="archive-row-play" aria-hidden="true">▶</span>
+      </button>
+    </li>
+  `;
+}
+
+function renderArchivedReplay() {
+  return `
+    <section class="archived-replay-screen">
+      <header class="archived-replay-header">
+        <button class="ghost-button" data-action="replay-back">${translate("archive.back")}</button>
+        <button class="ghost-button" data-action="menu">${translate("nav.mainMenu")}</button>
+      </header>
+      ${
+        !state.auth.user
+          ? `<div class="replay-archive-state" role="status">
+              <h2>${translate("replayArchive.title")}</h2>
+              <p>${translate("replayArchive.signInRequired")}</p>
+              <button class="primary-button" data-action="toggle-settings">${translate("archive.signIn")}</button>
+            </div>`
+          : ""
+      }
+      ${state.replayArchive.loading ? `<p class="replay-archive-state" role="status">${translate("replayArchive.loading")}</p>` : ""}
+      ${
+        state.auth.user && state.replayArchive.error
+          ? `<div class="replay-archive-state is-error" role="alert">
+              <p>${translate(state.replayArchive.error)}</p>
+              <button data-action="replay-retry">${translate("archive.retry")}</button>
+            </div>`
+          : ""
+      }
+      ${state.auth.user && state.replayArchive.data ? `<div class="archived-replay-content">${renderArchivedReplayContent()}</div>` : ""}
+    </section>
+  `;
+}
+
+function renderArchivedReplayContent() {
+  const replay = state.replayArchive.data;
+  const frame = archivedReplayFrame(replay, state.resultReplayTurn);
+  const viewerPlayerId = replay.viewerPlayerId;
+  if (!frame.totalTurns || (viewerPlayerId !== "p1" && viewerPlayerId !== "p2")) {
+    return `<div class="replay-archive-state is-error" role="alert"><p>${translate("replayArchive.unavailable")}</p></div>`;
+  }
+  const opponentPlayerId = viewerPlayerId === "p1" ? "p2" : "p1";
+  const ownName = archivedCaptainName(replay.players?.[viewerPlayerId]);
+  const opponentName = archivedCaptainName(replay.players?.[opponentPlayerId]);
+  const winnerName = archivedCaptainName(replay.players?.[replay.winnerId]);
+  const entry = frame.activeEntry;
+  const replaySpeed = currentResultReplaySpeed();
+  const report = buildBattleReport(replay.log, replay.winnerId, viewerPlayerId);
+  const ownSelected = state.replayArchive.tab === "own";
+  const activeAnnouncement = entry
+    ? translate("replayArchive.activeShot", {
+        turn: frame.turn,
+        total: frame.totalTurns,
+        captain: archivedCaptainName(replay.players?.[entry.playerId]),
+        result: translate(`shot.${entry.result}`),
+        coordinate: formatCoordinate(entry.coordinate),
+      })
+    : "";
+  return `
+    <div class="archived-replay-summary">
+      <div>
+        <span>${translate("replayArchive.title")}</span>
+        <h2>${ownName} <i aria-hidden="true">/</i> ${opponentName}</h2>
+        <p>${translate("replayArchive.winner", { captain: winnerName })}</p>
+      </div>
+      <dl class="archived-replay-meta">
+        <div><dt>${translate("replayArchive.preset")}</dt><dd>${archivedPresetName(replay.presetId)}</dd></div>
+        <div><dt>${translate("replayArchive.date")}</dt><dd>${formatReplayDate(replay.finishedAt)}</dd></div>
+        <div><dt>${translate("replay.timeline")}</dt><dd>${translate("replay.move", { turn: frame.turn, total: frame.totalTurns })}</dd></div>
+      </dl>
+      <button data-action="replay-copy-link">${translate("replayArchive.copyLink")}</button>
+    </div>
+    ${
+      state.replayArchive.copyStatus
+        ? `<p class="replay-copy-status ${state.replayArchive.copyStatus === "error" ? "is-error" : ""}" role="status">${translate(
+            state.replayArchive.copyStatus === "copied" ? "replayArchive.copied" : "replayArchive.copyFailed",
+          )}</p>`
+        : ""
+    }
+    <div class="archived-replay-tabs" role="tablist" aria-label="${translate("replayArchive.captains")}">
+      <button data-action="replay-tab" data-tab="own" role="tab" aria-selected="${ownSelected}" class="${ownSelected ? "is-selected" : ""}">${translate("replayArchive.ownBoard")}</button>
+      <button data-action="replay-tab" data-tab="opponent" role="tab" aria-selected="${!ownSelected}" class="${!ownSelected ? "is-selected" : ""}">${translate("replayArchive.opponentBoard")}</button>
+    </div>
+    <div class="archived-replay-boards">
+      <div class="replay-board-view is-own ${ownSelected ? "is-selected" : ""}">
+        ${renderBoard(frame.boards[viewerPlayerId], {
+          kind: "own",
+          title: `${translate("replayArchive.ownBoard")} · ${ownName}`,
+          disabled: true,
+          highlightCoordinate: frame.activeTargetPlayerId === viewerPlayerId ? frame.activeCoordinate : null,
+        })}
+      </div>
+      <div class="replay-board-view is-opponent ${!ownSelected ? "is-selected" : ""}">
+        ${renderBoard(frame.boards[opponentPlayerId], {
+          kind: "own",
+          title: `${translate("replayArchive.opponentBoard")} · ${opponentName}`,
+          disabled: true,
+          highlightCoordinate: frame.activeTargetPlayerId === opponentPlayerId ? frame.activeCoordinate : null,
+        })}
+      </div>
+    </div>
+    <section class="archived-replay-timeline" aria-label="${translate("replay.timeline")}">
+      <p class="archived-replay-live" aria-live="polite" aria-atomic="true">${activeAnnouncement}</p>
+      <label>
+        <span>${translate("replay.timeline")}</span>
+        <input
+          data-action="archived-replay-seek"
+          type="range"
+          min="1"
+          max="${frame.totalTurns}"
+          step="1"
+          value="${frame.turn}"
+          aria-label="${translate("replay.seek")}"
+          aria-valuetext="${translate("replay.position", { turn: frame.turn, total: frame.totalTurns })}"
+        >
+      </label>
+      ${renderArchivedReplayMoments(report.moments?.items ?? [], frame.totalTurns, frame.turn)}
+      <div class="archived-replay-controls">
+        <button class="primary-button" data-action="archived-replay-toggle-play">
+          <span aria-hidden="true">${state.resultReplayPlaying ? "Ⅱ" : "▶"}</span>
+          ${translate(state.resultReplayPlaying ? "replay.pause" : "replay.play")}
+        </button>
+        <button data-action="archived-replay-speed" aria-label="${translate("replay.speed", { speed: replaySpeed.label })}">${replaySpeed.label}</button>
+        <button data-action="archived-replay-prev" ${frame.turn <= 1 ? "disabled" : ""}>← ${translate("replay.previous")}</button>
+        <button data-action="archived-replay-next" ${frame.turn >= frame.totalTurns ? "disabled" : ""}>${translate("replay.next")} →</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderArchivedReplayMoments(moments, totalTurns, activeTurn) {
+  const controls = moments
+    .map((moment) => {
+      const turn = replayMomentTurn(moment, totalTurns);
+      if (!turn) return "";
+      return `<button
+        data-action="archived-replay-jump"
+        data-turn="${turn}"
+        class="${turn === activeTurn ? "is-selected" : ""}"
+        ${turn === activeTurn ? 'aria-current="step"' : ""}
+      >
+        <span>${translate(`moments.${moment.id}`)}</span>
+        <small>${translate("moments.turn", { turn })}</small>
+      </button>`;
+    })
+    .filter(Boolean)
+    .join("");
+  return controls ? `<div class="archived-replay-moments">${controls}</div>` : "";
+}
+
+function archivedCaptainName(captain) {
+  const name = typeof captain?.name === "string" ? captain.name.trim() : "";
+  if (name) return escapeHtml(name);
+  const username = typeof captain?.username === "string" ? captain.username.trim() : "";
+  return username ? `@${escapeHtml(username)}` : translate("archive.unknownOpponent");
+}
+
+function archivedPresetName(presetId) {
+  return Object.hasOwn(gamePresets, presetId) ? translate(`preset.${presetId}.name`) : "—";
+}
+
+function formatReplayDate(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "—";
+  try {
+    return new Intl.DateTimeFormat(state.language, { dateStyle: "medium", timeStyle: "short" }).format(date);
+  } catch {
+    return date.toISOString().slice(0, 16).replace("T", " ");
+  }
 }
 
 function renderLeaderboardPanel() {
@@ -556,6 +835,10 @@ function renderProfilePanel() {
       ${state.profile.loading ? `<p class="status-line">${translate("auth.loading")}</p>` : ""}
       ${state.profile.error ? `<p class="error-line">${escapeHtml(state.profile.error)}</p>` : ""}
       ${state.profile.saveMessage ? `<p class="status-line">${escapeHtml(state.profile.saveMessage)}</p>` : ""}
+      <button class="profile-archive-button" data-action="open-archive">
+        <span aria-hidden="true">↺</span>
+        <strong>${translate("archive.open")}</strong>
+      </button>
       ${
         summary && summary.totalMatches > 0
           ? `
@@ -705,10 +988,21 @@ function renderRecentMatches(matches) {
               ${matches
                 .map(
                   (match) => `
-                    <li>
+                    <li class="${match.replayId ? "has-replay" : ""}">
                       <strong>${translate(`profile.result.${match.result}`)}</strong>
                       <span>${translate(`mode.${match.mode}`)} · ${translate(`preset.${match.presetId}.name`)}</span>
                       <small>${match.playerShots} / ${match.accuracy}%</small>
+                      ${
+                        match.replayId
+                          ? `<button
+                              class="icon-button recent-replay-button"
+                              data-action="open-replay"
+                              data-replay-id="${escapeHtml(match.replayId)}"
+                              aria-label="${translate("archive.watchReplay")}"
+                              title="${translate("archive.watchReplay")}"
+                            >▶</button>`
+                          : ""
+                      }
                     </li>
                   `,
                 )
@@ -1957,6 +2251,9 @@ root.addEventListener("change", (event) => {
   if (action === "result-replay-seek") {
     setResultReplayTurn(event.target.value);
   }
+  if (action === "archived-replay-seek") {
+    setResultReplayTurn(event.target.value);
+  }
 });
 
 root.addEventListener("input", (event) => {
@@ -2091,6 +2388,19 @@ root.addEventListener("click", async (event) => {
   if (action === "result-replay-prev") changeResultReplayTurn(-1);
   if (action === "result-replay-next") changeResultReplayTurn(1);
   if (action === "result-replay-jump") setResultReplayTurn(button.dataset.turn);
+  if (action === "open-archive") await openReplayArchive();
+  if (action === "archive-retry") await loadReplayArchive();
+  if (action === "archive-load-more") await loadReplayArchive({ append: true });
+  if (action === "open-replay") await openArchivedReplay(button.dataset.replayId);
+  if (action === "replay-retry") await loadArchivedReplay(state.replayArchive.requestedId);
+  if (action === "replay-copy-link") await copyArchivedReplayLink();
+  if (action === "replay-back") await openReplayArchive();
+  if (action === "replay-tab") selectArchivedReplayTab(button.dataset.tab);
+  if (action === "archived-replay-toggle-play") toggleResultReplayPlayback();
+  if (action === "archived-replay-speed") cycleResultReplaySpeed();
+  if (action === "archived-replay-prev") changeResultReplayTurn(-1);
+  if (action === "archived-replay-next") changeResultReplayTurn(1);
+  if (action === "archived-replay-jump") setResultReplayTurn(button.dataset.turn);
   if (action === "select-setup-ship") selectSetupShip(button.dataset.shipId);
   if (action === "rotate-setup") rotateSetupOrientation();
   if (action === "randomize") randomizeSetup();
@@ -2207,7 +2517,7 @@ function startTraining(scenarioId = state.training.scenarioId) {
   render();
 }
 
-function goToMenu() {
+function goToMenu({ updateHistory = true } = {}) {
   closeRemote();
   state.settingsOpen = false;
   state.profileOpen = false;
@@ -2221,6 +2531,117 @@ function goToMenu() {
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
   resetResultReplayPlayback();
+  state.replayArchive.requestedId = "";
+  state.replayArchive.data = null;
+  state.replayArchive.loading = false;
+  state.replayArchive.error = "";
+  state.replayArchive.copyStatus = "";
+  state.archive.requestId += 1;
+  state.replayArchive.requestId += 1;
+  if (updateHistory) {
+    updateReplayHistory("", "push", "menu");
+  }
+  render();
+}
+
+async function openReplayArchive() {
+  resetResultReplayPlayback();
+  state.settingsOpen = false;
+  state.profileOpen = false;
+  state.leaderboardOpen = false;
+  state.screen = "archive";
+  state.replayArchive.requestedId = "";
+  state.replayArchive.data = null;
+  state.replayArchive.loading = false;
+  state.replayArchive.error = "";
+  state.replayArchive.copyStatus = "";
+  state.replayArchive.requestId += 1;
+  updateReplayHistory("", "push", "archive");
+  await loadReplayArchive();
+}
+
+async function openArchivedReplay(id) {
+  const replayId = replayIdFromSearch(`?replay=${encodeURIComponent(id || "")}`);
+  if (!replayId) {
+    return;
+  }
+  resetResultReplayPlayback();
+  state.settingsOpen = false;
+  state.profileOpen = false;
+  state.leaderboardOpen = false;
+  state.screen = "replay";
+  state.replayArchive.requestedId = replayId;
+  state.replayArchive.data = null;
+  state.replayArchive.error = "";
+  state.replayArchive.tab = "own";
+  state.replayArchive.copyStatus = "";
+  state.archive.requestId += 1;
+  state.archive.loading = false;
+  updateReplayHistory(replayId, "push", "replay");
+  await loadArchivedReplay(replayId);
+}
+
+function updateReplayHistory(replayId, mode, screen) {
+  let url;
+  if (replayId) {
+    url = replayUrlForId(window.location.href, replayId);
+  } else {
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.delete("replay");
+    nextUrl.hash = "";
+    url = nextUrl.toString();
+  }
+  if (mode === "replace") {
+    window.history.replaceState({ screen }, "", url);
+    return;
+  }
+  window.history.pushState({ screen }, "", url);
+}
+
+async function handleReplayPopState(event) {
+  const replayId = replayIdFromSearch(window.location.search);
+  resetResultReplayPlayback();
+  if (replayId) {
+    state.screen = "replay";
+    state.replayArchive.requestedId = replayId;
+    state.replayArchive.data = null;
+    state.replayArchive.error = "";
+    await loadArchivedReplay(replayId);
+    return;
+  }
+  if (event.state?.screen === "archive") {
+    state.screen = "archive";
+    state.replayArchive.requestedId = "";
+    state.replayArchive.data = null;
+    await loadReplayArchive();
+    return;
+  }
+  goToMenu({ updateHistory: false });
+}
+
+function selectArchivedReplayTab(tab) {
+  if (tab !== "own" && tab !== "opponent") {
+    return;
+  }
+  state.replayArchive.tab = tab;
+  render();
+}
+
+async function copyArchivedReplayLink() {
+  const replayId = state.replayArchive.requestedId;
+  const url = replayUrlForId(canonicalReplayBaseUrl, replayId);
+  if (!url) {
+    return;
+  }
+  try {
+    if (!navigator.clipboard?.writeText) {
+      throw new Error("Clipboard is unavailable");
+    }
+    await navigator.clipboard.writeText(url);
+    state.replayArchive.copyStatus = "copied";
+  } catch {
+    state.replayArchive.copyStatus = "error";
+  }
   render();
 }
 
@@ -2327,25 +2748,25 @@ function closeResultModal() {
 
 function setResultReplayTurn(turn) {
   stopResultReplayPlayback();
-  const context = currentBattleResultContext();
-  if (!context?.log?.length) {
+  const entries = activeReplayEntries();
+  if (!entries.length) {
     return;
   }
   const selectedTurn = Number.parseInt(turn, 10);
   if (!Number.isInteger(selectedTurn)) {
     return;
   }
-  state.resultReplayTurn = normalizeReplayTurn(selectedTurn, context.log.length);
-  renderResultReplayFrame();
+  state.resultReplayTurn = normalizeReplayTurn(selectedTurn, entries.length);
+  renderActiveReplayFrame();
 }
 
 function changeResultReplayTurn(delta) {
-  const context = currentBattleResultContext();
-  if (!context?.log?.length) {
+  const entries = activeReplayEntries();
+  if (!entries.length) {
     return;
   }
-  const currentTurn = normalizedReplayTurn(context.log.length);
-  const nextTurn = Math.min(Math.max(currentTurn + delta, 1), context.log.length);
+  const currentTurn = normalizedReplayTurn(entries.length);
+  const nextTurn = Math.min(Math.max(currentTurn + delta, 1), entries.length);
   setResultReplayTurn(nextTurn);
 }
 
@@ -2362,6 +2783,44 @@ function resetResultReplayPlayback() {
   stopResultReplayPlayback();
   state.resultReplayTurn = null;
   state.resultReplaySpeedIndex = 0;
+}
+
+function activeReplayEntries() {
+  if (state.screen === "replay") {
+    return Array.isArray(state.replayArchive.data?.log) ? state.replayArchive.data.log : [];
+  }
+  const context = currentBattleResultContext();
+  return Array.isArray(context?.log) ? context.log : [];
+}
+
+function renderActiveReplayFrame() {
+  if (state.screen === "replay") {
+    renderArchivedReplayFrame();
+    return;
+  }
+  renderResultReplayFrame();
+}
+
+function renderArchivedReplayFrame() {
+  const focusedControl = document.activeElement?.closest(".archived-replay-screen [data-action]");
+  const activeAction = focusedControl?.dataset.action;
+  const activeTurn = focusedControl?.dataset.turn;
+  const activeTab = focusedControl?.dataset.tab;
+  render();
+  if (!activeAction) {
+    return;
+  }
+
+  const controls = [...root.querySelectorAll(`.archived-replay-screen [data-action="${activeAction}"]`)];
+  const matchingControl = controls.find(
+    (control) =>
+      (!activeTurn || control.dataset.turn === activeTurn) &&
+      (!activeTab || control.dataset.tab === activeTab),
+  );
+  const focusTarget = matchingControl?.disabled
+    ? root.querySelector('[data-action="archived-replay-toggle-play"]')
+    : matchingControl;
+  focusTarget?.focus({ preventScroll: true });
 }
 
 function renderResultReplayFrame() {
@@ -2411,37 +2870,37 @@ function scheduleResultReplayTimer() {
 }
 
 function startResultReplayPlayback() {
-  const context = currentBattleResultContext();
-  if (!context?.log?.length) {
+  const entries = activeReplayEntries();
+  if (!entries.length) {
     return;
   }
-  state.resultReplayTurn = startReplayTurn(state.resultReplayTurn, context.log.length);
+  state.resultReplayTurn = startReplayTurn(state.resultReplayTurn, entries.length);
   state.resultReplayPlaying = true;
   scheduleResultReplayTimer();
-  renderResultReplayFrame();
+  renderActiveReplayFrame();
 }
 
 function toggleResultReplayPlayback() {
   if (state.resultReplayPlaying) {
     stopResultReplayPlayback();
-    renderResultReplayFrame();
+    renderActiveReplayFrame();
     return;
   }
   startResultReplayPlayback();
 }
 
 function advanceResultReplayPlayback() {
-  const context = currentBattleResultContext();
-  if (!context?.log?.length) {
+  const entries = activeReplayEntries();
+  if (!entries.length) {
     stopResultReplayPlayback();
     return;
   }
-  const frame = advanceReplayTurn(state.resultReplayTurn, context.log.length);
+  const frame = advanceReplayTurn(state.resultReplayTurn, entries.length);
   state.resultReplayTurn = frame.turn;
   if (frame.complete) {
     stopResultReplayPlayback();
   }
-  renderResultReplayFrame();
+  renderActiveReplayFrame();
 }
 
 function cycleResultReplaySpeed() {
@@ -2449,7 +2908,7 @@ function cycleResultReplaySpeed() {
   if (state.resultReplayPlaying) {
     scheduleResultReplayTimer();
   }
-  renderResultReplayFrame();
+  renderActiveReplayFrame();
 }
 
 function selectSetupShip(shipId) {
@@ -2872,6 +3331,223 @@ function isTelegramLoginOriginAllowed() {
   return !["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
 }
 
+async function loadReplayArchive({ append = false } = {}) {
+  state.screen = "archive";
+  if (!state.auth.token || !state.auth.user || !state.auth.workerUrl) {
+    state.archive.loading = false;
+    state.archive.error = "archive.signInRequired";
+    render();
+    return;
+  }
+  if (append && !state.archive.nextCursor) {
+    return;
+  }
+
+  state.archive.loading = true;
+  state.archive.error = "";
+  state.archive.requestId += 1;
+  const request = {
+    token: state.auth.token,
+    requestId: state.archive.requestId,
+    replayId: "",
+  };
+  if (!append) {
+    state.archive.items = [];
+    state.archive.nextCursor = "";
+  }
+  render();
+
+  try {
+    const url = new URL(`${state.auth.workerUrl}/profile/replays`);
+    if (append) {
+      url.searchParams.set("cursor", state.archive.nextCursor);
+    }
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${state.auth.token}` },
+    });
+    const payload = await readReplayJson(response);
+    if (!replayRequestIsCurrent(request, currentArchiveRequest())) {
+      return;
+    }
+    if (!payload.archive || !Array.isArray(payload.archive.items)) {
+      throw replayUnavailableError();
+    }
+    const items = payload.archive.items;
+    state.archive.items = append ? uniqueArchiveItems([...state.archive.items, ...items]) : items;
+    state.archive.nextCursor = payload.archive?.nextCursor || "";
+  } catch (error) {
+    if (!replayRequestIsCurrent(request, currentArchiveRequest())) {
+      return;
+    }
+    if (error.status === 401) {
+      expireReplayAuthentication();
+    }
+    state.archive.error = replayRequestErrorKey(error, "archive");
+  } finally {
+    if (replayRequestIsCurrent(request, currentArchiveRequest())) {
+      state.archive.loading = false;
+    }
+    render();
+  }
+}
+
+async function loadArchivedReplay(id) {
+  const replayId = replayIdFromSearch(`?replay=${encodeURIComponent(id || "")}`);
+  if (!replayId) {
+    state.replayArchive.error = "replayArchive.notFound";
+    render();
+    return;
+  }
+  if (state.replayArchive.requestedId !== replayId) {
+    resetResultReplayPlayback();
+  }
+  state.screen = "replay";
+  state.replayArchive.requestedId = replayId;
+  state.replayArchive.copyStatus = "";
+  if (!state.auth.token || !state.auth.user || !state.auth.workerUrl) {
+    state.replayArchive.loading = false;
+    state.replayArchive.data = null;
+    state.replayArchive.error = "replayArchive.signInRequired";
+    render();
+    return;
+  }
+
+  resetResultReplayPlayback();
+  state.replayArchive.loading = true;
+  state.replayArchive.data = null;
+  state.replayArchive.error = "";
+  state.replayArchive.requestId += 1;
+  const request = {
+    token: state.auth.token,
+    requestId: state.replayArchive.requestId,
+    replayId,
+  };
+  render();
+  try {
+    const response = await fetch(`${state.auth.workerUrl}/replays/${encodeURIComponent(id)}`, {
+      headers: { Authorization: `Bearer ${state.auth.token}` },
+    });
+    const payload = await readReplayJson(response);
+    if (!replayRequestIsCurrent(request, currentArchivedReplayRequest())) {
+      return;
+    }
+    if (payload.replay?.id !== replayId) {
+      throw replayUnavailableError();
+    }
+    state.replayArchive.data = payload.replay;
+  } catch (error) {
+    if (!replayRequestIsCurrent(request, currentArchivedReplayRequest())) {
+      return;
+    }
+    if (error.status === 401) {
+      expireReplayAuthentication();
+    }
+    state.replayArchive.error = replayRequestErrorKey(error, "replayArchive");
+  } finally {
+    if (replayRequestIsCurrent(request, currentArchivedReplayRequest())) {
+      state.replayArchive.loading = false;
+    }
+    render();
+  }
+}
+
+function currentArchiveRequest() {
+  return {
+    token: state.auth.token,
+    requestId: state.archive.requestId,
+    replayId: "",
+  };
+}
+
+function currentArchivedReplayRequest() {
+  return {
+    token: state.auth.token,
+    requestId: state.replayArchive.requestId,
+    replayId: state.replayArchive.requestedId,
+  };
+}
+
+async function resumeRequestedReplay() {
+  if (!state.auth.user || !state.auth.token) {
+    return;
+  }
+  if (state.replayArchive.requestedId) {
+    await loadArchivedReplay(state.replayArchive.requestedId);
+    return;
+  }
+  if (state.screen === "archive") {
+    await loadReplayArchive();
+  }
+}
+
+function uniqueArchiveItems(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    if (!item?.id || seen.has(item.id)) {
+      return false;
+    }
+    seen.add(item.id);
+    return true;
+  });
+}
+
+async function readReplayJson(response) {
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(payload.error || `HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+function replayUnavailableError() {
+  const error = new Error("Replay response is unavailable");
+  error.status = 503;
+  return error;
+}
+
+function replayRequestErrorKey(error, scope) {
+  if (error?.status === 401) return `${scope}.signInRequired`;
+  if (error?.status === 403) return "replayArchive.forbidden";
+  if (error?.status === 404) return "replayArchive.notFound";
+  if (!error?.status) return `${scope}.network`;
+  return `${scope}.unavailable`;
+}
+
+function expireReplayAuthentication() {
+  resetResultReplayPlayback();
+  state.auth.token = "";
+  state.auth.user = null;
+  resetProfile();
+  clearPrivateReplayData({ preserveRequestedId: true });
+  localStorage.removeItem(authTokenStorageKey);
+}
+
+function clearPrivateReplayData({ preserveRequestedId = false } = {}) {
+  const requestedId = preserveRequestedId ? state.replayArchive.requestedId : "";
+  state.archive.items = [];
+  state.archive.nextCursor = "";
+  state.archive.loading = false;
+  state.archive.error = "";
+  state.archive.requestId += 1;
+  state.replayArchive.requestedId = requestedId;
+  state.replayArchive.data = null;
+  state.replayArchive.loading = false;
+  state.replayArchive.error = "";
+  state.replayArchive.copyStatus = "";
+  state.replayArchive.requestId += 1;
+}
+
+function resetReplayForIdentityChange(nextUser) {
+  const currentIdentity = state.auth.user ? `${state.auth.user.provider}:${state.auth.user.id}` : "";
+  const nextIdentity = nextUser ? `${nextUser.provider}:${nextUser.id}` : "";
+  if (currentIdentity !== nextIdentity) {
+    resetResultReplayPlayback();
+    clearPrivateReplayData({ preserveRequestedId: true });
+  }
+}
+
 async function handleTelegramAuth(payload) {
   await withAuthError(async () => {
     const response = await fetch(`${state.auth.workerUrl}/auth/telegram`, {
@@ -2880,10 +3556,12 @@ async function handleTelegramAuth(payload) {
       body: JSON.stringify(payload),
     });
     const authPayload = await readAuthJson(response);
+    resetReplayForIdentityChange(authPayload.user);
     state.auth.token = authPayload.token;
     state.auth.user = authPayload.user;
     localStorage.setItem(authTokenStorageKey, state.auth.token);
     await refreshProfile({ renderWhenDone: false });
+    await resumeRequestedReplay();
   });
 }
 
@@ -2896,6 +3574,7 @@ async function refreshAuth() {
       headers: { Authorization: `Bearer ${state.auth.token}` },
     });
     const payload = await readAuthJson(response);
+    resetReplayForIdentityChange(payload.user);
     state.auth.user = payload.user;
     if (!payload.user) {
       state.auth.token = "";
@@ -2903,6 +3582,7 @@ async function refreshAuth() {
       resetProfile();
     } else {
       await refreshProfile({ renderWhenDone: false });
+      await resumeRequestedReplay();
     }
   });
 }
@@ -2918,6 +3598,8 @@ async function logoutAuth() {
     state.auth.token = "";
     state.auth.user = null;
     resetProfile();
+    clearPrivateReplayData({ preserveRequestedId: true });
+    resetResultReplayPlayback();
     localStorage.removeItem(authTokenStorageKey);
   });
 }
@@ -3021,6 +3703,8 @@ async function withAuthError(action) {
     state.auth.token = "";
     state.auth.user = null;
     resetProfile();
+    clearPrivateReplayData({ preserveRequestedId: true });
+    resetResultReplayPlayback();
     localStorage.removeItem(authTokenStorageKey);
   } finally {
     state.auth.loading = false;
@@ -3560,6 +4244,14 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+window.addEventListener("popstate", (event) => {
+  void handleReplayPopState(event);
+});
+
+if (new URLSearchParams(window.location.search).has("replay") && !initialRequestedReplayId) {
+  updateReplayHistory("", "replace", "menu");
 }
 
 render();

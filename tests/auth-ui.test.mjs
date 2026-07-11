@@ -59,3 +59,25 @@ test("online room actions require a registered Telegram player in the UI", () =>
   assert.match(app, /data-action="online-join"[^>]*\$\{onlineDisabled\}/);
   assert.match(app, /if \(!isOnlineAuthReady\(\)\) \{\s*state\.online\.error = translate\("online\.authRequired"\);/s);
 });
+
+test("private replay archive state uses authenticated participant endpoints", () => {
+  assert.match(app, /archive:\s*\{\s*items:\s*\[\],\s*nextCursor:\s*"",\s*loading:\s*false,\s*error:\s*""/s);
+  assert.match(app, /replayArchive:\s*\{\s*requestedId:/s);
+  assert.match(app, /function loadReplayArchive\(\{ append = false \} = \{\}\)/);
+  assert.match(app, /\/profile\/replays/);
+  assert.match(app, /function loadArchivedReplay\(id\)/);
+  assert.match(app, /\/replays\/\$\{encodeURIComponent\(id\)\}/);
+  assert.match(app, /Authorization:\s*`Bearer \$\{state\.auth\.token\}`/);
+});
+
+test("replay deep links survive auth restoration and use browser history", () => {
+  assert.match(app, /replayIdFromSearch\(window\.location\.search\)/);
+  assert.match(app, /window\.history\.pushState/);
+  assert.match(app, /window\.history\.replaceState/);
+  assert.match(app, /window\.addEventListener\("popstate"/);
+  assert.match(app, /resumeRequestedReplay/);
+  assert.match(app, /await resumeRequestedReplay\(\)/);
+  assert.match(app, /resetResultReplayPlayback\(\)/);
+  assert.match(app, /canonicalReplayBaseUrl\s*=\s*"https:\/\/agent-axiom\.github\.io\/agents-salvo\/"/);
+  assert.match(app, /replayUrlForId\(canonicalReplayBaseUrl, replayId\)/);
+});

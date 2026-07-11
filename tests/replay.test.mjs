@@ -3,13 +3,201 @@ import assert from "node:assert/strict";
 
 import {
   advanceReplayTurn,
+  archivedReplayFrame,
   createReplayClock,
   nextReplaySpeedIndex,
   normalizeReplayTurn,
+  replayIdFromSearch,
   replayMomentTurn,
+  replayRequestIsCurrent,
   replaySpeeds,
+  replayUrlForId,
   startReplayTurn,
 } from "../src/core/replay.js";
+
+function archivedReplayFixture() {
+  return {
+    id: "replay-1",
+    version: 1,
+    viewerPlayerId: "p1",
+    boards: {
+      p1: {
+        size: 4,
+        ships: [
+          {
+            id: "p1-patrol",
+            length: 1,
+            cells: [{ row: 1, col: 1 }],
+            hits: [{ row: 1, col: 1 }],
+          },
+        ],
+        markers: [{ id: "p1-mine", type: "mine", cell: { row: 3, col: 3 } }],
+        shots: [{ row: 1, col: 1, result: "sunk", shipId: "p1-patrol" }],
+      },
+      p2: {
+        size: 4,
+        ships: [
+          {
+            id: "p2-patrol",
+            length: 1,
+            cells: [{ row: 2, col: 3 }],
+            hits: [{ row: 2, col: 3 }],
+          },
+        ],
+        markers: [],
+        shots: [
+          { row: 0, col: 0, result: "miss" },
+          { row: 2, col: 3, result: "sunk", shipId: "p2-patrol" },
+        ],
+      },
+    },
+    log: [
+      {
+        playerId: "p1",
+        targetPlayerId: "p2",
+        coordinate: { row: 0, col: 0 },
+        result: "miss",
+      },
+      {
+        playerId: "p2",
+        targetPlayerId: "p1",
+        coordinate: { row: 1, col: 1 },
+        result: "sunk",
+        shipId: "p1-patrol",
+      },
+      {
+        playerId: "p1",
+        targetPlayerId: "p2",
+        coordinate: { row: 2, col: 3 },
+        result: "sunk",
+        shipId: "p2-patrol",
+      },
+    ],
+  };
+}
+
+test("archived replay frames accumulate shots on both target boards", () => {
+  const replay = archivedReplayFixture();
+  const original = structuredClone(replay);
+  const frame = archivedReplayFrame(replay, 3);
+
+  assert.equal(frame.turn, 3);
+  assert.equal(frame.totalTurns, 3);
+  assert.equal(frame.activeEntry.playerId, "p1");
+  assert.equal(frame.activeTargetPlayerId, "p2");
+  assert.equal(frame.boards.p2.shots.length, 2);
+  assert.equal(frame.boards.p1.shots.length, 1);
+  assert.deepEqual(frame.activeCoordinate, { row: 2, col: 3 });
+  assert.equal(frame.boards.p1.ships.length, 1);
+  assert.equal(frame.boards.p2.ships.length, 1);
+  assert.deepEqual(frame.boards.p1.markers, replay.boards.p1.markers);
+  assert.notEqual(frame.boards.p1.markers[0], replay.boards.p1.markers[0]);
+  assert.notEqual(frame.boards.p1, replay.boards.p1);
+  assert.deepEqual(replay, original);
+});
+
+test("archived replay frames reveal every cell of a sunk ship", () => {
+  const replay = archivedReplayFixture();
+  replay.boards.p2.ships = [
+    {
+      id: "p2-destroyer",
+      length: 2,
+      cells: [
+        { row: 2, col: 2 },
+        { row: 2, col: 3 },
+      ],
+      hits: [
+        { row: 2, col: 2 },
+        { row: 2, col: 3 },
+      ],
+    },
+  ];
+  replay.log = [
+    {
+      playerId: "p1",
+      targetPlayerId: "p2",
+      coordinate: { row: 2, col: 2 },
+      result: "hit",
+      shipId: "p2-destroyer",
+    },
+    {
+      playerId: "p1",
+      targetPlayerId: "p2",
+      coordinate: { row: 2, col: 3 },
+      result: "sunk",
+      shipId: "p2-destroyer",
+    },
+  ];
+
+  const beforeSunk = archivedReplayFrame(replay, 1);
+  const afterSunk = archivedReplayFrame(replay, 2);
+
+  assert.deepEqual(beforeSunk.boards.p2.shots, [
+    { row: 2, col: 2, result: "hit", shipId: "p2-destroyer" },
+  ]);
+  assert.deepEqual(beforeSunk.boards.p2.ships[0].hits, [{ row: 2, col: 2 }]);
+  assert.deepEqual(afterSunk.boards.p2.shots, [
+    { row: 2, col: 2, result: "sunk", shipId: "p2-destroyer" },
+    { row: 2, col: 3, result: "sunk", shipId: "p2-destroyer" },
+  ]);
+  assert.deepEqual(afterSunk.boards.p2.ships[0].hits, replay.boards.p2.ships[0].cells);
+});
+
+test("archived replay frames fail closed for malformed replay data", () => {
+  const expected = {
+    turn: 0,
+    totalTurns: 0,
+    boards: {
+      p1: { size: 0, ships: [], markers: [], shots: [] },
+      p2: { size: 0, ships: [], markers: [], shots: [] },
+    },
+    activeEntry: null,
+    activeTargetPlayerId: null,
+    activeCoordinate: null,
+  };
+
+  assert.deepEqual(archivedReplayFrame(null, 3), expected);
+  assert.deepEqual(
+    archivedReplayFrame({ boards: {}, log: [{ targetPlayerId: "p3" }] }, 1),
+    expected,
+  );
+  assert.deepEqual(
+    archivedReplayFrame(
+      {
+        get boards() {
+          throw new Error("corrupt archive");
+        },
+      },
+      1,
+    ),
+    expected,
+  );
+});
+
+test("archived replay deep links parse and serialize without carrying stale URL state", () => {
+  assert.equal(replayIdFromSearch("?replay=abc-123&room=OLD"), "abc-123");
+  assert.equal(replayIdFromSearch("?replay=abc%2F123"), "");
+  assert.equal(replayIdFromSearch("?replay=%20%20"), "");
+  assert.equal(replayIdFromSearch(`?replay=${"x".repeat(129)}`), "");
+  assert.equal(replayIdFromSearch("not a search"), "");
+  assert.equal(replayIdFromSearch(Symbol("invalid")), "");
+
+  assert.equal(
+    replayUrlForId("https://agent-axiom.github.io/agents-salvo/?room=OLD#battle", "abc-123"),
+    "https://agent-axiom.github.io/agents-salvo/?replay=abc-123",
+  );
+  assert.equal(replayUrlForId("https://agent-axiom.github.io/agents-salvo/", "abc/123"), "");
+});
+
+test("private replay responses are ignored after logout, identity change, or superseding navigation", () => {
+  const request = { token: "token-a", requestId: 4, replayId: "abc-123" };
+
+  assert.equal(replayRequestIsCurrent(request, { ...request }), true);
+  assert.equal(replayRequestIsCurrent(request, { ...request, token: "" }), false);
+  assert.equal(replayRequestIsCurrent(request, { ...request, token: "token-b" }), false);
+  assert.equal(replayRequestIsCurrent(request, { ...request, requestId: 5 }), false);
+  assert.equal(replayRequestIsCurrent(request, { ...request, replayId: "other-456" }), false);
+});
 
 test("replay turn helpers normalize, restart, and finish deterministically", () => {
   assert.equal(normalizeReplayTurn(null, 8), 8);
