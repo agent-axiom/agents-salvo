@@ -2973,6 +2973,69 @@ input {
   line-height: 1.3;
 }
 
+.battle-replay {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-strong));
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 8px;
+}
+
+.battle-replay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.battle-replay-header span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.battle-replay-header strong {
+  color: var(--accent-strong);
+  white-space: nowrap;
+}
+
+.battle-replay-card {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.battle-replay-card div {
+  display: grid;
+  gap: 4px;
+  min-height: 58px;
+  align-content: center;
+  padding: 9px;
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.battle-replay-card small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.battle-replay-card strong {
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.15;
+}
+
+.battle-replay-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .achievement-block,
 .profile-achievements {
   display: grid;
@@ -3791,6 +3854,7 @@ input {
   }
 
   .battle-report-grid,
+  .battle-replay-card,
   .achievement-list,
   .competition-stats,
   .coaching-grid {

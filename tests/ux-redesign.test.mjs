@@ -236,6 +236,24 @@ test("result modal includes key battle moments", () => {
   assert.match(i18n, /"moments\.missStreak"/);
 });
 
+test("result modal includes step-through battle replay controls", () => {
+  assert.match(app, /resultReplayTurn:\s*null/);
+  assert.match(app, /function renderBattleReplay/);
+  assert.match(app, /renderBattleReplay\(log\)/);
+  assert.match(app, /data-action="result-replay-prev"/);
+  assert.match(app, /data-action="result-replay-next"/);
+  assert.match(app, /function changeResultReplayTurn/);
+  assert.match(app, /state\.resultReplayTurn = nextTurn/);
+  assert.match(app, /class="battle-replay"/);
+  assert.match(app, /battleReplayCoordinateText/);
+  assert.match(css, /\.battle-replay/);
+  assert.match(css, /\.battle-replay-controls/);
+  assert.match(i18n, /"replay\.title"/);
+  assert.match(i18n, /"replay\.move"/);
+  assert.match(i18n, /"replay\.previous"/);
+  assert.match(i18n, /"replay\.next"/);
+});
+
 test("result modal can copy a shareable battle summary", () => {
   assert.match(app, /data-action="copy-battle-summary"/);
   assert.match(app, /data-action="share-battle-summary"/);

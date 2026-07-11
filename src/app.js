@@ -61,6 +61,7 @@ const state = {
   passPlayerId: null,
   resultModalDismissed: null,
   resultCopyStatus: "",
+  resultReplayTurn: null,
   auth: {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     telegramBotUsername: window.SALVO_CONFIG?.telegramBotUsername || "",
@@ -1510,6 +1511,7 @@ function renderResultModal({ winnerId, playerId = winnerId, log, newGameAction, 
           ${renderResultStat("result.accuracy", `${stats.accuracy}%`)}
         </div>
         ${renderBattleReport(report, ratingChange)}
+        ${renderBattleReplay(log)}
         ${renderOnlineRatingChange(ratingChange)}
         ${state.resultCopyStatus === "copied" ? `<p class="result-share-status status-line" role="status">${translate("result.copySuccess")}</p>` : ""}
         <div class="result-actions button-row">
@@ -1604,6 +1606,50 @@ function renderBattleMoments(moments) {
       </ol>
     </section>
   `;
+}
+
+function renderBattleReplay(log) {
+  const entries = Array.isArray(log) ? log : [];
+  if (!entries.length) {
+    return "";
+  }
+  const activeTurn = normalizedReplayTurn(entries.length);
+  const entry = entries[activeTurn - 1];
+  return `
+    <section class="battle-replay" aria-label="${translate("replay.title")}">
+      <div class="battle-replay-header">
+        <span>${translate("replay.title")}</span>
+        <strong>${translate("replay.move", { turn: activeTurn, total: entries.length })}</strong>
+      </div>
+      <div class="battle-replay-card">
+        <div>
+          <small>${translate("replay.player")}</small>
+          <strong>${playerName(entry.playerId)}</strong>
+        </div>
+        <div>
+          <small>${translate("replay.result")}</small>
+          <strong>${translate(`shot.${entry.result}`)}</strong>
+        </div>
+        <div>
+          <small>${translate("replay.coordinate")}</small>
+          <strong>${battleReplayCoordinateText(entry)}</strong>
+        </div>
+      </div>
+      <div class="battle-replay-controls">
+        <button data-action="result-replay-prev" ${activeTurn <= 1 ? "disabled" : ""}>${translate("replay.previous")}</button>
+        <button data-action="result-replay-next" ${activeTurn >= entries.length ? "disabled" : ""}>${translate("replay.next")}</button>
+      </div>
+    </section>
+  `;
+}
+
+function normalizedReplayTurn(total) {
+  const rawTurn = Number.isInteger(state.resultReplayTurn) ? state.resultReplayTurn : total;
+  return Math.min(Math.max(rawTurn, 1), total);
+}
+
+function battleReplayCoordinateText(entry) {
+  return entry.coordinate ? formatCoordinate(entry.coordinate) : translate("replay.empty");
 }
 
 function momentDetailText(moment) {
@@ -1928,6 +1974,8 @@ root.addEventListener("click", async (event) => {
   if (action === "new-game") startSetup(state.mode);
   if (action === "online-new-game") showOnline();
   if (action === "close-result") closeResultModal();
+  if (action === "result-replay-prev") changeResultReplayTurn(-1);
+  if (action === "result-replay-next") changeResultReplayTurn(1);
   if (action === "select-setup-ship") selectSetupShip(button.dataset.shipId);
   if (action === "rotate-setup") rotateSetupOrientation();
   if (action === "randomize") randomizeSetup();
@@ -2002,6 +2050,7 @@ function startSetup(mode) {
   state.tacticalAdvisorOpen = true;
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
+  state.resultReplayTurn = null;
   render();
 }
 
@@ -2024,6 +2073,7 @@ function showOnline() {
   state.tacticalAdvisorOpen = true;
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
+  state.resultReplayTurn = null;
   render();
 }
 
@@ -2038,6 +2088,7 @@ function startTraining(scenarioId = state.training.scenarioId) {
   state.training.session = createTrainingSession(state.training.scenarioId);
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
+  state.resultReplayTurn = null;
   render();
 }
 
@@ -2054,6 +2105,7 @@ function goToMenu() {
   state.online.status = "";
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
+  state.resultReplayTurn = null;
   render();
 }
 
@@ -2154,6 +2206,18 @@ function closeResultModal() {
     state.resultModalDismissed = resultKey;
   }
   state.resultCopyStatus = "";
+  state.resultReplayTurn = null;
+  render();
+}
+
+function changeResultReplayTurn(delta) {
+  const context = currentBattleResultContext();
+  if (!context?.log?.length) {
+    return;
+  }
+  const currentTurn = normalizedReplayTurn(context.log.length);
+  const nextTurn = Math.min(Math.max(currentTurn + delta, 1), context.log.length);
+  state.resultReplayTurn = nextTurn;
   render();
 }
 
@@ -2419,6 +2483,7 @@ async function onlineRematch() {
     state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
     state.resultModalDismissed = onlineResultKey(snapshot);
     state.resultCopyStatus = "";
+    state.resultReplayTurn = null;
     await state.online.client.send("requestRematch", { board: state.setupBoard, presetId: preset.id });
     render();
   });
