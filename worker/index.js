@@ -4,6 +4,8 @@ import {
   createGameFromBoards,
   fireAt,
   hasCompleteSetup,
+  placeMarker,
+  placeShip,
   publicBoardView,
 } from "../src/core/game.js";
 import { getGamePreset } from "../src/core/presets.js";
@@ -21,6 +23,7 @@ import {
   createOnlineReplayRecord,
   getAuthorizedReplay,
   listPlayerReplays,
+  parseReplayPayload,
 } from "./replay.js";
 
 const archiveOutboxPrefix = "replayArchiveOutbox:";
@@ -238,7 +241,7 @@ export class BattleRoom {
           throw new Error("Game has not started");
         }
         const wasFinished = room.game.phase === "finished";
-        const result = fireAt(room.game, session.playerId, message.coordinate);
+        const result = fireAt(room.game, session.playerId, sanitizeCoordinate(message.coordinate));
         room.game = result.game;
         const finishedNow = !wasFinished && room.game.phase === "finished";
         if (finishedNow) {
@@ -385,14 +388,7 @@ export class BattleRoom {
             p1: { user: publicUser(room.players?.p1?.user) },
             p2: { user: publicUser(room.players?.p2?.user) },
           },
-          game: room.game
-            ? structuredClone({
-                presetId: room.game.presetId,
-                winnerId: room.game.winnerId,
-                players: room.game.players,
-                log: room.game.log,
-              })
-            : null,
+          game: terminalRecoveryGame(room.game),
         },
       });
     });
@@ -555,15 +551,27 @@ export class BattleRoom {
     return true;
   }
 
-  async requeueArchiveDeadLetter(replayId) {
+  async requeueArchiveDeadLetter(replayId, repairedEnvelope) {
     const deadLetterKey = archiveDeadLetterKey(replayId);
     const deadLetter = await this.state.storage.get(deadLetterKey);
-    if (!deadLetter?.envelope) {
+    if (!deadLetter) {
+      return false;
+    }
+    let envelope = deadLetter.envelope;
+    if (deadLetter.classification === "invalid_payload") {
+      if (!repairedEnvelope) {
+        return false;
+      }
+      envelope = normalizeRepairedEnvelope(replayId, repairedEnvelope);
+    } else if (repairedEnvelope) {
+      throw new Error("A repaired envelope is only valid for invalid payload dead letters");
+    }
+    if (!envelope) {
       return false;
     }
     const dueAt = Date.now();
     const job = {
-      envelope: deadLetter.envelope,
+      envelope,
       retry: {
         attempts: 0,
         errorMessage: "",
@@ -869,14 +877,209 @@ function maybeStartGame(room) {
 }
 
 function sanitizeBoard(board, preset) {
-  const clean = cloneBoard(board);
-  if (clean.size !== preset.size) {
+  if (!board || typeof board !== "object" || board.size !== preset.size) {
     throw new Error("Invalid board size");
+  }
+  if (!Array.isArray(board.ships) || !Array.isArray(board.markers) || !Array.isArray(board.shots)) {
+    throw new Error("Invalid board setup");
+  }
+  if (board.shots.length !== 0 || board.ships.some((ship) => !Array.isArray(ship?.hits) || ship.hits.length !== 0)) {
+    throw new Error("Setup board cannot contain combat history");
+  }
+  if (board.ships.length !== preset.fleet.length || board.markers.length !== (preset.markers ?? []).length) {
+    throw new Error("A complete legal setup is required");
+  }
+
+  let clean = createBoard(preset.size);
+  for (const expectedShip of preset.fleet) {
+    const matches = board.ships.filter((ship) => ship?.id === expectedShip.id);
+    if (matches.length !== 1 || matches[0].length !== expectedShip.length) {
+      throw new Error("A complete legal setup is required");
+    }
+    const placement = canonicalShipPlacement(matches[0], expectedShip.length);
+    clean = placeShip(clean, expectedShip, placement.start, placement.orientation);
+  }
+  for (const expectedMarker of preset.markers ?? []) {
+    const matches = board.markers.filter((marker) => marker?.id === expectedMarker.id);
+    if (matches.length !== 1 || matches[0].type !== expectedMarker.type) {
+      throw new Error("A complete legal setup is required");
+    }
+    clean = placeMarker(clean, expectedMarker, sanitizeCoordinate(matches[0].cell));
   }
   if (!hasCompleteSetup(clean, preset)) {
     throw new Error("A complete legal setup is required");
   }
   return clean;
+}
+
+function canonicalShipPlacement(ship, length) {
+  if (!Array.isArray(ship.cells) || ship.cells.length !== length) {
+    throw new Error("Ship cells are invalid");
+  }
+  const cells = ship.cells.map(sanitizeCoordinate);
+  const start = cells[0];
+  const horizontal = cells.every((cell, index) => cell.row === start.row && cell.col === start.col + index);
+  const vertical = cells.every((cell, index) => cell.col === start.col && cell.row === start.row + index);
+  if (!horizontal && !vertical) {
+    throw new Error("Ship cells must be contiguous and canonical");
+  }
+  return { start, orientation: vertical && length > 1 ? "vertical" : "horizontal" };
+}
+
+function sanitizeCoordinate(coordinate) {
+  if (!coordinate || !Number.isInteger(coordinate.row) || !Number.isInteger(coordinate.col)) {
+    throw new Error("Invalid coordinate");
+  }
+  return { row: coordinate.row, col: coordinate.col };
+}
+
+function terminalRecoveryGame(game) {
+  if (!game || typeof game !== "object") {
+    return null;
+  }
+  return {
+    presetId: game.presetId,
+    winnerId: game.winnerId,
+    players: {
+      p1: terminalRecoveryPlayer(game.players?.p1, "p1"),
+      p2: terminalRecoveryPlayer(game.players?.p2, "p2"),
+    },
+    log: Array.isArray(game.log) ? game.log.map(terminalRecoveryLogEntry) : [],
+  };
+}
+
+function terminalRecoveryPlayer(player, playerId) {
+  return {
+    id: playerId,
+    board: terminalRecoveryBoard(player?.board),
+  };
+}
+
+function terminalRecoveryBoard(board) {
+  return {
+    size: board?.size,
+    ships: Array.isArray(board?.ships)
+      ? board.ships.map((ship) => ({
+          id: ship?.id,
+          length: ship?.length,
+          cells: Array.isArray(ship?.cells) ? ship.cells.map(terminalRecoveryCoordinate) : [],
+          hits: Array.isArray(ship?.hits) ? ship.hits.map(terminalRecoveryCoordinate) : [],
+        }))
+      : [],
+    markers: Array.isArray(board?.markers)
+      ? board.markers.map((marker) => ({
+          id: marker?.id,
+          type: marker?.type,
+          cell: terminalRecoveryCoordinate(marker?.cell),
+        }))
+      : [],
+    shots: Array.isArray(board?.shots)
+      ? board.shots.map((shot) => compactDefined({
+          ...terminalRecoveryCoordinate(shot),
+          result: shot?.result,
+          shipId: shot?.shipId,
+          markerId: shot?.markerId,
+        }))
+      : [],
+  };
+}
+
+function terminalRecoveryLogEntry(entry) {
+  return compactDefined({
+    playerId: entry?.playerId,
+    targetPlayerId: entry?.targetPlayerId,
+    coordinate: terminalRecoveryCoordinate(entry?.coordinate),
+    result: entry?.result,
+    shipId: entry?.shipId,
+  });
+}
+
+function terminalRecoveryCoordinate(coordinate) {
+  return { row: coordinate?.row, col: coordinate?.col };
+}
+
+function compactDefined(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
+}
+
+function normalizeRepairedEnvelope(replayId, envelope) {
+  try {
+    if (!envelope || typeof envelope !== "object" || !envelope.replay || !Array.isArray(envelope.playerMatches)) {
+      throw new Error();
+    }
+    const replayPayload = parseReplayPayload(JSON.stringify(envelope.replay.payload));
+    if (
+      envelope.replay.id !== replayId ||
+      envelope.replay.presetId !== replayPayload.presetId ||
+      envelope.replay.winnerId !== replayPayload.winnerId ||
+      envelope.replay.finishedAt !== replayPayload.finishedAt ||
+      envelope.playerMatches.length !== 2
+    ) {
+      throw new Error();
+    }
+    const playerMatches = ["p1", "p2"].map((playerId) => {
+      const matches = envelope.playerMatches.filter((entry) => entry?.playerId === playerId);
+      if (matches.length !== 1) {
+        throw new Error();
+      }
+      const user = publicUser(matches[0].user);
+      const expectedUserKey = user ? `${user.provider}:${user.id}` : "";
+      const replayUserKey = playerId === "p1" ? envelope.replay.p1UserKey : envelope.replay.p2UserKey;
+      if (!user?.provider || !user.id || replayUserKey !== expectedUserKey) {
+        throw new Error();
+      }
+      return {
+        playerId,
+        user,
+        payload: normalizeRepairedMatch(matches[0].payload, replayId, playerId, replayPayload),
+      };
+    });
+    return {
+      replay: {
+        id: replayId,
+        p1UserKey: envelope.replay.p1UserKey,
+        p2UserKey: envelope.replay.p2UserKey,
+        presetId: replayPayload.presetId,
+        winnerId: replayPayload.winnerId,
+        finishedAt: replayPayload.finishedAt,
+        payload: replayPayload,
+      },
+      playerMatches,
+      createdAt: typeof envelope.createdAt === "string" ? envelope.createdAt : new Date().toISOString(),
+    };
+  } catch {
+    throw new Error("Repaired replay envelope is invalid");
+  }
+}
+
+function normalizeRepairedMatch(payload, replayId, playerId, replay) {
+  const expectedResult = replay.winnerId === playerId ? "win" : "loss";
+  if (
+    !payload ||
+    payload.id !== `online:${replayId}:${playerId}` ||
+    payload.mode !== "online" ||
+    payload.replayId !== replayId ||
+    payload.presetId !== replay.presetId ||
+    payload.winnerId !== replay.winnerId ||
+    payload.playedAt !== replay.finishedAt ||
+    payload.result !== expectedResult ||
+    typeof payload.opponent !== "string"
+  ) {
+    throw new Error();
+  }
+  const numericFields = ["totalShots", "playerShots", "playerHits", "playerMisses", "playerSunk", "accuracy", "turns"];
+  if (numericFields.some((field) => !Number.isInteger(payload[field]) || payload[field] < 0)) {
+    throw new Error();
+  }
+  if (payload.accuracy > 100) {
+    throw new Error();
+  }
+  return Object.fromEntries(
+    [
+      "id", "mode", "presetId", "result", "opponent", "totalShots", "playerShots", "playerHits",
+      "playerMisses", "playerSunk", "accuracy", "turns", "winnerId", "playedAt", "replayId",
+    ].map((field) => [field, payload[field]]),
+  );
 }
 
 function roomPreset(room, presetId) {

@@ -559,6 +559,53 @@ test("BattleRoom places fleets, starts games, and reports setup message errors",
   assert.equal(errorSent[2].message, "Game has not started");
 });
 
+test("BattleRoom canonically rebuilds setup boards and fire coordinates", async () => {
+  const p1Board = randomlyPlaceSetup(gamePresets.quick, () => 0.12);
+  const p2Board = randomlyPlaceSetup(gamePresets.quick, () => 0.72);
+  const injectedCredential = "p1-token";
+  p1Board.ships[0].cells[0].roomToken = injectedCredential;
+  p1Board.clientState = { roomToken: injectedCredential };
+  const initial = {
+    code: "CLEAN",
+    players: {
+      p1: { token: "p1-token", board: null, user: null },
+      p2: { token: "p2-token", board: null, user: null },
+    },
+    presetId: null,
+    game: null,
+  };
+  const storage = new MemoryStorage({ room: initial });
+  const room = new BattleRoom({ storage });
+  room.sessions.set("p1", { playerId: "p1", socket: recordingSocket([]) });
+  room.sessions.set("p2", { playerId: "p2", socket: recordingSocket([]) });
+
+  await room.handleMessage("p1", JSON.stringify({ type: "placeFleet", board: p1Board, presetId: "quick" }));
+  await room.handleMessage("p2", JSON.stringify({ type: "placeFleet", board: p2Board, presetId: "quick" }));
+  await room.handleMessage(
+    "p1",
+    JSON.stringify({ type: "fire", coordinate: { row: 7, col: 7, roomToken: injectedCredential } }),
+  );
+
+  const saved = await storage.get("room");
+  const serializedSaved = JSON.stringify(saved);
+  assert.deepEqual(saved.game.log[0].coordinate, { row: 7, col: 7 });
+  assert.equal(saved.game.players.p2.board.shots[0].roomToken, undefined);
+  assert.equal(serializedSaved.match(/p1-token/g)?.length, 1);
+  assert.doesNotMatch(serializedSaved, /roomToken|clientState/);
+
+  const invalidShots = randomlyPlaceSetup(gamePresets.quick, () => 0.31);
+  invalidShots.shots.push({ row: 0, col: 0, roomToken: injectedCredential });
+  await room.handleMessage("p1", JSON.stringify({ type: "placeFleet", board: invalidShots, presetId: "quick" }));
+  const invalidHits = randomlyPlaceSetup(gamePresets.quick, () => 0.43);
+  invalidHits.ships[0].hits.push({ ...invalidHits.ships[0].cells[0], roomToken: injectedCredential });
+  await room.handleMessage("p1", JSON.stringify({ type: "placeFleet", board: invalidHits, presetId: "quick" }));
+  assert.equal(JSON.stringify(await storage.get("room")).match(/p1-token/g)?.length, 1);
+  assert.doesNotMatch(
+    JSON.stringify({ outbox: await archiveOutboxEntries(storage), deadLetters: await archiveDeadLetterEntries(storage) }),
+    /p1-token|roomToken|clientState/,
+  );
+});
+
 test("BattleRoom restarts a finished online room when both players request a rematch", async () => {
   const firstP1Board = randomlyPlaceSetup(gamePresets.quick, () => 0.12);
   const firstP2Board = randomlyPlaceSetup(gamePresets.quick, () => 0.72);
@@ -921,6 +968,7 @@ test("BattleRoom terminal payload errors preserve and broadcast the finished res
   const state = finishedOnlineRoom();
   state.players.p1.user.sessionSecret = "must-not-survive";
   state.players.p2.user.accessToken = "must-not-survive-either";
+  state.game.players.p1.board.ships[0].cells[0].sessionSecret = "nested-terminal-secret";
   state.game = { ...state.game, phase: "playing", winnerId: null, presetId: "" };
   state.replayId = undefined;
   state.finishedAt = undefined;
@@ -933,7 +981,10 @@ test("BattleRoom terminal payload errors preserve and broadcast the finished res
   console.error = () => {};
   try {
     room.sessions.set("p1-session", { playerId: "p1", socket: recordingSocket(sent) });
-    await room.handleMessage("p1-session", JSON.stringify({ type: "fire", coordinate: { row: 1, col: 1 } }));
+    await room.handleMessage(
+      "p1-session",
+      JSON.stringify({ type: "fire", coordinate: { row: 1, col: 1, accessToken: "nested-terminal-secret" } }),
+    );
   } finally {
     globalThis.WebSocket = previousWebSocket;
     console.error = originalError;
@@ -949,10 +1000,39 @@ test("BattleRoom terminal payload errors preserve and broadcast the finished res
   assert.equal(deadLetter.terminalData.game.players.p1.board.size, 2);
   assert.ok(Array.isArray(deadLetter.terminalData.game.log));
   const serializedDeadLetter = JSON.stringify(deadLetter);
-  assert.doesNotMatch(serializedDeadLetter, /sessionSecret|accessToken|must-not-survive/);
+  assert.doesNotMatch(serializedDeadLetter, /sessionSecret|accessToken|must-not-survive|nested-terminal-secret/);
   assert.doesNotMatch(serializedDeadLetter, /p1-token|p2-token/);
   assert.equal(await archiveScheduleEntries(storage), 0);
   assert.equal(storage.alarmAt, undefined);
+});
+
+test("BattleRoom can validate and requeue a repaired invalid-payload dead letter", async () => {
+  const state = finishedOnlineRoom();
+  state.game.presetId = "";
+  const storage = new MemoryStorage({ room: state });
+  const db = new RecordingD1();
+  const room = new BattleRoom({ storage }, { DB: db });
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    await room.recordFinishedOnlineBattle(state);
+  } finally {
+    console.error = originalError;
+  }
+
+  const repairedEnvelope = archiveJobFixture(state.replayId).envelope;
+  await assert.rejects(
+    room.requeueArchiveDeadLetter(state.replayId, { ...repairedEnvelope, playerMatches: [] }),
+    /invalid/i,
+  );
+  assert.equal(await room.requeueArchiveDeadLetter(state.replayId, repairedEnvelope), true);
+  await room.drainArchiveOutbox();
+  assert.equal(db.replays.length, 1);
+  assert.equal(db.matches.length, 2);
+  assert.equal(await room.requeueArchiveDeadLetter(state.replayId, repairedEnvelope), false);
+  await room.drainArchiveOutbox();
+  assert.equal(db.replays.length, 1);
+  assert.equal(db.matches.length, 2);
 });
 
 test("BattleRoom missing replay participants are terminal without retry", async () => {
