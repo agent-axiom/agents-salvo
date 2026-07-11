@@ -12,6 +12,14 @@ export function normalizeReplayTurn(selectedTurn, totalTurns) {
   return Math.min(Math.max(turn, 1), totalTurns);
 }
 
+export function replayMomentTurn(moment, totalTurns) {
+  if (!moment || typeof moment !== "object" || !Number.isInteger(totalTurns) || totalTurns <= 0) {
+    return 0;
+  }
+  const selectedTurn = [moment.turn, moment.endTurn, moment.startTurn].find(Number.isInteger);
+  return Number.isInteger(selectedTurn) ? normalizeReplayTurn(selectedTurn, totalTurns) : 0;
+}
+
 export function startReplayTurn(selectedTurn, totalTurns) {
   const currentTurn = normalizeReplayTurn(selectedTurn, totalTurns);
   return currentTurn >= totalTurns ? 1 : currentTurn;

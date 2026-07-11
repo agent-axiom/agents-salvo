@@ -20,6 +20,7 @@ import {
   createReplayClock,
   nextReplaySpeedIndex,
   normalizeReplayTurn,
+  replayMomentTurn,
   replaySpeeds,
   startReplayTurn,
 } from "./core/replay.js";
@@ -1526,7 +1527,7 @@ function renderResultModal({ winnerId, playerId = winnerId, log, newGameAction, 
         </div>
         ${renderBattleReport(report, ratingChange)}
         <p class="replay-live-status visually-hidden" aria-live="polite" aria-atomic="true"></p>
-        ${renderBattleReplay(log)}
+        ${renderBattleReplay(log, report.moments)}
         ${renderOnlineRatingChange(ratingChange)}
         ${state.resultCopyStatus === "copied" ? `<p class="result-share-status status-line" role="status">${translate("result.copySuccess")}</p>` : ""}
         <div class="result-actions button-row">
@@ -1623,7 +1624,7 @@ function renderBattleMoments(moments) {
   `;
 }
 
-function renderBattleReplay(log) {
+function renderBattleReplay(log, moments) {
   const entries = Array.isArray(log) ? log : [];
   if (!entries.length) {
     return "";
@@ -1632,11 +1633,30 @@ function renderBattleReplay(log) {
   const entry = entries[activeTurn - 1];
   const replayBoard = replayBoardForLog(entries, activeTurn);
   const replaySpeed = currentResultReplaySpeed();
+  const momentItems = Array.isArray(moments?.items) ? moments.items : [];
+  const replayMoveText = translate("replay.move", { turn: activeTurn, total: entries.length });
+  const replayPositionText = translate("replay.position", { turn: activeTurn, total: entries.length });
   return `
     <section class="battle-replay" aria-label="${translate("replay.title")}">
       <div class="battle-replay-header">
         <span>${translate("replay.title")}</span>
-        <strong>${translate("replay.move", { turn: activeTurn, total: entries.length })}</strong>
+        <strong>${replayMoveText}</strong>
+      </div>
+      <div class="battle-replay-timeline">
+        <label class="battle-replay-timeline-track">
+          <span>${translate("replay.timeline")}</span>
+          <input
+            data-action="result-replay-seek"
+            type="range"
+            min="1"
+            max="${entries.length}"
+            step="1"
+            value="${activeTurn}"
+            aria-label="${translate("replay.seek")}"
+            aria-valuetext="${replayPositionText}"
+          >
+        </label>
+        ${renderBattleReplayMoments(momentItems, entries.length, activeTurn)}
       </div>
       <div class="battle-replay-map">
         ${renderBoard(replayBoard, {
@@ -1684,6 +1704,33 @@ function renderBattleReplay(log) {
       </div>
     </section>
   `;
+}
+
+function renderBattleReplayMoments(moments, totalTurns, activeTurn) {
+  const controls = moments
+    .map((moment) => {
+      const turn = replayMomentTurn(moment, totalTurns);
+      if (!turn) {
+        return "";
+      }
+      const isActive = turn === activeTurn;
+      return `
+        <button
+          class="battle-replay-moment ${isActive ? "is-active" : ""}"
+          data-action="result-replay-jump"
+          data-moment-id="${escapeHtml(moment.id)}"
+          data-turn="${turn}"
+          ${isActive ? 'aria-current="step"' : ""}
+        >
+          <span>${translate(`moments.${moment.id}`)}</span>
+          <small>${translate("moments.turn", { turn })}</small>
+        </button>
+      `;
+    })
+    .filter(Boolean)
+    .join("");
+
+  return controls ? `<div class="battle-replay-moments">${controls}</div>` : "";
 }
 
 function replayBoardForLog(log, activeTurn) {
@@ -1907,6 +1954,9 @@ root.addEventListener("change", (event) => {
   if (action === "agent-difficulty") {
     state.agentDifficulty = event.target.value;
   }
+  if (action === "result-replay-seek") {
+    setResultReplayTurn(event.target.value);
+  }
 });
 
 root.addEventListener("input", (event) => {
@@ -2040,6 +2090,7 @@ root.addEventListener("click", async (event) => {
   if (action === "result-replay-speed") cycleResultReplaySpeed();
   if (action === "result-replay-prev") changeResultReplayTurn(-1);
   if (action === "result-replay-next") changeResultReplayTurn(1);
+  if (action === "result-replay-jump") setResultReplayTurn(button.dataset.turn);
   if (action === "select-setup-ship") selectSetupShip(button.dataset.shipId);
   if (action === "rotate-setup") rotateSetupOrientation();
   if (action === "randomize") randomizeSetup();
@@ -2274,16 +2325,28 @@ function closeResultModal() {
   render();
 }
 
-function changeResultReplayTurn(delta) {
+function setResultReplayTurn(turn) {
   stopResultReplayPlayback();
+  const context = currentBattleResultContext();
+  if (!context?.log?.length) {
+    return;
+  }
+  const selectedTurn = Number.parseInt(turn, 10);
+  if (!Number.isInteger(selectedTurn)) {
+    return;
+  }
+  state.resultReplayTurn = normalizeReplayTurn(selectedTurn, context.log.length);
+  renderResultReplayFrame();
+}
+
+function changeResultReplayTurn(delta) {
   const context = currentBattleResultContext();
   if (!context?.log?.length) {
     return;
   }
   const currentTurn = normalizedReplayTurn(context.log.length);
   const nextTurn = Math.min(Math.max(currentTurn + delta, 1), context.log.length);
-  state.resultReplayTurn = nextTurn;
-  renderResultReplayFrame();
+  setResultReplayTurn(nextTurn);
 }
 
 function currentResultReplaySpeed() {
@@ -2311,12 +2374,18 @@ function renderResultReplayFrame() {
   }
 
   const scrollTop = resultModal.scrollTop;
-  const activeAction = document.activeElement?.closest(".battle-replay")?.querySelector("[data-action]:focus")?.dataset.action;
-  replayElement.outerHTML = renderBattleReplay(context.log);
+  const focusedControl = document.activeElement?.closest(".battle-replay [data-action]");
+  const activeAction = focusedControl?.dataset.action;
+  const activeMomentId = focusedControl?.dataset.momentId;
+  const moments = buildBattleReport(context.log, context.winnerId, context.playerId).moments;
+  replayElement.outerHTML = renderBattleReplay(context.log, moments);
   resultModal.scrollTop = scrollTop;
 
   if (activeAction) {
-    const matchingControl = resultModal.querySelector(`[data-action="${activeAction}"]`);
+    const matchingControls = [...resultModal.querySelectorAll(`[data-action="${activeAction}"]`)];
+    const matchingControl = activeMomentId
+      ? matchingControls.find((control) => control.dataset.momentId === activeMomentId)
+      : matchingControls[0];
     const focusTarget = matchingControl?.disabled
       ? resultModal.querySelector('[data-action="result-replay-toggle-play"]')
       : matchingControl;

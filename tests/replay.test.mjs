@@ -6,6 +6,7 @@ import {
   createReplayClock,
   nextReplaySpeedIndex,
   normalizeReplayTurn,
+  replayMomentTurn,
   replaySpeeds,
   startReplayTurn,
 } from "../src/core/replay.js";
@@ -34,6 +35,22 @@ test("replay speeds cycle through 1x, 1.5x, and 2x", () => {
   assert.equal(nextReplaySpeedIndex(1), 2);
   assert.equal(nextReplaySpeedIndex(2), 0);
   assert.equal(nextReplaySpeedIndex(-1), 1);
+});
+
+test("replay moments resolve to the move where they become meaningful", () => {
+  assert.equal(replayMomentTurn({ turn: 3 }, 10), 3);
+  assert.equal(replayMomentTurn({ startTurn: 5, endTurn: 8 }, 10), 8);
+  assert.equal(replayMomentTurn({ startTurn: 4 }, 10), 4);
+  assert.equal(replayMomentTurn({ turn: -4 }, 10), 1);
+  assert.equal(replayMomentTurn({ turn: 40 }, 10), 10);
+});
+
+test("replay moments reject malformed data and empty replays", () => {
+  assert.equal(replayMomentTurn(null, 10), 0);
+  assert.equal(replayMomentTurn({}, 10), 0);
+  assert.equal(replayMomentTurn({ turn: 2.5 }, 10), 0);
+  assert.equal(replayMomentTurn({ turn: Number.NaN }, 10), 0);
+  assert.equal(replayMomentTurn({ turn: 2 }, 0), 0);
 });
 
 test("replay clock owns one interval and clears it on restart and stop", () => {

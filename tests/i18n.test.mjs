@@ -174,6 +174,9 @@ test("i18n translates result modal, theme, and history labels in every language"
     "replay.play",
     "replay.pause",
     "replay.speed",
+    "replay.timeline",
+    "replay.seek",
+    "replay.position",
     "replay.announcement",
     "replay.empty",
     "mode.training",
@@ -275,6 +278,12 @@ test("i18n translates result modal, theme, and history labels in every language"
       assert.notEqual(t(language.code, key), key);
     }
   }
+});
+
+test("replay range positions are announced as natural localized text", () => {
+  assert.equal(t("en", "replay.position", { turn: 12, total: 47 }), "Move 12 of 47");
+  assert.equal(t("ru", "replay.position", { turn: 12, total: 47 }), "Ход 12 из 47");
+  assert.equal(t("zh-CN", "replay.position", { turn: 12, total: 47 }), "第 12 步，共 47 步");
 });
 
 test("i18n uses localized Wikipedia source URLs", () => {

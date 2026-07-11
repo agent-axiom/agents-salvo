@@ -236,13 +236,13 @@ test("result modal includes key battle moments", () => {
   assert.match(i18n, /"moments\.missStreak"/);
 });
 
-test("result modal includes step-through battle replay controls", () => {
+test("result modal includes timeline and step-through battle replay controls", () => {
   assert.match(app, /resultReplayTurn:\s*null/);
   assert.match(app, /resultReplayPlaying:\s*false/);
   assert.match(app, /resultReplaySpeedIndex:\s*0/);
   assert.match(app, /const resultReplayClock = createReplayClock/);
   assert.match(app, /function renderBattleReplay/);
-  assert.match(app, /renderBattleReplay\(log\)/);
+  assert.match(app, /renderBattleReplay\(log, report\.moments\)/);
   assert.match(app, /function replayBoardForLog/);
   assert.match(app, /renderBoard\(replayBoard, \{/);
   assert.match(app, /kind:\s*"replay-target"/);
@@ -251,8 +251,16 @@ test("result modal includes step-through battle replay controls", () => {
   assert.match(app, /data-action="result-replay-next"/);
   assert.match(app, /data-action="result-replay-toggle-play"/);
   assert.match(app, /data-action="result-replay-speed"/);
+  assert.match(app, /data-action="result-replay-seek"/);
+  assert.match(app, /data-action="result-replay-jump"/);
+  assert.match(app, /type="range"/);
+  assert.match(app, /const replayMoveText = translate\("replay\.move"/);
+  assert.match(app, /const replayPositionText = translate\("replay\.position"/);
+  assert.match(app, /aria-valuetext="\$\{replayPositionText\}"/);
+  assert.match(app, /aria-current="step"/);
   assert.match(app, /aria-label="\$\{translate\("replay\.speed", \{ speed: replaySpeed\.label \}\)\}"/);
   assert.match(app, /<span aria-hidden="true">\$\{replaySpeed\.label\}<\/span>/);
+  assert.match(app, /function setResultReplayTurn/);
   assert.match(app, /function changeResultReplayTurn/);
   assert.match(app, /function toggleResultReplayPlayback/);
   assert.match(app, /function cycleResultReplaySpeed/);
@@ -267,7 +275,9 @@ test("result modal includes step-through battle replay controls", () => {
   assert.match(app, /resultReplayClock\.start/);
   assert.match(app, /resultReplayClock\.stop/);
   assert.doesNotMatch(app, /aria-pressed="\$\{state\.resultReplayPlaying\}"/);
-  assert.match(app, /state\.resultReplayTurn = nextTurn/);
+  assert.match(app, /state\.resultReplayTurn = normalizeReplayTurn/);
+  assert.match(app, /result-replay-seek/);
+  assert.match(app, /result-replay-jump/);
   assert.match(app, /class="battle-replay"/);
   assert.match(app, /class="battle-replay-map"/);
   assert.match(app, /replay-active/);
@@ -279,6 +289,11 @@ test("result modal includes step-through battle replay controls", () => {
   assert.match(css, /@keyframes replayShotPulse/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(css, /\.battle-replay-controls/);
+  assert.match(css, /\.battle-replay-timeline/);
+  assert.match(css, /\.battle-replay-timeline input\[type="range"\]\s*\{[^}]*min-height:\s*44px/s);
+  assert.match(css, /\.battle-replay-moments/);
+  assert.match(css, /\.battle-replay-moment\.is-active/);
+  assert.match(css, /@media \(max-width:\s*720px\)[\s\S]*\.battle-replay-moment span\s*\{[^}]*white-space:\s*normal/s);
   assert.match(css, /\.visually-hidden/);
   assert.match(css, /\.battle-replay-controls button\s*\{[^}]*display:\s*inline-flex/s);
   assert.match(css, /\.battle-replay-controls button\s*\{[^}]*white-space:\s*nowrap/s);
@@ -290,6 +305,9 @@ test("result modal includes step-through battle replay controls", () => {
   assert.match(i18n, /"replay\.play"/);
   assert.match(i18n, /"replay\.pause"/);
   assert.match(i18n, /"replay\.speed"/);
+  assert.match(i18n, /"replay\.timeline"/);
+  assert.match(i18n, /"replay\.seek"/);
+  assert.match(i18n, /"replay\.position"/);
   assert.match(i18n, /"replay\.announcement"/);
 });
 
