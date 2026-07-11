@@ -247,6 +247,21 @@ test("worker replay routes require auth and enforce replay statuses", async () =
     ).status,
     503,
   );
+
+  db.replays[0].data_json = "corrupt";
+  assert.equal(
+    (await worker.fetch(new Request("https://worker.test/replays/replay-route", { headers: participantHeaders }), env))
+      .status,
+    404,
+  );
+  assert.equal(
+    (
+      await worker.fetch(new Request("https://worker.test/replays/replay-route", { headers: participantHeaders }), {
+        SESSION_SECRET: env.SESSION_SECRET,
+      })
+    ).status,
+    503,
+  );
 });
 
 test("worker create room retries collisions and reports allocation failure", async () => {
@@ -553,6 +568,7 @@ test("BattleRoom restarts a finished online room when both players request a rem
       game: { ...firstGame, phase: "finished", winnerId: "p1" },
       finishedAt: "2026-07-09T10:00:00.000Z",
       replayId: "old-replay",
+      replayRecordedAt: "2026-07-09T10:00:00.000Z",
       profileRecordedAt: "2026-07-09T10:00:00.000Z",
       profileRecordErrorAt: "2026-07-09T10:01:00.000Z",
       recordRetryCount: 3,
@@ -668,6 +684,7 @@ test("BattleRoom records completed authenticated online matches in profile stora
   const savedRoom = await storage.get("room");
   assert.equal(savedRoom.game.phase, "finished");
   assert.equal(savedRoom.profileRecordedAt, savedRoom.finishedAt);
+  assert.equal(savedRoom.replayRecordedAt, savedRoom.finishedAt);
   assert.deepEqual(savedRoom.ratingChanges.p1, {
     before: 1000,
     after: 1024,
@@ -777,12 +794,124 @@ test("BattleRoom still broadcasts finished games when profile storage fails", as
 });
 
 test("BattleRoom does not schedule replay retries without D1", async () => {
-  const storage = new MemoryStorage({ room: { game: { phase: "finished" }, replayId: "replay-1" } });
+  const storage = new MemoryStorage({ room: finishedOnlineRoom() });
   const room = new BattleRoom({ storage });
 
   await room.alarm();
 
   assert.equal(storage.alarmAt, undefined);
+  const savedRoom = await storage.get("room");
+  assert.ok(savedRoom.profileRecordErrorAt);
+  assert.equal(savedRoom.profileRecordError, "Replay storage is not configured");
+});
+
+test("BattleRoom replay retry delay caps at exactly fifteen minutes", async () => {
+  const storage = new MemoryStorage();
+  const room = new BattleRoom({ storage }, { DB: new FailingD1() });
+  const state = { ...finishedOnlineRoom(), recordRetryCount: 99 };
+  const originalNow = Date.now;
+  Date.now = () => 1_000_000;
+  try {
+    await room.scheduleRecordRetry(state, new Error("D1 unavailable"));
+  } finally {
+    Date.now = originalNow;
+  }
+
+  assert.equal(storage.alarmAt, 1_900_000);
+});
+
+test("BattleRoom holds a ready rematch until recording succeeds in an alarm", async () => {
+  const firstP1Board = randomlyPlaceSetup(gamePresets.quick, () => 0.19);
+  const firstP2Board = randomlyPlaceSetup(gamePresets.quick, () => 0.79);
+  const nextP1Board = randomlyPlaceSetup(gamePresets.quick, () => 0.31);
+  const nextP2Board = randomlyPlaceSetup(gamePresets.quick, () => 0.67);
+  const storage = new MemoryStorage({
+    room: finishedOnlineRoom({ p1Board: firstP1Board, p2Board: firstP2Board, presetId: "quick" }),
+  });
+  const room = new BattleRoom({ storage }, { DB: new FailingD1() });
+  const sent = [];
+  const previousWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = { OPEN: 1 };
+  try {
+    room.sessions.set("p1-session", { playerId: "p1", socket: recordingSocket(sent) });
+    room.sessions.set("p2-session", { playerId: "p2", socket: recordingSocket(sent) });
+    await room.handleMessage(
+      "p1-session",
+      JSON.stringify({ type: "requestRematch", board: nextP1Board, presetId: "quick" }),
+    );
+    await room.handleMessage(
+      "p2-session",
+      JSON.stringify({ type: "requestRematch", board: nextP2Board, presetId: "quick" }),
+    );
+
+    const pending = await storage.get("room");
+    assert.equal(pending.game.phase, "finished");
+    assert.ok(pending.rematch.requests.p1.board);
+    assert.ok(pending.rematch.requests.p2.board);
+    assert.equal(pending.recordRetryCount, 1);
+    assert.ok(storage.alarmAt);
+
+    room.env.DB = new RecordingD1();
+    await room.alarm();
+  } finally {
+    globalThis.WebSocket = previousWebSocket;
+  }
+
+  const restarted = await storage.get("room");
+  assert.equal(restarted.game.phase, "playing");
+  assert.equal(restarted.rematchRound, 1);
+  assert.equal(restarted.rematch, undefined);
+  assert.equal(restarted.recordRetryCount, undefined);
+  assert.equal(sent.at(-1).snapshot.phase, "playing");
+  assert.equal(room.env.DB.replays.length, 1);
+  assert.equal(room.env.DB.matches.length, 2);
+});
+
+test("BattleRoom finishing a rematch assigns a new replay id", async () => {
+  const p1Board = randomlyPlaceSetup(gamePresets.quick, () => 0.13);
+  const p2Board = randomlyPlaceSetup(gamePresets.quick, () => 0.83);
+  const nextP1Board = randomlyPlaceSetup(gamePresets.quick, () => 0.27);
+  const nextP2Board = randomlyPlaceSetup(gamePresets.quick, () => 0.71);
+  const oldReplayId = "11111111-1111-4111-8111-111111111111";
+  const oldFinishedAt = "2026-07-09T10:00:00.000Z";
+  const storage = new MemoryStorage({
+    room: {
+      ...finishedOnlineRoom({ p1Board, p2Board, presetId: "quick" }),
+      replayId: oldReplayId,
+      replayRecordedAt: oldFinishedAt,
+      profileRecordedAt: oldFinishedAt,
+      finishedAt: oldFinishedAt,
+    },
+  });
+  const db = new RecordingD1();
+  const room = new BattleRoom({ storage }, { DB: db });
+  const previousWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = { OPEN: 1 };
+  try {
+    room.sessions.set("p1-session", { playerId: "p1", socket: recordingSocket([]) });
+    room.sessions.set("p2-session", { playerId: "p2", socket: recordingSocket([]) });
+    await room.handleMessage(
+      "p1-session",
+      JSON.stringify({ type: "requestRematch", board: nextP1Board, presetId: "quick" }),
+    );
+    await room.handleMessage(
+      "p2-session",
+      JSON.stringify({ type: "requestRematch", board: nextP2Board, presetId: "quick" }),
+    );
+    for (const ship of nextP2Board.ships) {
+      for (const coordinate of ship.cells) {
+        await room.handleMessage("p1-session", JSON.stringify({ type: "fire", coordinate }));
+      }
+    }
+  } finally {
+    globalThis.WebSocket = previousWebSocket;
+  }
+
+  const finished = await storage.get("room");
+  assert.equal(finished.game.phase, "finished");
+  assert.notEqual(finished.replayId, oldReplayId);
+  assert.equal(finished.replayRecordedAt, finished.finishedAt);
+  assert.equal(db.replays.length, 1);
 });
 
 async function signTelegramPayload(payload, botToken) {
@@ -805,6 +934,33 @@ async function signTelegramPayload(payload, botToken) {
 
 async function authHeaders(user, env) {
   return { Authorization: `Bearer ${await createSessionToken(user, env.SESSION_SECRET)}` };
+}
+
+function finishedOnlineRoom({ p1Board, p2Board, presetId = "classic" } = {}) {
+  const firstBoard =
+    p1Board ?? placeShip(createBoard(2), { id: "p1-patrol", length: 1 }, { row: 0, col: 0 }, "horizontal");
+  const secondBoard =
+    p2Board ?? placeShip(createBoard(2), { id: "p2-patrol", length: 1 }, { row: 1, col: 1 }, "horizontal");
+  const game = createGameFromBoards(firstBoard, secondBoard, "p1", { presetId });
+  return {
+    code: "RETRY1",
+    players: {
+      p1: {
+        token: "p1-token",
+        board: firstBoard,
+        user: { provider: "telegram", id: "1", name: "One", username: "one", photoUrl: "" },
+      },
+      p2: {
+        token: "p2-token",
+        board: secondBoard,
+        user: { provider: "telegram", id: "2", name: "Two", username: "two", photoUrl: "" },
+      },
+    },
+    presetId,
+    game: { ...game, phase: "finished", winnerId: "p1" },
+    replayId: "22222222-2222-4222-8222-222222222222",
+    finishedAt: "2026-07-11T12:00:00.000Z",
+  };
 }
 
 class MemoryStorage {

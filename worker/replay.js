@@ -117,9 +117,9 @@ export async function getAuthorizedReplay(db, id, user) {
   return { id: row.id, ...payload, viewerPlayerId };
 }
 
-export async function listPlayerReplays(db, user, { limit = 20, cursor } = {}) {
+export async function listPlayerReplays(db, user, { cursor } = {}) {
   assertReplayDb(db);
-  const pageLimit = normalizeLimit(limit);
+  const pageLimit = 20;
   const userKey = userSubject(user);
   const decodedCursor = cursor ? decodeCursor(cursor) : null;
   const cursorFinishedAt = decodedCursor?.finishedAt ?? null;
@@ -183,7 +183,7 @@ function publicArchiveItem(row) {
     winnerId: row.winner_id,
     finishedAt: row.finished_at,
     result: row.result,
-    opponent: row.opponent,
+    opponent: publicOpponent(row.opponent),
     totalShots: number(row.total_shots),
     playerShots: number(row.player_shots),
     playerHits: number(row.player_hits),
@@ -295,11 +295,6 @@ function encodeCursor(cursor) {
   return btoa(JSON.stringify(cursor)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-function normalizeLimit(value) {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 100 ? parsed : 20;
-}
-
 function isIsoDate(value) {
   if (typeof value !== "string") {
     return false;
@@ -323,6 +318,11 @@ function isText(value) {
 function number(value) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function publicOpponent(value) {
+  const opponent = String(value || "online");
+  return /^[a-z][a-z0-9_-]*:\d+$/i.test(opponent) ? "online" : opponent;
 }
 
 function assertReplayDb(db) {

@@ -124,6 +124,46 @@ test("archive pagination joins the viewer match and uses a stable cursor", async
   assert.equal(new Set([...first.items, ...second.items].map((item) => item.id)).size, 25);
 });
 
+test("archive page size is fixed at twenty", async () => {
+  const page = await listPlayerReplays(replayArchiveD1(25), telegramUser("101"), { limit: 5 });
+
+  assert.equal(page.items.length, 20);
+  assert.ok(page.nextCursor);
+});
+
+test("archive SQL excludes replays belonging only to another user", async () => {
+  const db = replayArchiveD1(1);
+  db.replays.push({
+    id: "outsider-replay",
+    p1_user_key: "telegram:303",
+    p2_user_key: "telegram:404",
+    preset_id: "classic",
+    winner_id: "p1",
+    finished_at: "2026-07-12T12:00:00.000Z",
+    data_json: JSON.stringify(createOnlineReplayRecord(finishedRoomFixture(), "outsider-replay").payload),
+  });
+  db.matches.push({
+    id: "online:outsider-replay:p1",
+    replay_id: "outsider-replay",
+    user_key: "telegram:101",
+    result: "win",
+    opponent: "Should Not Leak",
+  });
+
+  const page = await listPlayerReplays(db, telegramUser("101"));
+
+  assert.deepEqual(page.items.map((item) => item.id), ["replay-00"]);
+});
+
+test("archive output sanitizes legacy provider id opponents", async () => {
+  const db = replayArchiveD1(1);
+  db.matches[0].opponent = "telegram:202";
+
+  const page = await listPlayerReplays(db, telegramUser("101"));
+
+  assert.equal(page.items[0].opponent, "online");
+});
+
 test("archive pagination rejects malformed cursors", async () => {
   const db = replayArchiveD1(1);
   for (const cursor of ["bad", Buffer.from("{}").toString("base64url"), Buffer.from('{"finishedAt":"bad","id":"x"}').toString("base64url")]) {

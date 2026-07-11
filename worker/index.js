@@ -221,6 +221,15 @@ export class BattleRoom {
           },
         };
         if (room.rematch.requests.p1?.board && room.rematch.requests.p2?.board) {
+          if (!recordingComplete(room)) {
+            try {
+              await this.recordFinishedOnlineBattle(room);
+            } catch (error) {
+              await this.scheduleRecordRetry(room, error);
+              await this.broadcast(room);
+              return;
+            }
+          }
           room = startRematch(room, preset);
         }
         await this.saveRoom(room);
@@ -303,8 +312,11 @@ export class BattleRoom {
   }
 
   async recordFinishedOnlineBattle(room) {
-    if (!this.env?.DB || !room.game || room.profileRecordedAt) {
+    if (!room.game || room.game.phase !== "finished" || recordingComplete(room)) {
       return;
+    }
+    if (!this.env?.DB) {
+      throw new Error("Replay storage is not configured");
     }
 
     const players = Object.entries(room.players).filter(([, player]) => player?.user);
@@ -329,9 +341,11 @@ export class BattleRoom {
         .filter(([, match]) => match.rating)
         .map(([playerId, match]) => [playerId, match.rating]),
     );
+    room.replayRecordedAt = room.finishedAt;
     room.profileRecordedAt = room.finishedAt;
     delete room.recordRetryCount;
     delete room.profileRecordErrorAt;
+    delete room.profileRecordError;
     await this.saveRoom(room);
     await this.state.storage.deleteAlarm?.();
   }
@@ -339,6 +353,7 @@ export class BattleRoom {
   async scheduleRecordRetry(room, error) {
     room.recordRetryCount = (room.recordRetryCount ?? 0) + 1;
     room.profileRecordErrorAt = new Date().toISOString();
+    room.profileRecordError = error?.message || "Replay recording failed";
     await this.saveRoom(room);
     if (!this.env?.DB) {
       return;
@@ -348,18 +363,25 @@ export class BattleRoom {
   }
 
   async alarm() {
-    if (!this.env?.DB) {
-      return;
-    }
     const room = await this.getRoom();
-    if (!room?.game || room.game.phase !== "finished" || room.profileRecordedAt) {
+    if (!room?.game || room.game.phase !== "finished") {
       await this.state.storage.deleteAlarm?.();
       return;
     }
-    try {
-      await this.recordFinishedOnlineBattle(room);
-    } catch (error) {
-      await this.scheduleRecordRetry(room, error);
+    if (!recordingComplete(room)) {
+      try {
+        await this.recordFinishedOnlineBattle(room);
+      } catch (error) {
+        await this.scheduleRecordRetry(room, error);
+        return;
+      }
+    }
+    if (rematchReady(room)) {
+      const restarted = startRematch(room, getGamePreset(room.game.presetId || room.presetId));
+      await this.saveRoom(restarted);
+      await this.broadcast(restarted);
+    } else {
+      await this.state.storage.deleteAlarm?.();
     }
   }
 }
@@ -460,8 +482,10 @@ function startRematch(room, preset) {
   next.rematchRound = (room.rematchRound ?? 0) + 1;
   delete next.finishedAt;
   delete next.replayId;
+  delete next.replayRecordedAt;
   delete next.profileRecordedAt;
   delete next.profileRecordErrorAt;
+  delete next.profileRecordError;
   delete next.recordRetryCount;
   delete next.ratingChanges;
   delete next.rematch;
@@ -583,7 +607,6 @@ async function playerReplays(request, env, url) {
   try {
     const user = await requireUser(request, env);
     const archive = await listPlayerReplays(env.DB, user, {
-      limit: url.searchParams.get("limit") || undefined,
       cursor: url.searchParams.get("cursor") || undefined,
     });
     return json({ archive });
@@ -700,7 +723,7 @@ function onlineMatchPayload(room, playerId) {
     mode: "online",
     presetId: game.presetId,
     result: game.winnerId === playerId ? "win" : "loss",
-    opponent: opponent?.name || opponent?.username || (opponent ? `${opponent.provider}:${opponent.id}` : "online"),
+    opponent: opponent?.name || opponent?.username || "online",
     totalShots: summary.totalShots,
     playerShots: playerStats.shots,
     playerHits: playerStats.hits,
@@ -712,6 +735,14 @@ function onlineMatchPayload(room, playerId) {
     playedAt: room.finishedAt,
     replayId: room.replayId,
   };
+}
+
+function recordingComplete(room) {
+  return Boolean(room.replayRecordedAt && room.profileRecordedAt);
+}
+
+function rematchReady(room) {
+  return Boolean(room.rematch?.requests?.p1?.board && room.rematch?.requests?.p2?.board);
 }
 
 function json(payload, status = 200) {

@@ -116,7 +116,7 @@ export async function getLeaderboard(db, { now = new Date(), limit = 20 } = {}) 
     if (!players.has(row.user_key)) {
       players.set(row.user_key, {
         userKey: row.user_key,
-        name: row.name || row.username || row.user_key,
+        name: row.name || row.username || "online",
         username: row.username || "",
         photoUrl: row.photo_url || "",
         matches: [],
@@ -312,7 +312,7 @@ function publicMatch(row) {
     mode: row.mode,
     presetId: row.preset_id,
     result: row.result,
-    opponent: row.opponent,
+    opponent: publicOpponent(row.opponent),
     totalShots: number(row.total_shots),
     playerShots: number(row.player_shots),
     playerHits: number(row.player_hits),
@@ -447,7 +447,7 @@ function ratingHistory(rows) {
     history.push({
       id: row.id,
       result: row.result,
-      opponent: row.opponent || "online",
+      opponent: publicOpponent(row.opponent),
       playedAt: row.played_at,
       before: before.mmr,
       after: after.mmr,
@@ -483,7 +483,7 @@ function bestOfThreeSeries(rows) {
   const wins = games.filter((row) => row.result === "win").length;
   const losses = games.filter((row) => row.result === "loss").length;
   return {
-    opponent: latestOpponent,
+    opponent: publicOpponent(latestOpponent),
     wins,
     losses,
     games: games.length,
@@ -583,6 +583,11 @@ function boundedInteger(value, label, min, max) {
 
 function cleanText(value) {
   return String(value || "").trim();
+}
+
+function publicOpponent(value) {
+  const opponent = cleanText(value) || "online";
+  return /^[a-z][a-z0-9_-]*:\d+$/i.test(opponent) ? "online" : opponent;
 }
 
 function number(value) {

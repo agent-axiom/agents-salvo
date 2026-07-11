@@ -303,6 +303,43 @@ test("only server-authored online matches persist replay links", async () => {
   assert.equal(profile.recentMatches.find((match) => match.id === "client").replayId, null);
 });
 
+test("legacy profile rows without replay ids remain compatible", async () => {
+  const db = new MemoryD1();
+  await recordCompletedMatch(db, profileUser, completedMatchPayload());
+  delete db.matches[0].replay_id;
+
+  const profile = await getPlayerProfile(db, profileUser);
+
+  assert.equal(profile.recentMatches[0].replayId, null);
+});
+
+test("profile output sanitizes legacy provider id opponents", async () => {
+  const db = new MemoryD1();
+  await recordCompletedMatch(db, profileUser, {
+    ...completedMatchPayload(),
+    opponent: "telegram:987654",
+  });
+
+  const profile = await getPlayerProfile(db, profileUser);
+
+  assert.equal(profile.recentMatches[0].opponent, "online");
+});
+
+test("competition output sanitizes legacy provider id opponents", async () => {
+  const db = new MemoryD1();
+  await recordCompletedMatch(
+    db,
+    profileUser,
+    { ...completedMatchPayload(), mode: "online", opponent: "telegram:987654" },
+    { source: "server" },
+  );
+
+  const profile = await getPlayerProfile(db, profileUser);
+
+  assert.equal(profile.competition.ratingHistory[0].opponent, "online");
+  assert.equal(profile.competition.bestOfThree.opponent, "online");
+});
+
 test("server-side online match recording returns rating movement", async () => {
   const db = new MemoryD1();
   await recordCompletedMatch(
