@@ -510,7 +510,7 @@ export function createLocalBattleSnapshot(state, now = () => new Date().toISOStr
 }
 ```
 
-`parseLocalBattleSnapshot(raw)` must reject non-JSON, non-object values, versions other than `1`, unsupported mode/screen pairs (using the real `setup`, `playing`, `pass`, and `training` screen names above), missing `presetId`, invalid `savedAt`, finished games, and finished training sessions. `createLocalBattleSnapshotStore(settings)` uses the keys `localBattle` and `localBattleQuarantine`; `save()` clears the active key when serialization returns `null`.
+`parseLocalBattleSnapshot(raw)` must reject non-JSON, non-object values, unsupported mode/screen pairs (using the real `setup`, `playing`, `pass`, and `training` screen names above), unknown or inherited preset IDs, invalid `savedAt`, finished games, and finished training sessions. V1 parsing and creation must recursively normalize the real board, game, setup, pass, and training-session structures instead of trusting nested objects wholesale; nested unknown fields and inactive-mode payloads must not survive. Use real fixtures from `createGameFromBoards()` and `createTrainingSession()` so accepted snapshots are renderable. Versions other than `1` throw an exported `UnsupportedLocalBattleSnapshotVersionError`; `load()` leaves that raw snapshot at `localBattle` for a future migration and rethrows. Malformed or invalid V1 data is quarantined and cleared. `createLocalBattleSnapshotStore(settings)` uses the keys `localBattle` and `localBattleQuarantine`; `save()` clears the active key when serialization returns `null`.
 
 - [ ] **Step 4: Run snapshot and coverage tests**
 
@@ -568,13 +568,17 @@ Expected: FAIL because `src/mobile.js` does not exist.
 Create `src/mobile.js` exporting `createMobileRuntime()`:
 
 ```js
-export function createMobileRuntime({ platform, snapshots, getState, applySnapshot, onNetwork, onDeepLink, onBack, pauseAudio, resumeAudio }) {
+export function createMobileRuntime({ platform, snapshots, getState, applySnapshot, onRestoreError, onNetwork, onDeepLink, onBack, pauseAudio, resumeAudio }) {
   const removers = [];
   return {
     async start() {
       onNetwork(await platform.getNetworkStatus());
-      const snapshot = await snapshots.load();
-      if (snapshot) applySnapshot(snapshot);
+      try {
+        const snapshot = await snapshots.load();
+        if (snapshot) applySnapshot(snapshot);
+      } catch (error) {
+        onRestoreError(error);
+      }
       await platform.configureSystemBars();
       await platform.hideSplash();
       removers.push(...await Promise.all([
@@ -598,7 +602,7 @@ export function createMobileRuntime({ platform, snapshots, getState, applySnapsh
 }
 ```
 
-Normalize web synchronous remover functions with `await`; native removers are asynchronous.
+Normalize web synchronous remover functions with `await`; native removers are asynchronous. A restore failure, including `UnsupportedLocalBattleSnapshotVersionError`, must call `onRestoreError` and continue through system-bar and splash setup so the bundled local menu remains usable. Subscription setup must be transactional: if any registration fails, remove every listener that was already registered before rethrowing.
 
 - [ ] **Step 4: Give audio an explicit lifecycle boundary**
 
@@ -649,7 +653,7 @@ test("installed app integrates safe areas, offline state, restore, share, and ha
 });
 ```
 
-Extend `tests/i18n.test.mjs` to require these keys in EN/RU/ZH: `settings.haptics`, `network.offline`, `network.retry`, `restore.resumed`, `nav.leaveBattleTitle`, `nav.leaveBattleBody`, `share.failed`, and `auth.mobileSecureLoginPending`.
+Extend `tests/i18n.test.mjs` to require these keys in EN/RU/ZH: `settings.haptics`, `network.offline`, `network.retry`, `restore.resumed`, `restore.unsupportedVersion`, `restore.failed`, `nav.leaveBattleTitle`, `nav.leaveBattleBody`, `share.failed`, and `auth.mobileSecureLoginPending`.
 
 - [ ] **Step 2: Run the frontend tests and verify RED**
 
@@ -659,9 +663,9 @@ Expected: FAIL on missing runtime and localization contracts.
 
 - [ ] **Step 3: Boot the runtime without delaying first paint**
 
-Import `platform`, `createMobileRuntime`, and `createLocalBattleSnapshotStore`. Add `network`, `hapticsEnabled`, and `restoredBattle` state. Keep the initial synchronous `render()` so bundled content appears immediately, then call `void runtime.start()`.
+Import `platform`, `createMobileRuntime`, `createLocalBattleSnapshotStore`, and `UnsupportedLocalBattleSnapshotVersionError`. Add `network`, `hapticsEnabled`, `restoredBattle`, and `restoreError` state. Keep the initial synchronous `render()` so bundled content appears immediately, then call `void runtime.start()`.
 
-Implement `applyLocalBattleSnapshot(snapshot)` by assigning only the whitelisted snapshot fields from Task 3, clearing online clients and result UI, setting `state.restoredBattle = true`, and rendering. Implement `onNetwork` as an immutable `{ connected, connectionType }` update. Online/profile/archive actions must return the localized offline error before making a request; local modes remain enabled.
+Implement `applyLocalBattleSnapshot(snapshot)` by assigning only the normalized snapshot fields from Task 3, clearing online clients and result UI, setting `state.restoredBattle = true`, and rendering. `onRestoreError` maps `UnsupportedLocalBattleSnapshotVersionError` to `restore.unsupportedVersion` and other failures to `restore.failed`, then renders a recoverable notice without clearing the preserved unknown-version snapshot. Implement `onNetwork` as an immutable `{ connected, connectionType }` update. Online/profile/archive actions must return the localized offline error before making a request; local modes remain enabled.
 
 Hydrate non-sensitive preferences after the first paint through `platform.settings`: `language`, `theme`, `visualStyle`, `audio`, `haptics`, and JSON-encoded `trainingProgress`. Apply only known enum values and object-shaped training data, then render once. Replace direct writes for those keys with awaited `platform.settings.set()` calls. On web this keeps the existing `salvo.*` localStorage keys; on native it uses Capacitor Preferences. Authentication token migration is intentionally reserved for the secure-storage identity plan and must not be copied into Preferences.
 
@@ -676,7 +680,7 @@ if (state.settingsOpen) return closeSettings();
 if (state.profileOpen) return closeProfile();
 if (state.leaderboardOpen) return closeLeaderboard();
 if (state.screen === "archive" || state.screen === "replay") return showMenu();
-if (state.screen === "setup" || state.screen === "game" || state.screen === "training" || state.screen === "online") return requestLeaveBattle();
+if (["setup", "playing", "pass", "training", "online"].includes(state.screen)) return requestLeaveBattle();
 return false;
 ```
 
