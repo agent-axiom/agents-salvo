@@ -115,7 +115,7 @@ npm install --save-exact @capacitor/app@8.1.0 @capacitor/browser@8.0.3 @capacito
 Install build packages:
 
 ```bash
-npm install --save-dev --save-exact @capacitor/android@8.4.1 @capacitor/assets@3.0.5 @capacitor/cli@8.4.1 @capacitor/ios@8.4.1 esbuild@0.28.1
+npm install --save-dev --save-exact @capacitor/android@8.4.1 @capacitor/cli@8.4.1 @capacitor/ios@8.4.1 esbuild@0.28.1
 ```
 
 Expected: `package-lock.json` is created and `npm audit` reports zero vulnerabilities.
@@ -698,7 +698,7 @@ Expected: `icon.png` is 1024x1024 and `splash.png` is 2732x2732, both opaque and
 npm run build
 npx cap add android
 npx cap add ios
-npx capacitor-assets generate
+npx --yes --package @capacitor/assets@3.0.5 capacitor-assets generate
 npx cap sync
 ```
 
