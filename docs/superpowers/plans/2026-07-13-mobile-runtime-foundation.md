@@ -6,7 +6,7 @@
 
 **Architecture:** Keep rules and rendering in the existing ES modules, add esbuild only as the packaging boundary required by Capacitor plugins, and route platform-specific work through `src/platform/`. A small runtime coordinator owns subscriptions and snapshots; `src/app.js` remains the UI/state owner and supplies explicit callbacks. Capacitor-generated Android and iOS projects consume the same `dist/` output as GitHub Pages and contain no remote start URL.
 
-**Tech Stack:** Node.js 24.14.1, vanilla JavaScript ES modules, esbuild 0.28.1, Capacitor 8.4.1, official Capacitor plugins, Android Gradle, Swift Package Manager, Xcode 26, Node test runner, GitHub Actions.
+**Tech Stack:** Node.js 24.14.1, TypeScript 7.0.2 for Capacitor configuration loading, vanilla JavaScript ES modules, esbuild 0.28.1, Capacitor 8.4.1, official Capacitor plugins, Android Gradle, Swift Package Manager, Xcode 26, Node test runner, GitHub Actions.
 
 ---
 
@@ -60,7 +60,8 @@ Create `tests/mobile-build.test.mjs`:
 ```js
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const buildScript = readFileSync("scripts/build.mjs", "utf8");
@@ -72,12 +73,26 @@ test("mobile toolchain is pinned and uses bundled local web assets", () => {
   assert.equal(packageJson.dependencies["@capacitor/core"], "8.4.1");
   assert.equal(packageJson.devDependencies["@capacitor/cli"], "8.4.1");
   assert.equal(packageJson.devDependencies.esbuild, "0.28.1");
+  assert.equal(packageJson.devDependencies.typescript, "7.0.2");
   assert.match(buildScript, /from "esbuild"/);
   assert.match(buildScript, /entryPoints:\s*\[resolve\(src, "app\.js"\)\]/);
   assert.match(capacitorConfig, /appId:\s*"io\.github\.agentaxiom\.salvo"/);
+  assert.match(capacitorConfig, /appName:\s*"Salvo"/);
   assert.match(capacitorConfig, /webDir:\s*"dist"/);
+  assert.match(capacitorConfig, /android:[\s\S]*backgroundColor:\s*"#071224"/);
+  assert.match(capacitorConfig, /ios:[\s\S]*backgroundColor:\s*"#071224"[\s\S]*contentInset:\s*"never"/);
+  assert.match(capacitorConfig, /SplashScreen:[\s\S]*launchAutoHide:\s*false[\s\S]*backgroundColor:\s*"#071224"[\s\S]*showSpinner:\s*false/);
   assert.match(capacitorConfig, /SystemBars:[\s\S]*insetsHandling:\s*"css"/);
+  assert.match(capacitorConfig, /SystemBars:[\s\S]*style:\s*"DEFAULT"[\s\S]*hidden:\s*false[\s\S]*animation:\s*"NONE"/);
   assert.doesNotMatch(capacitorConfig, /server:\s*\{[^}]*url:/s);
+});
+
+test("build emits copied static assets and a resolved browser bundle", () => {
+  execFileSync(process.execPath, ["scripts/build.mjs"], { stdio: "pipe" });
+  assert.equal(existsSync("dist/index.html"), true);
+  assert.equal(existsSync("dist/assets"), true);
+  const bundle = readFileSync("dist/app.js", "utf8");
+  assert.doesNotMatch(bundle, /(?:from\s*|import\s*\()["']@capacitor\//);
 });
 ```
 
@@ -115,7 +130,7 @@ npm install --save-exact @capacitor/app@8.1.0 @capacitor/browser@8.0.3 @capacito
 Install build packages:
 
 ```bash
-npm install --save-dev --save-exact @capacitor/android@8.4.1 @capacitor/cli@8.4.1 @capacitor/ios@8.4.1 esbuild@0.28.1
+npm install --save-dev --save-exact @capacitor/android@8.4.1 @capacitor/cli@8.4.1 @capacitor/ios@8.4.1 esbuild@0.28.1 typescript@7.0.2
 ```
 
 Expected: `package-lock.json` is created and `npm audit` reports zero vulnerabilities.
