@@ -285,7 +285,14 @@ test("native adapter maps semantic haptics and plugin listener cleanup", async (
   const calls = [];
   const platform = createNativePlatform({
     Capacitor: { getPlatform: () => "ios" },
-    App: { addListener: async (name) => ({ remove: async () => calls.push(`remove:${name}`) }) },
+    App: {
+      addListener: async (name, listener) => {
+        calls.push({ name, listener });
+        return { remove: async () => calls.push(`remove:${name}`) };
+      },
+      getLaunchUrl: async () => ({ url: "salvo://open/room/ABCD" }),
+      exitApp: async () => calls.push("exit"),
+    },
     Browser: { open: async ({ url }) => calls.push(url) },
     Haptics: { impact: async ({ style }) => calls.push(style), notification: async ({ type }) => calls.push(type) },
     Network: { getStatus: async () => ({ connected: true, connectionType: "wifi" }), addListener: async () => ({ remove: async () => {} }) },
@@ -296,10 +303,26 @@ test("native adapter maps semantic haptics and plugin listener cleanup", async (
   });
   await platform.haptic("hit");
   await assert.rejects(() => platform.secureSession.set("native-token"), /Secure session storage unavailable/);
-  const remove = await platform.onLifecycleChange(() => {});
+  let active;
+  const remove = await platform.onLifecycleChange((state) => { active = state.active; });
+  const lifecycle = calls.find((entry) => entry.name === "appStateChange");
+  lifecycle.listener({ isActive: true });
+  assert.equal(active, true);
   await remove();
   assert.equal(platform.getPlatform(), "ios");
-  assert.deepEqual(calls, ["MEDIUM", "remove:appStateChange"]);
+  assert.equal(calls.includes("MEDIUM"), true);
+  assert.equal(calls.includes("remove:appStateChange"), true);
+});
+
+test("native deep links include cold starts and unhandled Android back exits", async () => {
+  const harness = nativeHarness({ launchUrl: "salvo://open/room/ABCD" });
+  const platform = createNativePlatform(harness.plugins);
+  const urls = [];
+  await platform.onDeepLink((url) => urls.push(url));
+  await platform.onBack(() => false);
+  await harness.emit("backButton", { canGoBack: false });
+  assert.deepEqual(urls, ["salvo://open/room/ABCD"]);
+  assert.equal(harness.exitCount(), 1);
 });
 ```
 
@@ -314,11 +337,11 @@ Expected: FAIL because the platform modules do not exist.
 Create `src/platform/web.js` exporting `createWebPlatform()` with this stable contract:
 
 ```js
-export function createWebPlatform({ window: host = window, navigator: nav = navigator, storage = localStorage } = {}) {
+export function createWebPlatform({ window: host = globalThis.window, navigator: nav = globalThis.navigator, storage = globalThis.localStorage } = {}) {
   return {
     isNative: () => false,
     getPlatform: () => "web",
-    getNetworkStatus: async () => ({ connected: nav.onLine !== false, connectionType: nav.onLine === false ? "none" : "unknown" }),
+    getNetworkStatus: async () => ({ connected: nav?.onLine !== false, connectionType: nav?.onLine === false ? "none" : "unknown" }),
     async onNetworkChange(listener) {
       const online = () => listener({ connected: true, connectionType: "unknown" });
       const offline = () => listener({ connected: false, connectionType: "none" });
@@ -330,9 +353,13 @@ export function createWebPlatform({ window: host = window, navigator: nav = navi
       };
     },
     async share(payload) {
-      if (!nav.share) return { shared: false };
-      await nav.share(payload);
-      return { shared: true };
+      if (!nav?.share) return { shared: false };
+      try {
+        await nav.share(payload);
+        return { shared: true };
+      } catch {
+        return { shared: false };
+      }
     },
     haptic: async () => {},
     openExternalUrl: async (url) => host.open(url, "_blank", "noopener,noreferrer"),
@@ -368,7 +395,7 @@ async function subscribe(registration) {
 }
 ```
 
-`onDeepLink`, `onBack`, and `onLifecycleChange` must return cleanup functions backed by `App.addListener`. `settings.get/set` must use `Preferences`, removing keys when `value === null`. `share` must return `{ shared: true }` after `Share.share()`. `openExternalUrl` must use `Browser.open()`. `configureSystemBars()` uses the Capacitor 8 `SystemBars` API exported by `@capacitor/core`; its CSS inset injection remains configured in `capacitor.config.ts`. Plugin errors in haptics, splash, and system-bar setup are caught and converted to no-ops. Native `secureSession.get/set/clear` must reject with `Secure session storage unavailable` and must never call `Preferences`; the identity plan replaces only this fail-closed implementation with Keychain/Keystore.
+`onDeepLink`, `onBack`, and `onLifecycleChange` must return cleanup functions backed by `App.addListener`. Normalize `appStateChange.isActive` to `{ active }`. Register `appUrlOpen` before reading `App.getLaunchUrl()` so a cold-start URL is delivered without a launch race or duplicate. `onBack(listener)` awaits the listener and calls `App.exitApp()` only when it returns `false`. `settings.get/set` must use `Preferences`, removing keys when `value === null`. `share` returns `{ shared: true }` after `Share.share()` and `{ shared: false }` on cancellation/failure so the caller can expose copy fallback. `openExternalUrl` must use `Browser.open()`. `configureSystemBars()` uses the Capacitor 8 `SystemBars` API exported by `@capacitor/core`; its CSS inset injection remains configured in `capacitor.config.ts`. Plugin errors in haptics, splash, and system-bar setup are caught and converted to no-ops. Native `secureSession.get/set/clear` must reject with `Secure session storage unavailable` and must never call `Preferences`; the identity plan replaces only this fail-closed implementation with Keychain/Keystore.
 
 - [ ] **Step 5: Export one selected platform**
 
