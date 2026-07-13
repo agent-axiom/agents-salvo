@@ -77,6 +77,19 @@ function firstWaterCoordinate(board) {
   throw new Error("Expected an unoccupied board coordinate");
 }
 
+function firstUnshotCoordinate(game, playerId) {
+  const targetPlayerId = playerId === "p1" ? "p2" : "p1";
+  const board = game.players[targetPlayerId].board;
+  for (let row = 0; row < board.size; row += 1) {
+    for (let col = 0; col < board.size; col += 1) {
+      if (!board.shots.some((shot) => shot.row === row && shot.col === col)) {
+        return { row, col };
+      }
+    }
+  }
+  throw new Error("Expected an unshot board coordinate");
+}
+
 function localStateForOutcome(result) {
   const presetId = result === "mine" || result === "sweeper" ? "perelman" : "classic";
   const preset = getGamePreset(presetId);
@@ -485,36 +498,8 @@ test("creation and parsing strip outcome-inapplicable board and log ids", () => 
   }
 });
 
-test("creation and parsing reject malformed outcome-required ids", () => {
+test("creation and parsing reject malformed game-log ship ids", () => {
   const cases = [
-    {
-      name: "hit board without shipId",
-      result: "hit",
-      mutate(value) {
-        delete outcomeShot(value, "hit").shipId;
-      },
-    },
-    {
-      name: "sunk board with unknown shipId",
-      result: "sunk",
-      mutate(value) {
-        outcomeShot(value, "sunk").shipId = "unknown-ship";
-      },
-    },
-    {
-      name: "mine board without markerId",
-      result: "mine",
-      mutate(value) {
-        delete outcomeShot(value, "mine").markerId;
-      },
-    },
-    {
-      name: "sweeper board with unknown markerId",
-      result: "sweeper",
-      mutate(value) {
-        outcomeShot(value, "sweeper").markerId = "unknown-marker";
-      },
-    },
     {
       name: "hit log with null shipId",
       result: "hit",
@@ -559,15 +544,137 @@ test("creation and parsing reject malformed outcome-required ids", () => {
   }
 });
 
+test("game replay repairs derived state and remains playable", () => {
+  const battle = liveBattle("salvo");
+  const state = localState({
+    presetId: "salvo",
+    boards: battle.boards,
+    game: battle.game,
+  });
+  const expected = createLocalBattleSnapshot(state, () => NOW);
+  state.game.currentPlayerId = "p2";
+  state.game.salvoRemaining = 999;
+  state.game.players.p2.board.shots[0].result = "miss";
+  delete state.game.players.p2.board.shots[0].shipId;
+
+  const created = createLocalBattleSnapshot(state, () => NOW);
+  assert.deepEqual(created, expected);
+  assert.notEqual(created.game.salvoRemaining, 999);
+
+  const corruptedSnapshot = structuredClone(expected);
+  corruptedSnapshot.game.currentPlayerId = "p2";
+  corruptedSnapshot.game.salvoRemaining = 999;
+  corruptedSnapshot.game.players.p2.board.shots[0].result = "miss";
+  delete corruptedSnapshot.game.players.p2.board.shots[0].shipId;
+  const parsed = parseLocalBattleSnapshot(JSON.stringify(corruptedSnapshot));
+
+  assert.deepEqual(parsed, expected);
+  assert.doesNotThrow(() =>
+    fireAt(
+      parsed.game,
+      parsed.game.currentPlayerId,
+      firstUnshotCoordinate(parsed.game, parsed.game.currentPlayerId),
+    ),
+  );
+});
+
+test("game replay rejects impossible claimed outcomes", () => {
+  const state = localState();
+  state.game.log.at(-1).result = "miss";
+  state.game.log.at(-1).shipId = null;
+  assert.equal(createLocalBattleSnapshot(state, () => NOW), null);
+
+  const snapshot = validSnapshot();
+  snapshot.game.log.at(-1).result = "miss";
+  snapshot.game.log.at(-1).shipId = null;
+  assert.throws(() => parseLocalBattleSnapshot(JSON.stringify(snapshot)));
+});
+
+test("setup reconstruction rejects placements that domain rules disallow", () => {
+  const makeTouching = (value) => {
+    value.setupBoard.ships[1].cells = [
+      { row: 1, col: 4 },
+      { row: 1, col: 5 },
+      { row: 1, col: 6 },
+    ];
+  };
+  const state = setupState();
+  makeTouching(state);
+  assert.equal(createLocalBattleSnapshot(state, () => NOW), null);
+
+  const snapshot = createLocalBattleSnapshot(setupState(), () => NOW);
+  makeTouching(snapshot);
+  assert.throws(() => parseLocalBattleSnapshot(JSON.stringify(snapshot)));
+});
+
+test("game and training replay reject repeated coordinates", () => {
+  const gameState = localState();
+  gameState.game.log.push(structuredClone(gameState.game.log[0]));
+  assert.equal(createLocalBattleSnapshot(gameState, () => NOW), null);
+
+  const gameSnapshot = validSnapshot();
+  gameSnapshot.game.log.push(structuredClone(gameSnapshot.game.log[0]));
+  assert.throws(() => parseLocalBattleSnapshot(JSON.stringify(gameSnapshot)));
+
+  const drillState = trainingState();
+  drillState.training.session.log.push(
+    structuredClone(drillState.training.session.log[0]),
+  );
+  assert.equal(createLocalBattleSnapshot(drillState, () => NOW), null);
+
+  const drillSnapshot = createLocalBattleSnapshot(trainingState(), () => NOW);
+  drillSnapshot.training.session.log.push(
+    structuredClone(drillSnapshot.training.session.log[0]),
+  );
+  assert.throws(() => parseLocalBattleSnapshot(JSON.stringify(drillSnapshot)));
+});
+
+test("training replay repairs persisted derived internals", () => {
+  const state = trainingState();
+  const expected = createLocalBattleSnapshot(state, () => NOW);
+  state.training.session.board = createTrainingSession("endgame").board;
+  state.training.session.score = 999;
+  state.training.session.shotLimit = 999;
+
+  assert.deepEqual(
+    createLocalBattleSnapshot(state, () => NOW),
+    expected,
+  );
+
+  const corruptedSnapshot = structuredClone(expected);
+  corruptedSnapshot.training.session.board = createTrainingSession("endgame").board;
+  corruptedSnapshot.training.session.score = 999;
+  corruptedSnapshot.training.session.shotLimit = 999;
+  assert.deepEqual(
+    parseLocalBattleSnapshot(JSON.stringify(corruptedSnapshot)),
+    expected,
+  );
+});
+
+test("training replay derives optional claims and rejects false claims", () => {
+  const expected = createLocalBattleSnapshot(trainingState(), () => NOW);
+  const sparse = structuredClone(expected);
+  delete sparse.training.session.log[0].result;
+  delete sparse.training.session.log[0].quality;
+  delete sparse.training.session.log[0].feedbackId;
+  assert.deepEqual(parseLocalBattleSnapshot(JSON.stringify(sparse)), expected);
+
+  const invalidState = trainingState();
+  invalidState.training.session.log[0].quality = "weak";
+  assert.equal(createLocalBattleSnapshot(invalidState, () => NOW), null);
+
+  const invalidSnapshot = structuredClone(expected);
+  invalidSnapshot.training.session.log[0].feedbackId = "hit";
+  assert.throws(() =>
+    parseLocalBattleSnapshot(JSON.stringify(invalidSnapshot)),
+  );
+});
+
 test("mode and screen validation rejects unrenderable V1 structures", () => {
   const unknownPiece = setupState();
   unknownPiece.setupBoard.ships[0].id = "unknown-ship";
   const incompleteGameBoards = localState();
   incompleteGameBoards.boards.p2.ships.pop();
-  const invalidGameShot = localState();
-  invalidGameShot.game.players.p2.board.shots[0].result = "unknown";
-  const invalidTrainingBoard = trainingState();
-  invalidTrainingBoard.training.session.board.size = 5;
 
   const invalidStates = [
     setupState("agent", { setupBoard: null }),
@@ -575,12 +682,10 @@ test("mode and screen validation rejects unrenderable V1 structures", () => {
     setupState("agent", { setupSelectedShipId: null }),
     unknownPiece,
     incompleteGameBoards,
-    invalidGameShot,
     handoffPassState({ passPlayerId: "p1" }),
     handoffPassState({ passPlayerId: "p3" }),
     handoffPassState({ setupOrientation: "diagonal" }),
     handoffPassState({ boards: { p1: null, p2: null } }),
-    invalidTrainingBoard,
     trainingState({
       training: {
         scenarioId: "checkerboard",
@@ -870,13 +975,28 @@ test("parse rejects arrays, null, and primitive JSON values", () => {
   }
 });
 
-test("parse distinguishes unsupported snapshot versions before V1 validation", () => {
-  for (const version of [undefined, null, 0, 2, "1"]) {
+test("parse reserves unsupported-version errors for positive future integers", () => {
+  for (const version of [2, 3, 100]) {
     assert.throws(
       () => parseLocalBattleSnapshot(JSON.stringify({ version })),
       (error) => {
         assert.ok(error instanceof UnsupportedLocalBattleSnapshotVersionError);
         assert.equal(error.foundVersion, version);
+        return true;
+      },
+    );
+  }
+});
+
+test("parse classifies malformed version envelopes as invalid current data", () => {
+  for (const version of [undefined, null, 0, -1, 1.5, "1"]) {
+    assert.throws(
+      () => parseLocalBattleSnapshot(JSON.stringify({ version })),
+      (error) => {
+        assert.equal(
+          error instanceof UnsupportedLocalBattleSnapshotVersionError,
+          false,
+        );
         return true;
       },
     );
@@ -990,6 +1110,48 @@ test("store save persists and load restores a detached snapshot", async () => {
   ]);
 });
 
+test("store preserves the log battle tab", async () => {
+  const settings = memorySettings();
+  const snapshots = createLocalBattleSnapshotStore(settings, { now: () => NOW });
+
+  await snapshots.save(localState({ battleTab: "log" }));
+  const raw = settings.values.get("localBattle");
+
+  assert.equal(typeof raw, "string");
+  assert.equal(JSON.parse(raw).battleTab, "log");
+  assert.equal((await snapshots.load()).battleTab, "log");
+  assert.deepEqual(settings.calls, [
+    ["set", "localBattle", raw],
+    ["get", "localBattle"],
+  ]);
+});
+
+test("store normalizes unknown and missing battle tabs without clearing gameplay", async () => {
+  for (const battleTab of ["unknown", undefined]) {
+    const state = localState({ battleTab });
+    if (battleTab === undefined) {
+      delete state.battleTab;
+    }
+    const settings = memorySettings();
+    const snapshots = createLocalBattleSnapshotStore(settings, { now: () => NOW });
+
+    await snapshots.save(state);
+    const raw = settings.values.get("localBattle");
+
+    assert.equal(typeof raw, "string", String(battleTab));
+    assert.equal(JSON.parse(raw).battleTab, "target", String(battleTab));
+    assert.equal((await snapshots.load()).battleTab, "target", String(battleTab));
+    assert.equal(
+      settings.calls.some(
+        ([operation, key, value]) =>
+          operation === "set" && key === "localBattle" && value === null,
+      ),
+      false,
+      String(battleTab),
+    );
+  }
+});
+
 test("store save clears the active key when state is not persistable", async () => {
   const settings = memorySettings({ localBattle: "stale" });
   const snapshots = createLocalBattleSnapshotStore(settings, { now: () => NOW });
@@ -1061,6 +1223,52 @@ test("unsupported snapshots are quarantined without rewriting the raw value", as
   assert.equal(await snapshots.load(), null);
   assert.equal(settings.values.get("localBattleQuarantine"), raw);
   assert.equal(settings.values.has("localBattle"), false);
+});
+
+test("malformed versions are quarantined and cleared", async () => {
+  for (const version of [undefined, null, 0, -1, 1.5, "1"]) {
+    const raw = JSON.stringify(validSnapshot({ version }));
+    const settings = memorySettings({ localBattle: raw });
+    const snapshots = createLocalBattleSnapshotStore(settings);
+
+    assert.equal(await snapshots.load(), null, String(version));
+    assert.equal(settings.values.get("localBattleQuarantine"), raw);
+    assert.equal(settings.values.has("localBattle"), false);
+  }
+});
+
+test("inherited versions are quarantined and cleared", async () => {
+  const snapshot = validSnapshot();
+  delete snapshot.version;
+  const raw = JSON.stringify(snapshot);
+  const previousDescriptor = Object.getOwnPropertyDescriptor(
+    Object.prototype,
+    "version",
+  );
+
+  try {
+    Object.defineProperty(Object.prototype, "version", {
+      configurable: true,
+      value: 1,
+    });
+    assert.throws(
+      () => parseLocalBattleSnapshot(raw),
+      (error) =>
+        !(error instanceof UnsupportedLocalBattleSnapshotVersionError),
+    );
+
+    const settings = memorySettings({ localBattle: raw });
+    const snapshots = createLocalBattleSnapshotStore(settings);
+    assert.equal(await snapshots.load(), null);
+    assert.equal(settings.values.get("localBattleQuarantine"), raw);
+    assert.equal(settings.values.has("localBattle"), false);
+  } finally {
+    if (previousDescriptor) {
+      Object.defineProperty(Object.prototype, "version", previousDescriptor);
+    } else {
+      delete Object.prototype.version;
+    }
+  }
 });
 
 test("unsupported future versions are preserved and rethrown unchanged", async () => {
