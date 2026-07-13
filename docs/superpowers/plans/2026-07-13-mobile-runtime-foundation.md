@@ -479,10 +479,17 @@ Create `src/core/local-battle-snapshot.js` with:
 ```js
 export const LOCAL_BATTLE_SNAPSHOT_VERSION = 1;
 const LOCAL_MODES = new Set(["agent", "hotseat", "training"]);
-const ACTIVE_SCREENS = new Set(["setup", "game", "training"]);
+const LOCAL_SCREENS_BY_MODE = {
+  agent: new Set(["setup", "playing"]),
+  hotseat: new Set(["setup", "playing", "pass"]),
+  training: new Set(["training"]),
+};
 
 export function createLocalBattleSnapshot(state, now = () => new Date().toISOString()) {
-  if (!LOCAL_MODES.has(state.mode) || !ACTIVE_SCREENS.has(state.screen) || state.game?.phase === "finished") return null;
+  const validScreen = LOCAL_SCREENS_BY_MODE[state?.mode]?.has(state?.screen);
+  const finished = state?.game?.phase === "finished"
+    || state?.training?.session?.phase === "finished";
+  if (!LOCAL_MODES.has(state?.mode) || !validScreen || finished) return null;
   return structuredClone({
     version: LOCAL_BATTLE_SNAPSHOT_VERSION,
     savedAt: now(),
@@ -503,7 +510,7 @@ export function createLocalBattleSnapshot(state, now = () => new Date().toISOStr
 }
 ```
 
-`parseLocalBattleSnapshot(raw)` must reject non-JSON, non-object values, versions other than `1`, unsupported mode/screen pairs, missing `presetId`, and invalid `savedAt`. `createLocalBattleSnapshotStore(settings)` uses the keys `localBattle` and `localBattleQuarantine`; `save()` clears the active key when serialization returns `null`.
+`parseLocalBattleSnapshot(raw)` must reject non-JSON, non-object values, versions other than `1`, unsupported mode/screen pairs (using the real `setup`, `playing`, `pass`, and `training` screen names above), missing `presetId`, invalid `savedAt`, finished games, and finished training sessions. `createLocalBattleSnapshotStore(settings)` uses the keys `localBattle` and `localBattleQuarantine`; `save()` clears the active key when serialization returns `null`.
 
 - [ ] **Step 4: Run snapshot and coverage tests**
 
