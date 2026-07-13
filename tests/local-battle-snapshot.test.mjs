@@ -2,12 +2,24 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   LOCAL_BATTLE_SNAPSHOT_VERSION,
+  UnsupportedLocalBattleSnapshotVersionError,
   createLocalBattleSnapshot,
   createLocalBattleSnapshotStore,
   parseLocalBattleSnapshot,
 } from "../src/core/local-battle-snapshot.js";
+import {
+  createGameFromBoards,
+  fireAt,
+  randomlyPlaceSetup,
+} from "../src/core/game.js";
+import { getGamePreset } from "../src/core/presets.js";
+import {
+  applyTrainingShot,
+  createTrainingSession,
+} from "../src/core/training.js";
 
 const NOW = "2026-07-13T12:00:00.000Z";
+const NESTED_SECRET = "secret-nested-value";
 const SNAPSHOT_KEYS = [
   "version",
   "savedAt",
@@ -26,25 +38,50 @@ const SNAPSHOT_KEYS = [
   "training",
 ];
 
-function board(id) {
+function completeBoard(presetId = "classic", rngValue = 0) {
+  return randomlyPlaceSetup(getGamePreset(presetId), () => rngValue);
+}
+
+function liveBattle(presetId = "classic", { withShot = true } = {}) {
+  const preset = getGamePreset(presetId);
+  const p1Board = completeBoard(presetId, 0);
+  const p2Board = completeBoard(presetId, 0.75);
+  const started = createGameFromBoards(p1Board, p2Board, "p1", {
+    presetId,
+    rules: preset.rules,
+  });
+  const target = started.players.p2.board.ships[0].cells[0];
+  const game = withShot ? fireAt(started, "p1", target).game : started;
+
   return {
-    size: 10,
-    ships: [
-      {
-        id,
-        length: 1,
-        cells: [{ row: 1, col: 2 }],
-        hits: [],
-      },
-    ],
-    shots: [],
-    markers: [],
+    boards: { p1: p1Board, p2: p2Board },
+    game,
+  };
+}
+
+function trainingProgress() {
+  return {
+    checkerboard: {
+      completions: 2,
+      bestScore: 8,
+      bestAccuracy: 75,
+      bestRatingId: "steady",
+      lastPlayedAt: "2026-07-12T12:00:00.000Z",
+    },
+    daily: {
+      date: "2026-07-13",
+      completions: 2,
+      completedScenarioIds: ["checkerboard", "lineFinish"],
+      goalCompletedDate: "",
+      streak: 1,
+      bestStreak: 2,
+      awards: ["firstWatch"],
+    },
   };
 }
 
 function localState(overrides = {}) {
-  const p1Board = board("p1-submarine");
-  const p2Board = board("p2-submarine");
+  const battle = liveBattle();
 
   return {
     language: "en",
@@ -54,33 +91,20 @@ function localState(overrides = {}) {
     mode: "agent",
     presetId: "classic",
     setupPlayerId: "p1",
-    setupBoard: board("setup-submarine"),
+    setupBoard: completeBoard(),
     setupOrientation: "horizontal",
-    setupSelectedShipId: "setup-submarine",
+    setupSelectedShipId: "",
     setupHover: { row: 3, col: 4 },
     setupError: "unrelated-ui-state",
-    boards: { p1: p1Board, p2: p2Board },
-    game: {
-      phase: "playing",
-      currentPlayerId: "p1",
-      winnerId: null,
-      presetId: "classic",
-      boards: { p1: p1Board, p2: p2Board },
-      log: [
-        {
-          playerId: "p1",
-          coordinate: { row: 5, col: 6 },
-          result: "hit",
-        },
-      ],
-    },
+    boards: battle.boards,
+    game: battle.game,
     battleTab: "target",
     agentDifficulty: "hard",
     passPlayerId: null,
     training: {
       scenarioId: "checkerboard",
       session: null,
-      progress: { checkerboard: { completed: 2 } },
+      progress: trainingProgress(),
     },
     auth: { token: "secret-auth-token", user: { id: "private-user" } },
     profile: { data: { private: true } },
@@ -92,40 +116,56 @@ function localState(overrides = {}) {
 }
 
 function trainingState(overrides = {}) {
+  const session = applyTrainingShot(
+    createTrainingSession("checkerboard"),
+    { row: 0, col: 0 },
+  );
   return localState({
     mode: "training",
     screen: "training",
     game: null,
     training: {
       scenarioId: "checkerboard",
-      session: {
-        phase: "playing",
-        shots: 3,
-        board: board("training-submarine"),
-      },
-      progress: { checkerboard: { completed: 2 } },
+      session,
+      progress: trainingProgress(),
     },
     ...overrides,
   });
 }
 
-function expectedSnapshot(state) {
+function setupState(mode = "agent", overrides = {}) {
+  return localState({
+    mode,
+    screen: "setup",
+    boards: { p1: null, p2: null },
+    game: null,
+    passPlayerId: null,
+    ...overrides,
+  });
+}
+
+function handoffPassState(overrides = {}) {
+  return setupState("hotseat", {
+    screen: "pass",
+    setupPlayerId: "p2",
+    boards: { p1: completeBoard(), p2: null },
+    passPlayerId: "p2",
+    ...overrides,
+  });
+}
+
+function gamePassState(overrides = {}) {
+  const battle = liveBattle("classic", { withShot: false });
+  const state = localState({
+    mode: "hotseat",
+    screen: "pass",
+    boards: battle.boards,
+    game: battle.game,
+  });
   return {
-    version: LOCAL_BATTLE_SNAPSHOT_VERSION,
-    savedAt: NOW,
-    screen: state.screen,
-    mode: state.mode,
-    presetId: state.presetId,
-    setupPlayerId: state.setupPlayerId,
-    setupBoard: state.setupBoard,
-    setupOrientation: state.setupOrientation,
-    setupSelectedShipId: state.setupSelectedShipId,
-    boards: state.boards,
-    game: state.game,
-    battleTab: state.battleTab,
-    agentDifficulty: state.agentDifficulty,
-    passPlayerId: state.passPlayerId,
-    training: state.training,
+    ...state,
+    passPlayerId: state.game.currentPlayerId,
+    ...overrides,
   };
 }
 
@@ -134,6 +174,51 @@ function validSnapshot(overrides = {}) {
     ...createLocalBattleSnapshot(localState(), () => NOW),
     ...overrides,
   };
+}
+
+function addBoardExtras(board) {
+  board.privateToken = NESTED_SECRET;
+  board.ships[0].privateToken = NESTED_SECRET;
+  board.ships[0].cells[0].privateToken = NESTED_SECRET;
+  if (board.ships[0].hits[0]) {
+    board.ships[0].hits[0].privateToken = NESTED_SECRET;
+  }
+  if (board.markers[0]) {
+    board.markers[0].privateToken = NESTED_SECRET;
+    board.markers[0].cell.privateToken = NESTED_SECRET;
+  }
+  if (board.shots[0]) {
+    board.shots[0].privateToken = NESTED_SECRET;
+  }
+}
+
+function addGameExtras(snapshot) {
+  snapshot.game.privateToken = NESTED_SECRET;
+  snapshot.game.rules.privateToken = NESTED_SECRET;
+  snapshot.game.players.p1.privateToken = NESTED_SECRET;
+  snapshot.game.players.p2.privateToken = NESTED_SECRET;
+  addBoardExtras(snapshot.game.players.p1.board);
+  addBoardExtras(snapshot.game.players.p2.board);
+  snapshot.game.log[0].privateToken = NESTED_SECRET;
+  snapshot.game.log[0].coordinate.privateToken = NESTED_SECRET;
+  addBoardExtras(snapshot.boards.p1);
+  addBoardExtras(snapshot.boards.p2);
+}
+
+function addTrainingExtras(snapshot) {
+  snapshot.training.privateToken = NESTED_SECRET;
+  snapshot.training.session.privateToken = NESTED_SECRET;
+  addBoardExtras(snapshot.training.session.board);
+  snapshot.training.session.log[0].privateToken = NESTED_SECRET;
+  snapshot.training.session.log[0].coordinate.privateToken = NESTED_SECRET;
+  snapshot.training.progress.privateToken = NESTED_SECRET;
+  snapshot.training.progress.checkerboard.privateToken = NESTED_SECRET;
+  snapshot.training.progress.daily.privateToken = NESTED_SECRET;
+  snapshot.training.progress.unknownScenario = { privateToken: NESTED_SECRET };
+}
+
+function hasNestedSecret(value) {
+  return JSON.stringify(value).includes(NESTED_SECRET);
 }
 
 function memorySettings(initial = {}) {
@@ -159,17 +244,20 @@ function memorySettings(initial = {}) {
 }
 
 const roundTripStates = [
-  ["agent setup", () => localState({ screen: "setup", game: null })],
+  ["agent setup", () => setupState()],
   ["agent battle", () => localState()],
+  ["hotseat setup", () => setupState("hotseat")],
   [
-    "hotseat setup",
-    () => localState({ mode: "hotseat", screen: "setup", game: null }),
+    "hotseat second-player setup",
+    () =>
+      setupState("hotseat", {
+        setupPlayerId: "p2",
+        boards: { p1: completeBoard(), p2: null },
+      }),
   ],
   ["hotseat battle", () => localState({ mode: "hotseat" })],
-  [
-    "hotseat pass",
-    () => localState({ mode: "hotseat", screen: "pass", passPlayerId: "p2" }),
-  ],
+  ["hotseat setup handoff", () => handoffPassState()],
+  ["hotseat game pass", () => gamePassState()],
   ["training session", () => trainingState()],
 ];
 
@@ -179,33 +267,266 @@ for (const [name, makeState] of roundTripStates) {
     const snapshot = createLocalBattleSnapshot(state, () => NOW);
 
     assert.equal(LOCAL_BATTLE_SNAPSHOT_VERSION, 1);
-    assert.deepEqual(snapshot, expectedSnapshot(state));
+    assert.notEqual(snapshot, null);
+    assert.equal(snapshot.savedAt, NOW);
     assert.deepEqual(parseLocalBattleSnapshot(JSON.stringify(snapshot)), snapshot);
+
+    if (snapshot.game) {
+      assert.equal(snapshot.game.players.p1.id, "p1");
+      assert.equal(snapshot.game.players.p2.id, "p2");
+    }
+    if (snapshot.screen === "training") {
+      assert.equal(snapshot.training.session.scenarioId, "checkerboard");
+    }
   });
 }
+
+test("playing snapshots require a real game with p1 and p2 players", () => {
+  assert.equal(
+    createLocalBattleSnapshot(localState({ game: null }), () => NOW),
+    null,
+  );
+  assert.throws(() =>
+    parseLocalBattleSnapshot(
+      JSON.stringify({ ...validSnapshot(), game: null }),
+    ),
+  );
+});
+
+test("snapshot preset ids must be own known game presets", () => {
+  const state = setupState("agent", { presetId: "__proto__" });
+  assert.equal(createLocalBattleSnapshot(state, () => NOW), null);
+  assert.throws(() =>
+    parseLocalBattleSnapshot(
+      JSON.stringify({
+        ...createLocalBattleSnapshot(setupState(), () => NOW),
+        presetId: "__proto__",
+      }),
+    ),
+  );
+});
+
+test("marker battle shots retain only renderable marker outcome fields", () => {
+  const preset = getGamePreset("perelman");
+  const p1Board = completeBoard("perelman", 0);
+  const p2Board = completeBoard("perelman", 0.75);
+  const marker = p2Board.markers[0];
+  const started = createGameFromBoards(p1Board, p2Board, "p1", {
+    presetId: preset.id,
+    rules: preset.rules,
+  });
+  const game = fireAt(started, "p1", marker.cell).game;
+  const snapshot = createLocalBattleSnapshot(
+    localState({
+      presetId: preset.id,
+      boards: { p1: p1Board, p2: p2Board },
+      game,
+    }),
+    () => NOW,
+  );
+
+  assert.equal(snapshot.game.log.at(-1).result, marker.type);
+  assert.equal(
+    snapshot.game.players.p2.board.shots.at(-1).markerId,
+    marker.id,
+  );
+  assert.deepEqual(parseLocalBattleSnapshot(JSON.stringify(snapshot)), snapshot);
+});
+
+test("mode and screen validation rejects unrenderable V1 structures", () => {
+  const unknownPiece = setupState();
+  unknownPiece.setupBoard.ships[0].id = "unknown-ship";
+  const incompleteGameBoards = localState();
+  incompleteGameBoards.boards.p2.ships.pop();
+  const invalidGameShot = localState();
+  invalidGameShot.game.players.p2.board.shots[0].result = "unknown";
+  const invalidTrainingBoard = trainingState();
+  invalidTrainingBoard.training.session.board.size = 5;
+
+  const invalidStates = [
+    setupState("agent", { setupBoard: null }),
+    setupState("agent", { setupOrientation: "diagonal" }),
+    setupState("agent", { setupSelectedShipId: null }),
+    unknownPiece,
+    incompleteGameBoards,
+    invalidGameShot,
+    handoffPassState({ passPlayerId: "p1" }),
+    handoffPassState({ passPlayerId: "p3" }),
+    handoffPassState({ setupOrientation: "diagonal" }),
+    handoffPassState({ boards: { p1: null, p2: null } }),
+    invalidTrainingBoard,
+    trainingState({
+      training: {
+        scenarioId: "checkerboard",
+        session: createTrainingSession("checkerboard"),
+        progress: null,
+      },
+    }),
+    trainingState({
+      training: {
+        scenarioId: "unknown",
+        session: createTrainingSession("checkerboard"),
+        progress: trainingProgress(),
+      },
+    }),
+    trainingState({
+      training: {
+        scenarioId: "checkerboard",
+        session: null,
+        progress: trainingProgress(),
+      },
+    }),
+  ];
+
+  for (const state of invalidStates) {
+    assert.equal(
+      createLocalBattleSnapshot(state, () => NOW),
+      null,
+      `${state.mode}/${state.screen}`,
+    );
+  }
+
+  const invalidSnapshots = [
+    {
+      ...createLocalBattleSnapshot(setupState(), () => NOW),
+      setupBoard: null,
+    },
+    {
+      ...createLocalBattleSnapshot(handoffPassState(), () => NOW),
+      passPlayerId: "p1",
+    },
+    {
+      ...createLocalBattleSnapshot(trainingState(), () => NOW),
+      training: {
+        scenarioId: "checkerboard",
+        session: null,
+        progress: trainingProgress(),
+      },
+    },
+  ];
+
+  for (const snapshot of invalidSnapshots) {
+    assert.throws(() =>
+      parseLocalBattleSnapshot(JSON.stringify(snapshot)),
+    );
+  }
+});
+
+test("training progress normalization bounds values and drops unknown lists", () => {
+  const state = trainingState();
+  state.training.progress = {
+    checkerboard: {
+      completions: -1,
+      bestScore: Number.POSITIVE_INFINITY,
+      bestAccuracy: 125,
+      bestRatingId: "unknown",
+      lastPlayedAt: "not-a-date",
+    },
+    daily: {
+      date: "not-a-date",
+      completions: -1,
+      completedScenarioIds: null,
+      goalCompletedDate: "not-a-date",
+      streak: -1,
+      bestStreak: -1,
+      awards: null,
+    },
+  };
+
+  const snapshot = createLocalBattleSnapshot(state, () => NOW);
+
+  assert.deepEqual(snapshot.training.progress, {
+    checkerboard: {
+      completions: 0,
+      bestScore: 0,
+      bestAccuracy: 100,
+      bestRatingId: "needsWork",
+      lastPlayedAt: "",
+    },
+    daily: {
+      date: "",
+      completions: 0,
+      completedScenarioIds: [],
+      goalCompletedDate: "",
+      streak: 0,
+      bestStreak: 0,
+      awards: [],
+    },
+  });
+});
 
 test("snapshot creation and parsing detach nested mutable state", () => {
   const state = trainingState();
   const snapshot = createLocalBattleSnapshot(state, () => NOW);
+  const firstShipId = state.training.session.board.ships[0].id;
+  const secondShipId = state.training.session.board.ships[1].id;
 
-  snapshot.setupBoard.ships[0].id = "snapshot-only";
-  state.training.session.board.ships[0].id = "state-only";
+  snapshot.training.session.board.ships[0].id = "snapshot-only";
+  state.training.session.board.ships[1].id = "state-only";
 
-  assert.equal(state.setupBoard.ships[0].id, "setup-submarine");
-  assert.equal(
-    snapshot.training.session.board.ships[0].id,
-    "training-submarine",
-  );
+  assert.equal(state.training.session.board.ships[0].id, firstShipId);
+  assert.equal(snapshot.training.session.board.ships[1].id, secondShipId);
 
   const raw = JSON.stringify(createLocalBattleSnapshot(trainingState(), () => NOW));
   const first = parseLocalBattleSnapshot(raw);
   const second = parseLocalBattleSnapshot(raw);
   first.training.session.board.ships[0].id = "first-only";
 
-  assert.equal(second.training.session.board.ships[0].id, "training-submarine");
+  assert.equal(second.training.session.board.ships[0].id, "search-cruiser");
 });
 
-test("training snapshots ignore a stale finished local game", () => {
+test("creation and parsing recursively strip game, player, board, ship, shot, and log extras", () => {
+  const state = localState();
+  addGameExtras(state);
+  const created = createLocalBattleSnapshot(state, () => NOW);
+
+  assert.notEqual(created, null);
+  assert.equal(hasNestedSecret(created), false);
+
+  const rawSnapshot = createLocalBattleSnapshot(localState(), () => NOW);
+  addGameExtras(rawSnapshot);
+  const parsed = parseLocalBattleSnapshot(JSON.stringify(rawSnapshot));
+
+  assert.equal(hasNestedSecret(parsed), false);
+});
+
+test("creation and parsing recursively strip training session and progress extras", () => {
+  const state = trainingState();
+  addTrainingExtras(state);
+  const created = createLocalBattleSnapshot(state, () => NOW);
+
+  assert.notEqual(created, null);
+  assert.equal(hasNestedSecret(created), false);
+
+  const rawSnapshot = createLocalBattleSnapshot(trainingState(), () => NOW);
+  addTrainingExtras(rawSnapshot);
+  const parsed = parseLocalBattleSnapshot(JSON.stringify(rawSnapshot));
+
+  assert.equal(hasNestedSecret(parsed), false);
+});
+
+test("creation and parsing recursively strip marker and marker-coordinate extras", () => {
+  const makeState = () =>
+    setupState("agent", {
+      presetId: "perelman",
+      setupBoard: completeBoard("perelman"),
+      setupSelectedShipId: "",
+    });
+  const state = makeState();
+  addBoardExtras(state.setupBoard);
+  const created = createLocalBattleSnapshot(state, () => NOW);
+
+  assert.notEqual(created, null);
+  assert.equal(hasNestedSecret(created), false);
+
+  const rawSnapshot = createLocalBattleSnapshot(makeState(), () => NOW);
+  addBoardExtras(rawSnapshot.setupBoard);
+  const parsed = parseLocalBattleSnapshot(JSON.stringify(rawSnapshot));
+
+  assert.equal(hasNestedSecret(parsed), false);
+});
+
+test("training snapshots neutralize a stale finished local game", () => {
   const state = trainingState({
     game: { ...localState().game, phase: "finished" },
   });
@@ -213,24 +534,24 @@ test("training snapshots ignore a stale finished local game", () => {
 
   assert.notEqual(snapshot, null);
   assert.equal(snapshot.training.session.phase, "playing");
-  assert.equal(snapshot.game.phase, "finished");
+  assert.equal(snapshot.game, null);
+  assert.deepEqual(snapshot.boards, { p1: null, p2: null });
 });
 
-test("parse accepts live training with a stale finished local game", () => {
+test("parse neutralizes a stale finished local game in live training", () => {
   const snapshot = createLocalBattleSnapshot(trainingState(), () => NOW);
   const withStaleGame = {
     ...snapshot,
     game: { ...localState().game, phase: "finished" },
   };
 
-  assert.deepEqual(
-    parseLocalBattleSnapshot(JSON.stringify(withStaleGame)),
-    withStaleGame,
-  );
+  const parsed = parseLocalBattleSnapshot(JSON.stringify(withStaleGame));
+  assert.equal(parsed.game, null);
+  assert.deepEqual(parsed.boards, { p1: null, p2: null });
 });
 
 for (const mode of ["agent", "hotseat"]) {
-  test(`${mode} snapshots ignore stale finished training data`, () => {
+  test(`${mode} snapshots neutralize stale finished training data`, () => {
     const state = localState({
       mode,
       training: {
@@ -242,10 +563,10 @@ for (const mode of ["agent", "hotseat"]) {
 
     assert.notEqual(snapshot, null);
     assert.equal(snapshot.game.phase, "playing");
-    assert.equal(snapshot.training.session.phase, "finished");
+    assert.equal(snapshot.training.session, null);
   });
 
-  test(`parse accepts a live ${mode} game with stale finished training data`, () => {
+  test(`parse neutralizes stale finished training data in a live ${mode} game`, () => {
     const snapshot = createLocalBattleSnapshot(localState({ mode }), () => NOW);
     const withStaleTraining = {
       ...snapshot,
@@ -255,10 +576,9 @@ for (const mode of ["agent", "hotseat"]) {
       },
     };
 
-    assert.deepEqual(
-      parseLocalBattleSnapshot(JSON.stringify(withStaleTraining)),
-      withStaleTraining,
-    );
+    const parsed = parseLocalBattleSnapshot(JSON.stringify(withStaleTraining));
+    assert.equal(parsed.game.phase, "playing");
+    assert.equal(parsed.training.session, null);
   });
 }
 
@@ -324,10 +644,15 @@ test("parse rejects arrays, null, and primitive JSON values", () => {
   }
 });
 
-test("parse rejects unsupported snapshot versions", () => {
+test("parse distinguishes unsupported snapshot versions before V1 validation", () => {
   for (const version of [undefined, null, 0, 2, "1"]) {
-    assert.throws(() =>
-      parseLocalBattleSnapshot(JSON.stringify(validSnapshot({ version }))),
+    assert.throws(
+      () => parseLocalBattleSnapshot(JSON.stringify({ version })),
+      (error) => {
+        assert.ok(error instanceof UnsupportedLocalBattleSnapshotVersionError);
+        assert.equal(error.foundVersion, version);
+        return true;
+      },
     );
   }
 });
@@ -512,6 +837,51 @@ test("unsupported snapshots are quarantined without rewriting the raw value", as
   assert.equal(settings.values.has("localBattle"), false);
 });
 
+test("unsupported future versions are preserved and rethrown unchanged", async () => {
+  const raw = JSON.stringify({ version: 2, futurePayload: true });
+  const oldQuarantine = "older-corrupt-value";
+  const settings = memorySettings({
+    localBattle: raw,
+    localBattleQuarantine: oldQuarantine,
+  });
+  const snapshots = createLocalBattleSnapshotStore(settings);
+
+  let foundError;
+  await assert.rejects(snapshots.load(), (error) => {
+    foundError = error;
+    return error instanceof UnsupportedLocalBattleSnapshotVersionError;
+  });
+
+  assert.equal(foundError.foundVersion, 2);
+  assert.equal(settings.values.get("localBattle"), raw);
+  assert.equal(
+    settings.values.get("localBattleQuarantine"),
+    oldQuarantine,
+  );
+  assert.deepEqual(settings.calls, [["get", "localBattle"]]);
+});
+
+test("structured clone failures propagate without quarantining valid data", async () => {
+  const raw = JSON.stringify(validSnapshot());
+  const settings = memorySettings({ localBattle: raw });
+  const snapshots = createLocalBattleSnapshotStore(settings);
+  const failure = new Error("structured clone failed");
+  const originalStructuredClone = globalThis.structuredClone;
+
+  try {
+    globalThis.structuredClone = () => {
+      throw failure;
+    };
+    await assert.rejects(snapshots.load(), (error) => error === failure);
+  } finally {
+    globalThis.structuredClone = originalStructuredClone;
+  }
+
+  assert.equal(settings.values.get("localBattle"), raw);
+  assert.equal(settings.values.has("localBattleQuarantine"), false);
+  assert.deepEqual(settings.calls, [["get", "localBattle"]]);
+});
+
 test("settings read failures reject without being quarantined", async () => {
   const failure = new Error("settings read failed");
   const writes = [];
@@ -567,4 +937,27 @@ test("quarantine write failures reject before the corrupt active value is cleare
 
   await assert.rejects(snapshots.load(), (error) => error === failure);
   assert.deepEqual(writes, [["localBattleQuarantine", raw]]);
+});
+
+test("active-key clear failures propagate after quarantine succeeds", async () => {
+  const raw = "{bad";
+  const failure = new Error("active snapshot clear failed");
+  const writes = [];
+  const snapshots = createLocalBattleSnapshotStore({
+    async get() {
+      return raw;
+    },
+    async set(key, value) {
+      writes.push([key, value]);
+      if (key === "localBattle") {
+        throw failure;
+      }
+    },
+  });
+
+  await assert.rejects(snapshots.load(), (error) => error === failure);
+  assert.deepEqual(writes, [
+    ["localBattleQuarantine", raw],
+    ["localBattle", null],
+  ]);
 });
