@@ -25,7 +25,7 @@ test("mobile toolchain is pinned and uses bundled local web assets", () => {
     "@capacitor/cli": "8.4.1",
     "@capacitor/ios": "8.4.1",
     esbuild: "0.28.1",
-    typescript: "7.0.2",
+    typescript: "5.9.3",
   });
   assert.equal("overrides" in packageJson, false);
   assert.equal(packageJson.dependencies["@capacitor/core"], "8.4.1");
