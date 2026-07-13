@@ -40,6 +40,15 @@ async function unavailableSecureSession() {
   throw new Error("Secure session storage unavailable");
 }
 
+function invokeObserved(listener, value) {
+  try {
+    void Promise.resolve(listener(value)).catch(() => {});
+    return null;
+  } catch (error) {
+    return { error };
+  }
+}
+
 export function createNativePlatform(plugins = defaultPlugins) {
   const {
     Capacitor: capacitor,
@@ -84,44 +93,46 @@ export function createNativePlatform(plugins = defaultPlugins) {
     },
     openExternalUrl: (url) => browser.open({ url }),
     async onDeepLink(listener) {
-      const startupDeliveries = [];
       const startupUrls = new Set();
-      let startup = true;
+      let state = "startup";
+      let startupFailure = null;
       const handle = await app.addListener("appUrlOpen", (event) => {
+        if (state === "closed") return;
         const url = event?.url;
         if (typeof url !== "string") return;
-        if (!startup) {
-          listener(url);
-          return;
-        }
+        if (state === "startup") startupUrls.add(url);
 
-        startupUrls.add(url);
-        let delivery;
-        try {
-          delivery = Promise.resolve(listener(url));
-        } catch (error) {
-          delivery = Promise.reject(error);
+        const failure = invokeObserved(listener, url);
+        if (state === "startup" && failure && startupFailure === null) {
+          startupFailure = failure;
         }
-        // Prevent an unhandled rejection before setup awaits the original.
-        void delivery.catch(() => {});
-        startupDeliveries.push(delivery);
       });
 
+      let cleanupPromise = null;
+      const cleanup = () => {
+        if (cleanupPromise) return cleanupPromise;
+        state = "closed";
+        cleanupPromise = Promise.resolve().then(() => handle.remove());
+        return cleanupPromise;
+      };
+
       try {
+        if (startupFailure) throw startupFailure.error;
         const launchEvent = await app.getLaunchUrl();
-        startup = false;
-        await Promise.all(startupDeliveries);
+        if (startupFailure) throw startupFailure.error;
 
         const launchUrl = launchEvent?.url;
         if (typeof launchUrl === "string" && !startupUrls.has(launchUrl)) {
-          await listener(launchUrl);
+          const failure = invokeObserved(listener, launchUrl);
+          if (failure) throw failure.error;
         }
+        if (startupFailure) throw startupFailure.error;
 
-        return () => handle.remove();
+        state = "active";
+        return cleanup;
       } catch (error) {
-        startup = false;
         try {
-          await handle.remove();
+          await cleanup();
         } catch {
           // Preserve the initialization failure if cleanup also fails.
         }

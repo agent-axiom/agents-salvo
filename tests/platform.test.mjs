@@ -426,6 +426,29 @@ test("native deep links suppress only a duplicate startup appUrlOpen", async () 
   await remove();
 });
 
+test("native deep links observe rejected foreground listener promises", async (t) => {
+  const failure = new Error("foreground delivery failed");
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  const appEvents = listenerHarness();
+  const adapter = createNativePlatform(nativePlugins({
+    App: {
+      ...appEvents.plugin,
+      getLaunchUrl: async () => undefined,
+      exitApp: async () => {},
+    },
+  }));
+  const remove = await adapter.onDeepLink(() => Promise.reject(failure));
+
+  await appEvents.emit("appUrlOpen", { url: "salvo://open/room/LIVE" });
+  await new Promise((resolve) => setImmediate(resolve));
+  await remove();
+
+  assert.deepEqual(unhandled, []);
+});
+
 test("native deep-link setup removes its listener when launch lookup fails", async () => {
   const failure = new Error("launch lookup failed");
   const appEvents = listenerHarness();
@@ -448,7 +471,25 @@ test("native deep-link setup removes its listener when launch lookup fails", asy
   ]);
 });
 
-test("native deep-link setup cleans up rejected cold-start delivery", async () => {
+test("native deep-link setup observes rejected cold-start delivery", async () => {
+  const failure = new Error("cold-start delivery failed");
+  const appEvents = listenerHarness();
+  const adapter = createNativePlatform(nativePlugins({
+    App: {
+      ...appEvents.plugin,
+      getLaunchUrl: async () => ({ url: "salvo://open/room/FAIL" }),
+      exitApp: async () => {},
+    },
+  }));
+
+  const remove = await adapter.onDeepLink(() => Promise.reject(failure));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(appEvents.listenerCount("appUrlOpen"), 1);
+  await remove();
+  assert.equal(appEvents.listenerCount("appUrlOpen"), 0);
+});
+
+test("native deep-link setup cleans up synchronous cold-start failure", async () => {
   const failure = new Error("cold-start delivery failed");
   const appEvents = listenerHarness();
   const adapter = createNativePlatform(nativePlugins({
@@ -460,13 +501,15 @@ test("native deep-link setup cleans up rejected cold-start delivery", async () =
   }));
 
   await assert.rejects(
-    adapter.onDeepLink(() => Promise.reject(failure)),
+    adapter.onDeepLink(() => {
+      throw failure;
+    }),
     (error) => error === failure,
   );
   assert.equal(appEvents.listenerCount("appUrlOpen"), 0);
 });
 
-test("native deep-link setup observes failed startup event delivery", async () => {
+test("native deep-link setup observes rejected startup event delivery", async () => {
   const failure = new Error("startup delivery failed");
   const launch = deferred();
   const launchStarted = deferred();
@@ -487,12 +530,14 @@ test("native deep-link setup observes failed startup event delivery", async () =
   await appEvents.emit("appUrlOpen", { url: "salvo://open/room/STARTUP" });
   launch.resolve(undefined);
 
-  await assert.rejects(setup, (error) => error === failure);
+  const remove = await setup;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(appEvents.listenerCount("appUrlOpen"), 1);
+  await remove();
   assert.equal(appEvents.listenerCount("appUrlOpen"), 0);
 });
 
-test("native deep-link setup does not wait on other delivery after failure", async () => {
-  const failure = new Error("startup delivery failed");
+test("native deep-link setup does not await startup event callbacks", async () => {
   const pendingDelivery = deferred();
   const launch = deferred();
   const launchStarted = deferred();
@@ -507,27 +552,47 @@ test("native deep-link setup does not wait on other delivery after failure", asy
       exitApp: async () => {},
     },
   }));
-  const setup = adapter.onDeepLink((url) => (
-    url.endsWith("PENDING")
-      ? pendingDelivery.promise
-      : Promise.reject(failure)
-  ));
-  let observedFailure;
-  void setup.catch((error) => {
-    observedFailure = error;
+  const setup = adapter.onDeepLink(() => pendingDelivery.promise);
+  let returnedRemove;
+  void setup.then((remove) => {
+    returnedRemove = remove;
   });
 
   await launchStarted.promise;
   await appEvents.emit("appUrlOpen", { url: "salvo://open/room/PENDING" });
-  await appEvents.emit("appUrlOpen", { url: "salvo://open/room/FAIL" });
   launch.resolve(undefined);
   await new Promise((resolve) => setImmediate(resolve));
-  const failureBeforePendingSettles = observedFailure;
+  const removeBeforeDeliverySettles = returnedRemove;
 
   pendingDelivery.resolve();
-  await assert.rejects(setup, (error) => error === failure);
-  assert.equal(failureBeforePendingSettles, failure);
-  assert.equal(appEvents.listenerCount("appUrlOpen"), 0);
+  const remove = await setup;
+  await remove();
+  assert.equal(removeBeforeDeliverySettles, remove);
+});
+
+test("native deep-link setup does not await cold-start callbacks", async () => {
+  const pendingDelivery = deferred();
+  const appEvents = listenerHarness();
+  const adapter = createNativePlatform(nativePlugins({
+    App: {
+      ...appEvents.plugin,
+      getLaunchUrl: async () => ({ url: "salvo://open/room/PENDING" }),
+      exitApp: async () => {},
+    },
+  }));
+  const setup = adapter.onDeepLink(() => pendingDelivery.promise);
+  let returnedRemove;
+  void setup.then((remove) => {
+    returnedRemove = remove;
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  const removeBeforeDeliverySettles = returnedRemove;
+
+  pendingDelivery.resolve();
+  const remove = await setup;
+  await remove();
+  assert.equal(removeBeforeDeliverySettles, remove);
 });
 
 test("native deep-link setup captures synchronous startup delivery failure", async () => {
@@ -579,6 +644,40 @@ test("native deep-link setup preserves failure when cleanup rejects", async () =
     (error) => error === failure,
   );
   assert.equal(removeCalls, 1);
+});
+
+test("native deep-link cleanup closes before an idempotent remove", async () => {
+  const removeFailure = new Error("cleanup failed");
+  let appUrlListener;
+  let removeCalls = 0;
+  const adapter = createNativePlatform(nativePlugins({
+    App: {
+      async addListener(name, listener) {
+        assert.equal(name, "appUrlOpen");
+        appUrlListener = listener;
+        return {
+          async remove() {
+            removeCalls += 1;
+            throw removeFailure;
+          },
+        };
+      },
+      getLaunchUrl: async () => undefined,
+      exitApp: async () => {},
+    },
+  }));
+  const urls = [];
+  const remove = await adapter.onDeepLink((url) => urls.push(url));
+
+  const firstRemoval = remove();
+  const secondRemoval = remove();
+  await assert.rejects(firstRemoval, (error) => error === removeFailure);
+  await assert.rejects(secondRemoval, (error) => error === removeFailure);
+  appUrlListener({ url: "salvo://open/room/LATE" });
+
+  assert.equal(firstRemoval, secondRemoval);
+  assert.equal(removeCalls, 1);
+  assert.deepEqual(urls, []);
 });
 
 test("native back exits only when the handler returns exactly false", async () => {
