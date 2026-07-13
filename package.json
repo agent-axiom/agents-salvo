@@ -7,6 +7,29 @@
     "test": "node --test tests/*.test.mjs",
     "coverage": "node --experimental-test-coverage --test-coverage-lines=98 --test tests/*.test.mjs",
     "build": "node scripts/build.mjs",
-    "start": "python3 -m http.server 5173 -d dist"
+    "start": "python3 -m http.server 5173 -d dist",
+    "mobile:sync": "npm run build && cap sync",
+    "mobile:android": "npm run mobile:sync && cap open android",
+    "mobile:ios": "npm run mobile:sync && cap open ios",
+    "mobile:verify": "npm run build && cap sync --inline"
+  },
+  "engines": {
+    "node": ">=24.14.1 <25"
+  },
+  "dependencies": {
+    "@capacitor/app": "8.1.0",
+    "@capacitor/browser": "8.0.3",
+    "@capacitor/core": "8.4.1",
+    "@capacitor/haptics": "8.0.2",
+    "@capacitor/network": "8.0.1",
+    "@capacitor/preferences": "8.0.1",
+    "@capacitor/share": "8.0.1",
+    "@capacitor/splash-screen": "8.0.1"
+  },
+  "devDependencies": {
+    "@capacitor/android": "8.4.1",
+    "@capacitor/cli": "8.4.1",
+    "@capacitor/ios": "8.4.1",
+    "esbuild": "0.28.1"
   }
 }
