@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const buildScript = readFileSync("scripts/build.mjs", "utf8");
@@ -24,6 +25,7 @@ test("mobile toolchain is pinned and uses bundled local web assets", () => {
     "@capacitor/cli": "8.4.1",
     "@capacitor/ios": "8.4.1",
     esbuild: "0.28.1",
+    typescript: "7.0.2",
   });
   assert.equal("overrides" in packageJson, false);
   assert.equal(packageJson.dependencies["@capacitor/core"], "8.4.1");
@@ -53,7 +55,43 @@ test("mobile toolchain is pinned and uses bundled local web assets", () => {
   assert.match(buildScript, /legalComments:\s*"none"/);
   assert.match(buildScript, /writeFile\(resolve\(dist, "\.nojekyll"\), ""\)/);
   assert.match(capacitorConfig, /appId:\s*"io\.github\.agentaxiom\.salvo"/);
+  assert.match(capacitorConfig, /appName:\s*"Salvo"/);
   assert.match(capacitorConfig, /webDir:\s*"dist"/);
+  assert.match(
+    capacitorConfig,
+    /android:\s*\{\s*backgroundColor:\s*"#071224"\s*\}/,
+  );
+  assert.match(
+    capacitorConfig,
+    /ios:\s*\{\s*backgroundColor:\s*"#071224",\s*contentInset:\s*"never"\s*\}/,
+  );
+  assert.match(
+    capacitorConfig,
+    /SplashScreen:\s*\{[\s\S]*?launchAutoHide:\s*false/,
+  );
+  assert.match(
+    capacitorConfig,
+    /SplashScreen:\s*\{[\s\S]*?backgroundColor:\s*"#071224"/,
+  );
+  assert.match(
+    capacitorConfig,
+    /SplashScreen:\s*\{[\s\S]*?showSpinner:\s*false/,
+  );
   assert.doesNotMatch(capacitorConfig, /server:\s*\{[^}]*url:/s);
   assert.match(capacitorConfig, /SystemBars:[\s\S]*insetsHandling:\s*"css"/);
+  assert.match(capacitorConfig, /SystemBars:[\s\S]*style:\s*"DEFAULT"/);
+  assert.match(capacitorConfig, /SystemBars:[\s\S]*hidden:\s*false/);
+  assert.match(capacitorConfig, /SystemBars:[\s\S]*animation:\s*"NONE"/);
+});
+
+test("mobile build emits bundled local web artifacts", () => {
+  execFileSync(process.execPath, ["scripts/build.mjs"]);
+
+  assert.equal(existsSync("dist/index.html"), true);
+  assert.equal(existsSync("dist/assets"), true);
+  const bundledApp = readFileSync("dist/app.js", "utf8");
+  assert.doesNotMatch(
+    bundledApp,
+    /(?:from\s*|import\s*\()["']@capacitor\//,
+  );
 });
