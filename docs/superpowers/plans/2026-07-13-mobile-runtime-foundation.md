@@ -236,6 +236,8 @@ test("web settings, share, network, and subscriptions use browser APIs", async (
   });
   await platform.settings.set("theme", "dark");
   assert.equal(await platform.settings.get("theme"), "dark");
+  await platform.secureSession.set("web-token");
+  assert.equal(await platform.secureSession.get(), "web-token");
   assert.deepEqual(await platform.getNetworkStatus(), { connected: false, connectionType: "none" });
   assert.equal((await platform.share({ title: "Salvo", text: "Battle" })).shared, true);
   const remove = await platform.onNetworkChange(() => {});
@@ -258,6 +260,7 @@ test("native adapter maps semantic haptics and plugin listener cleanup", async (
     SystemBars: { show: async () => calls.push("status") },
   });
   await platform.haptic("hit");
+  await assert.rejects(() => platform.secureSession.set("native-token"), /Secure session storage unavailable/);
   const remove = await platform.onLifecycleChange(() => {});
   await remove();
   assert.equal(platform.getPlatform(), "ios");
@@ -307,6 +310,11 @@ export function createWebPlatform({ window: host = window, navigator: nav = navi
       get: async (key) => storage.getItem(`salvo.${key}`),
       set: async (key, value) => value === null ? storage.removeItem(`salvo.${key}`) : storage.setItem(`salvo.${key}`, String(value)),
     },
+    secureSession: {
+      get: async () => storage.getItem("salvo.authToken") ?? "",
+      set: async (token) => storage.setItem("salvo.authToken", token),
+      clear: async () => storage.removeItem("salvo.authToken"),
+    },
   };
 }
 ```
@@ -325,7 +333,7 @@ async function subscribe(registration) {
 }
 ```
 
-`onDeepLink`, `onBack`, and `onLifecycleChange` must return cleanup functions backed by `App.addListener`. `settings.get/set` must use `Preferences`, removing keys when `value === null`. `share` must return `{ shared: true }` after `Share.share()`. `openExternalUrl` must use `Browser.open()`. `configureSystemBars()` uses the Capacitor 8 `SystemBars` API exported by `@capacitor/core`; its CSS inset injection remains configured in `capacitor.config.ts`. Plugin errors in haptics, splash, and system-bar setup are caught and converted to no-ops; secure authentication is deliberately absent from this first plan rather than stored insecurely.
+`onDeepLink`, `onBack`, and `onLifecycleChange` must return cleanup functions backed by `App.addListener`. `settings.get/set` must use `Preferences`, removing keys when `value === null`. `share` must return `{ shared: true }` after `Share.share()`. `openExternalUrl` must use `Browser.open()`. `configureSystemBars()` uses the Capacitor 8 `SystemBars` API exported by `@capacitor/core`; its CSS inset injection remains configured in `capacitor.config.ts`. Plugin errors in haptics, splash, and system-bar setup are caught and converted to no-ops. Native `secureSession.get/set/clear` must reject with `Secure session storage unavailable` and must never call `Preferences`; the identity plan replaces only this fail-closed implementation with Keychain/Keystore.
 
 - [ ] **Step 5: Export one selected platform**
 
@@ -588,7 +596,7 @@ Implement `applyLocalBattleSnapshot(snapshot)` by assigning only the whitelisted
 
 Hydrate non-sensitive preferences after the first paint through `platform.settings`: `language`, `theme`, `visualStyle`, `audio`, `haptics`, and JSON-encoded `trainingProgress`. Apply only known enum values and object-shaped training data, then render once. Replace direct writes for those keys with awaited `platform.settings.set()` calls. On web this keeps the existing `salvo.*` localStorage keys; on native it uses Capacitor Preferences. Authentication token migration is intentionally reserved for the secure-storage identity plan and must not be copied into Preferences.
 
-Fail closed for authentication on native until the identity plan lands: `getInitialAuthToken()` returns an empty string when `platform.isNative()`, the Telegram widget action displays `auth.mobileSecureLoginPending`, and token set/remove functions never touch native WebView `localStorage`. Local modes and the public leaderboard remain available; online rooms, private profiles, and archives remain visibly gated. Add a frontend contract assertion that the native branch cannot call `localStorage.setItem(authTokenStorageKey, token)`.
+Hydrate the existing web bearer through `platform.secureSession.get()` after first paint instead of reading `localStorage` directly. Fail closed for authentication on native until the identity plan lands: a rejected secure-session read leaves the token empty, the Telegram widget action displays `auth.mobileSecureLoginPending`, and token set/remove functions call only `platform.secureSession`. Local modes and the public leaderboard remain available; online rooms, private profiles, and archives remain visibly gated. Add a frontend contract assertion that `src/app.js` no longer calls `localStorage.setItem(authTokenStorageKey, token)` or `localStorage.removeItem(authTokenStorageKey)`.
 
 - [ ] **Step 4: Add deterministic native back behavior**
 
