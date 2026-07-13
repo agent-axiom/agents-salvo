@@ -857,6 +857,24 @@ test("creation and parsing recursively strip marker and marker-coordinate extras
   assert.equal(hasNestedSecret(parsed), false);
 });
 
+test("setup snapshots strip extras from empty board containers", () => {
+  for (const mode of ["agent", "hotseat"]) {
+    const state = setupState(mode);
+    state.boards.privateToken = NESTED_SECRET;
+    const created = createLocalBattleSnapshot(state, () => NOW);
+
+    assert.deepEqual(created.boards, { p1: null, p2: null }, mode);
+    assert.equal(hasNestedSecret(created), false, mode);
+
+    const rawSnapshot = createLocalBattleSnapshot(setupState(mode), () => NOW);
+    rawSnapshot.boards.privateToken = NESTED_SECRET;
+    const parsed = parseLocalBattleSnapshot(JSON.stringify(rawSnapshot));
+
+    assert.deepEqual(parsed.boards, { p1: null, p2: null }, mode);
+    assert.equal(hasNestedSecret(parsed), false, mode);
+  }
+});
+
 test("training snapshots neutralize a stale finished local game", () => {
   const state = trainingState({
     game: { ...localState().game, phase: "finished" },
@@ -1124,6 +1142,41 @@ test("store preserves the log battle tab", async () => {
     ["set", "localBattle", raw],
     ["get", "localBattle"],
   ]);
+});
+
+test("inherited battle tabs normalize to target", () => {
+  const previousDescriptor = Object.getOwnPropertyDescriptor(
+    Object.prototype,
+    "battleTab",
+  );
+
+  try {
+    Object.defineProperty(Object.prototype, "battleTab", {
+      configurable: true,
+      value: "log",
+    });
+
+    const state = localState();
+    delete state.battleTab;
+    assert.equal(createLocalBattleSnapshot(state, () => NOW).battleTab, "target");
+
+    const snapshot = validSnapshot();
+    delete snapshot.battleTab;
+    assert.equal(
+      parseLocalBattleSnapshot(JSON.stringify(snapshot)).battleTab,
+      "target",
+    );
+  } finally {
+    if (previousDescriptor) {
+      Object.defineProperty(
+        Object.prototype,
+        "battleTab",
+        previousDescriptor,
+      );
+    } else {
+      delete Object.prototype.battleTab;
+    }
+  }
 });
 
 test("store normalizes unknown and missing battle tabs without clearing gameplay", async () => {

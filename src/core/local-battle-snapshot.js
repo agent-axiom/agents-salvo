@@ -287,9 +287,13 @@ function normalizeSetupSnapshot(value, preset) {
 
   const emptyBoards = value.boards.p1 === null && value.boards.p2 === null;
   if (value.mode === "agent") {
-    return value.setupPlayerId === "p1" && emptyBoards ? { setupBoard, boards: value.boards } : null;
+    return value.setupPlayerId === "p1" && emptyBoards
+      ? { setupBoard, boards: { p1: null, p2: null } }
+      : null;
   }
-  if (value.setupPlayerId === "p1") return emptyBoards ? { setupBoard, boards: value.boards } : null;
+  if (value.setupPlayerId === "p1") {
+    return emptyBoards ? { setupBoard, boards: { p1: null, p2: null } } : null;
+  }
   if (value.setupPlayerId !== "p2" || value.boards.p2 !== null) return null;
   const p1 = rebuildPristineBoard(value.boards.p1, preset, { complete: true });
   return p1 ? { setupBoard, boards: { p1, p2: null } } : null;
@@ -382,7 +386,9 @@ function normalizeV1Snapshot(value) {
     setupSelectedShipId: payload.setupSelectedShipId,
     boards: payload.boards,
     game: payload.game,
-    battleTab: BATTLE_TABS.has(value.battleTab) ? value.battleTab : "target",
+    battleTab: Object.hasOwn(value, "battleTab") && BATTLE_TABS.has(value.battleTab)
+      ? value.battleTab
+      : "target",
     agentDifficulty: value.agentDifficulty,
     passPlayerId: payload.passPlayerId,
     training: payload.training,
@@ -403,7 +409,7 @@ export function createLocalBattleSnapshot(state, now = () => new Date().toISOStr
     setupSelectedShipId: state.setupSelectedShipId,
     boards: state.boards,
     game: state.game,
-    battleTab: state.battleTab,
+    battleTab: Object.hasOwn(state, "battleTab") ? state.battleTab : undefined,
     agentDifficulty: state.agentDifficulty,
     passPlayerId: state.passPlayerId,
     training: state.training,
