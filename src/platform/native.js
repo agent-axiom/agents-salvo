@@ -84,23 +84,49 @@ export function createNativePlatform(plugins = defaultPlugins) {
     },
     openExternalUrl: (url) => browser.open({ url }),
     async onDeepLink(listener) {
+      const startupDeliveries = [];
       const startupUrls = new Set();
       let startup = true;
       const handle = await app.addListener("appUrlOpen", (event) => {
         const url = event?.url;
         if (typeof url !== "string") return;
-        if (startup) startupUrls.add(url);
-        listener(url);
+        if (!startup) {
+          listener(url);
+          return;
+        }
+
+        startupUrls.add(url);
+        let delivery;
+        try {
+          delivery = Promise.resolve(listener(url));
+        } catch (error) {
+          delivery = Promise.reject(error);
+        }
+        // Prevent an unhandled rejection before setup awaits the original.
+        void delivery.catch(() => {});
+        startupDeliveries.push(delivery);
       });
 
-      const launchEvent = await app.getLaunchUrl();
-      startup = false;
-      const launchUrl = launchEvent?.url;
-      if (typeof launchUrl === "string" && !startupUrls.has(launchUrl)) {
-        listener(launchUrl);
-      }
+      try {
+        const launchEvent = await app.getLaunchUrl();
+        startup = false;
+        await Promise.all(startupDeliveries);
 
-      return () => handle.remove();
+        const launchUrl = launchEvent?.url;
+        if (typeof launchUrl === "string" && !startupUrls.has(launchUrl)) {
+          await listener(launchUrl);
+        }
+
+        return () => handle.remove();
+      } catch (error) {
+        startup = false;
+        try {
+          await handle.remove();
+        } catch {
+          // Preserve the initialization failure if cleanup also fails.
+        }
+        throw error;
+      }
     },
     onBack: (listener) => subscribe(app.addListener(
       "backButton",
