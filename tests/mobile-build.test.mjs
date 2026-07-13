@@ -2,6 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import capacitorCliConfig from "@capacitor/cli/dist/config.js";
+
+const { loadConfig } = capacitorCliConfig;
 
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const buildScript = readFileSync("scripts/build.mjs", "utf8");
@@ -84,14 +87,39 @@ test("mobile toolchain is pinned and uses bundled local web assets", () => {
   assert.match(capacitorConfig, /SystemBars:[\s\S]*animation:\s*"NONE"/);
 });
 
+test("Capacitor CLI loads the local TypeScript config", async () => {
+  const config = await loadConfig();
+
+  assert.equal(config.app.appId, "io.github.agentaxiom.salvo");
+  assert.equal(config.app.appName, "Salvo");
+  assert.equal(config.app.webDir, "dist");
+  assert.equal(config.app.extConfig.server?.url, undefined);
+});
+
 test("mobile build emits bundled local web artifacts", () => {
   execFileSync(process.execPath, ["scripts/build.mjs"]);
 
   assert.equal(existsSync("dist/index.html"), true);
   assert.equal(existsSync("dist/assets"), true);
+  assert.equal(
+    readFileSync("dist/index.html", "utf8"),
+    readFileSync("src/index.html", "utf8"),
+  );
+  assert.deepEqual(
+    readFileSync(
+      "dist/assets/images/backgrounds/paper-texture-512.png",
+    ),
+    readFileSync(
+      "src/assets/images/backgrounds/paper-texture-512.png",
+    ),
+  );
   const bundledApp = readFileSync("dist/app.js", "utf8");
   assert.doesNotMatch(
     bundledApp,
-    /(?:from\s*|import\s*\()["']@capacitor\//,
+    /(?:from\s*|import\s*(?:\(\s*)?)["']@capacitor\//,
+  );
+  assert.doesNotMatch(
+    bundledApp,
+    /(?:from\s*|import\s*(?:\(\s*)?)["']\.\.?\//,
   );
 });
