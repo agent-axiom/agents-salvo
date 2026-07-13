@@ -59,6 +59,98 @@ function liveBattle(presetId = "classic", { withShot = true } = {}) {
   };
 }
 
+function firstWaterCoordinate(board) {
+  for (let row = 0; row < board.size; row += 1) {
+    for (let col = 0; col < board.size; col += 1) {
+      const occupied =
+        board.ships.some((ship) =>
+          ship.cells.some((cell) => cell.row === row && cell.col === col),
+        ) ||
+        board.markers.some(
+          (marker) => marker.cell.row === row && marker.cell.col === col,
+        );
+      if (!occupied) {
+        return { row, col };
+      }
+    }
+  }
+  throw new Error("Expected an unoccupied board coordinate");
+}
+
+function localStateForOutcome(result) {
+  const presetId = result === "mine" || result === "sweeper" ? "perelman" : "classic";
+  const preset = getGamePreset(presetId);
+  const p1Board = completeBoard(presetId, 0);
+  const p2Board = completeBoard(presetId, 0.75);
+  const started = createGameFromBoards(p1Board, p2Board, "p1", {
+    presetId,
+    rules: preset.rules,
+  });
+  const targetBoard = started.players.p2.board;
+  let coordinate;
+  if (result === "miss") {
+    coordinate = firstWaterCoordinate(targetBoard);
+  } else if (result === "hit") {
+    coordinate = targetBoard.ships.find((ship) => ship.length > 1).cells[0];
+  } else if (result === "sunk") {
+    coordinate = targetBoard.ships.find((ship) => ship.length === 1).cells[0];
+  } else {
+    coordinate = targetBoard.markers.find((marker) => marker.type === result).cell;
+  }
+  const game = fireAt(started, "p1", coordinate).game;
+  if (game.log.at(-1).result !== result) {
+    throw new Error(`Expected ${result} outcome`);
+  }
+  return localState({
+    presetId,
+    boards: { p1: p1Board, p2: p2Board },
+    game,
+  });
+}
+
+function outcomeShot(value, result) {
+  return value.game.players.p2.board.shots.find(
+    (shot) => shot.result === result,
+  );
+}
+
+function addOutcomeInapplicableIds(value, result) {
+  const shot = outcomeShot(value, result);
+  if (result === "miss") {
+    shot.shipId = NESTED_SECRET;
+    shot.markerId = NESTED_SECRET;
+  } else if (result === "hit" || result === "sunk") {
+    shot.markerId = NESTED_SECRET;
+  } else {
+    shot.shipId = NESTED_SECRET;
+  }
+  value.game.log.at(-1).markerId = NESTED_SECRET;
+  value.game.log.at(-1).privateToken = NESTED_SECRET;
+}
+
+function assertNormalizedOutcomeIds(value, result) {
+  const shot = outcomeShot(value, result);
+  const logEntry = value.game.log.at(-1);
+  assert.equal(hasNestedSecret(value), false, result);
+  if (result === "miss") {
+    assert.equal(Object.hasOwn(shot, "shipId"), false, result);
+    assert.equal(Object.hasOwn(shot, "markerId"), false, result);
+  } else if (result === "hit" || result === "sunk") {
+    assert.equal(typeof shot.shipId, "string", result);
+    assert.equal(Object.hasOwn(shot, "markerId"), false, result);
+  } else {
+    assert.equal(typeof shot.markerId, "string", result);
+    assert.equal(Object.hasOwn(shot, "shipId"), false, result);
+  }
+  assert.equal(
+    logEntry.shipId,
+    result === "hit" || result === "sunk" ? shot.shipId : null,
+    result,
+  );
+  assert.equal(Object.hasOwn(logEntry, "markerId"), false, result);
+  assert.equal(Object.hasOwn(logEntry, "privateToken"), false, result);
+}
+
 function trainingProgress() {
   return {
     checkerboard: {
@@ -306,6 +398,46 @@ test("snapshot preset ids must be own known game presets", () => {
   );
 });
 
+test("inherited preset ids cannot validate a V1 snapshot", async () => {
+  const snapshot = validSnapshot();
+  delete snapshot.presetId;
+  const raw = JSON.stringify(snapshot);
+  const previousDescriptor = Object.getOwnPropertyDescriptor(
+    Object.prototype,
+    "presetId",
+  );
+
+  try {
+    Object.defineProperty(Object.prototype, "presetId", {
+      configurable: true,
+      value: "classic",
+    });
+
+    assert.throws(() => parseLocalBattleSnapshot(raw));
+
+    const settings = memorySettings({ localBattle: raw });
+    const snapshots = createLocalBattleSnapshotStore(settings);
+    assert.equal(await snapshots.load(), null);
+    assert.equal(settings.values.get("localBattleQuarantine"), raw);
+    assert.equal(settings.values.has("localBattle"), false);
+    assert.deepEqual(settings.calls, [
+      ["get", "localBattle"],
+      ["set", "localBattleQuarantine", raw],
+      ["set", "localBattle", null],
+    ]);
+  } finally {
+    if (previousDescriptor) {
+      Object.defineProperty(
+        Object.prototype,
+        "presetId",
+        previousDescriptor,
+      );
+    } else {
+      delete Object.prototype.presetId;
+    }
+  }
+});
+
 test("marker battle shots retain only renderable marker outcome fields", () => {
   const preset = getGamePreset("perelman");
   const p1Board = completeBoard("perelman", 0);
@@ -331,6 +463,100 @@ test("marker battle shots retain only renderable marker outcome fields", () => {
     marker.id,
   );
   assert.deepEqual(parseLocalBattleSnapshot(JSON.stringify(snapshot)), snapshot);
+});
+
+test("creation and parsing strip outcome-inapplicable board and log ids", () => {
+  for (const result of ["miss", "hit", "sunk", "mine", "sweeper"]) {
+    const state = localStateForOutcome(result);
+    addOutcomeInapplicableIds(state, result);
+    const created = createLocalBattleSnapshot(state, () => NOW);
+
+    assert.notEqual(created, null, result);
+    assertNormalizedOutcomeIds(created, result);
+
+    const rawSnapshot = createLocalBattleSnapshot(
+      localStateForOutcome(result),
+      () => NOW,
+    );
+    addOutcomeInapplicableIds(rawSnapshot, result);
+    const parsed = parseLocalBattleSnapshot(JSON.stringify(rawSnapshot));
+
+    assertNormalizedOutcomeIds(parsed, result);
+  }
+});
+
+test("creation and parsing reject malformed outcome-required ids", () => {
+  const cases = [
+    {
+      name: "hit board without shipId",
+      result: "hit",
+      mutate(value) {
+        delete outcomeShot(value, "hit").shipId;
+      },
+    },
+    {
+      name: "sunk board with unknown shipId",
+      result: "sunk",
+      mutate(value) {
+        outcomeShot(value, "sunk").shipId = "unknown-ship";
+      },
+    },
+    {
+      name: "mine board without markerId",
+      result: "mine",
+      mutate(value) {
+        delete outcomeShot(value, "mine").markerId;
+      },
+    },
+    {
+      name: "sweeper board with unknown markerId",
+      result: "sweeper",
+      mutate(value) {
+        outcomeShot(value, "sweeper").markerId = "unknown-marker";
+      },
+    },
+    {
+      name: "hit log with null shipId",
+      result: "hit",
+      mutate(value) {
+        value.game.log.at(-1).shipId = null;
+      },
+    },
+    {
+      name: "sunk log with unknown shipId",
+      result: "sunk",
+      mutate(value) {
+        value.game.log.at(-1).shipId = "unknown-ship";
+      },
+    },
+    ...["miss", "mine", "sweeper"].map((result) => ({
+      name: `${result} log with non-null shipId`,
+      result,
+      mutate(value) {
+        value.game.log.at(-1).shipId = NESTED_SECRET;
+      },
+    })),
+  ];
+
+  for (const invalidCase of cases) {
+    const state = localStateForOutcome(invalidCase.result);
+    invalidCase.mutate(state);
+    assert.equal(
+      createLocalBattleSnapshot(state, () => NOW),
+      null,
+      invalidCase.name,
+    );
+
+    const snapshot = createLocalBattleSnapshot(
+      localStateForOutcome(invalidCase.result),
+      () => NOW,
+    );
+    invalidCase.mutate(snapshot);
+    assert.throws(
+      () => parseLocalBattleSnapshot(JSON.stringify(snapshot)),
+      invalidCase.name,
+    );
+  }
 });
 
 test("mode and screen validation rejects unrenderable V1 structures", () => {

@@ -269,15 +269,24 @@ function hasCompleteBoards(value, preset) {
   );
 }
 
-function isValidGameLogEntry(entry, size) {
-  return (
-    isObject(entry) &&
-    PLAYER_IDS.has(entry.playerId) &&
-    PLAYER_IDS.has(entry.targetPlayerId) &&
-    entry.playerId !== entry.targetPlayerId &&
-    isCoordinate(entry.coordinate, size) &&
-    SHOT_RESULTS.has(entry.result) &&
-    (entry.shipId === null || typeof entry.shipId === "string")
+function isValidGameLogEntry(entry, game, size) {
+  if (
+    !isObject(entry) ||
+    !PLAYER_IDS.has(entry.playerId) ||
+    !PLAYER_IDS.has(entry.targetPlayerId) ||
+    entry.playerId === entry.targetPlayerId ||
+    !isCoordinate(entry.coordinate, size) ||
+    !SHOT_RESULTS.has(entry.result)
+  ) {
+    return false;
+  }
+  if (entry.result !== "hit" && entry.result !== "sunk") {
+    return entry.shipId === null;
+  }
+  return game.players[entry.targetPlayerId].board.ships.some(
+    (ship) =>
+      ship.id === entry.shipId &&
+      ship.cells.some((cell) => sameCoordinate(cell, entry.coordinate)),
   );
 }
 
@@ -301,7 +310,7 @@ function isValidGame(game, preset) {
     isValidPresetBoard(game.players.p1.board, preset, { complete: true }) &&
     isValidPresetBoard(game.players.p2.board, preset, { complete: true }) &&
     Array.isArray(game.log) &&
-    game.log.every((entry) => isValidGameLogEntry(entry, preset.size))
+    game.log.every((entry) => isValidGameLogEntry(entry, game, preset.size))
   );
 }
 
@@ -440,6 +449,7 @@ function isValidSnapshot(value) {
     !isValidSavedAt(value.savedAt) ||
     !BATTLE_TABS.has(value.battleTab) ||
     !AGENT_DIFFICULTIES.has(value.agentDifficulty) ||
+    !Object.hasOwn(value, "presetId") ||
     isFinished(value)
   ) {
     return false;
@@ -486,10 +496,9 @@ function normalizeShot(shot) {
     ...normalizeCoordinate(shot),
     result: shot.result,
   };
-  if (typeof shot.shipId === "string") {
+  if (shot.result === "hit" || shot.result === "sunk") {
     normalized.shipId = shot.shipId;
-  }
-  if (typeof shot.markerId === "string") {
+  } else if (shot.result === "mine" || shot.result === "sweeper") {
     normalized.markerId = shot.markerId;
   }
   return normalized;
@@ -517,7 +526,10 @@ function normalizeGameLogEntry(entry) {
     targetPlayerId: entry.targetPlayerId,
     coordinate: normalizeCoordinate(entry.coordinate),
     result: entry.result,
-    shipId: entry.shipId,
+    shipId:
+      entry.result === "hit" || entry.result === "sunk"
+        ? entry.shipId
+        : null,
   };
 }
 
