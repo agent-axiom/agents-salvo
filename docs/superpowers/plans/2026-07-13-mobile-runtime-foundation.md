@@ -76,6 +76,7 @@ test("mobile toolchain is pinned and uses bundled local web assets", () => {
   assert.match(buildScript, /entryPoints:\s*\[resolve\(src, "app\.js"\)\]/);
   assert.match(capacitorConfig, /appId:\s*"io\.github\.agentaxiom\.salvo"/);
   assert.match(capacitorConfig, /webDir:\s*"dist"/);
+  assert.match(capacitorConfig, /SystemBars:[\s\S]*insetsHandling:\s*"css"/);
   assert.doesNotMatch(capacitorConfig, /server:\s*\{[^}]*url:/s);
 });
 ```
@@ -108,7 +109,7 @@ Update `package.json` with `"engines": { "node": ">=24.14.1 <25" }` and these sc
 Install runtime packages:
 
 ```bash
-npm install --save-exact @capacitor/app@8.1.0 @capacitor/browser@8.0.3 @capacitor/core@8.4.1 @capacitor/haptics@8.0.2 @capacitor/network@8.0.1 @capacitor/preferences@8.0.1 @capacitor/share@8.0.1 @capacitor/splash-screen@8.0.1 @capacitor/status-bar@8.0.2
+npm install --save-exact @capacitor/app@8.1.0 @capacitor/browser@8.0.3 @capacitor/core@8.4.1 @capacitor/haptics@8.0.2 @capacitor/network@8.0.1 @capacitor/preferences@8.0.1 @capacitor/share@8.0.1 @capacitor/splash-screen@8.0.1
 ```
 
 Install build packages:
@@ -143,8 +144,11 @@ const config: CapacitorConfig = {
       backgroundColor: "#071224",
       showSpinner: false,
     },
-    StatusBar: {
-      overlaysWebView: true,
+    SystemBars: {
+      insetsHandling: "css",
+      style: "DEFAULT",
+      hidden: false,
+      animation: "NONE",
     },
   },
 };
@@ -251,7 +255,7 @@ test("native adapter maps semantic haptics and plugin listener cleanup", async (
     Preferences: { get: async () => ({ value: null }), set: async () => {}, remove: async () => {} },
     Share: { share: async () => ({ activityType: "test" }) },
     SplashScreen: { hide: async () => calls.push("splash") },
-    StatusBar: { setOverlaysWebView: async () => calls.push("status") },
+    SystemBars: { show: async () => calls.push("status") },
   });
   await platform.haptic("hit");
   const remove = await platform.onLifecycleChange(() => {});
@@ -321,7 +325,7 @@ async function subscribe(registration) {
 }
 ```
 
-`onDeepLink`, `onBack`, and `onLifecycleChange` must return cleanup functions backed by `App.addListener`. `settings.get/set` must use `Preferences`, removing keys when `value === null`. `share` must return `{ shared: true }` after `Share.share()`. `openExternalUrl` must use `Browser.open()`. Plugin errors in haptics, splash, and status-bar setup are caught and converted to no-ops; secure authentication is deliberately absent from this first plan rather than stored insecurely.
+`onDeepLink`, `onBack`, and `onLifecycleChange` must return cleanup functions backed by `App.addListener`. `settings.get/set` must use `Preferences`, removing keys when `value === null`. `share` must return `{ shared: true }` after `Share.share()`. `openExternalUrl` must use `Browser.open()`. `configureSystemBars()` uses the Capacitor 8 `SystemBars` API exported by `@capacitor/core`; its CSS inset injection remains configured in `capacitor.config.ts`. Plugin errors in haptics, splash, and system-bar setup are caught and converted to no-ops; secure authentication is deliberately absent from this first plan rather than stored insecurely.
 
 - [ ] **Step 5: Export one selected platform**
 
