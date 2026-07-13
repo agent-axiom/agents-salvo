@@ -631,10 +631,10 @@ Change the viewport meta to:
 Define root variables:
 
 ```css
---safe-top: env(safe-area-inset-top, 0px);
---safe-right: env(safe-area-inset-right, 0px);
---safe-bottom: env(safe-area-inset-bottom, 0px);
---safe-left: env(safe-area-inset-left, 0px);
+--safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+--safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+--safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+--safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
 ```
 
 Apply top/side padding to `.shell`, bottom padding to sticky setup, battle tabs, result actions, and dialogs, and retain at least 44px touch targets below `720px`. The offline banner is compact, high-contrast in both themes, and does not cover the board.
@@ -669,6 +669,7 @@ git commit -m "feat: adapt Salvo UX for installed apps"
 - Create: `resources/splash.png`
 - Create: `android/`
 - Create: `ios/`
+- Create: `ios/App/PrivacyInfo.xcprivacy`
 - Modify: `tests/mobile-build.test.mjs`
 
 - [ ] **Step 1: Extend the failing native-project contract test**
@@ -727,7 +728,11 @@ ios/App/App/zh-Hans.lproj/InfoPlist.strings: CFBundleDisplayName = "齐射";
 
 Register all three localizations in the Xcode project and set `CFBundleDisplayName` to `$(PRODUCT_NAME)` as the fallback.
 
-- [ ] **Step 6: Verify native project contracts and sync cleanliness**
+- [ ] **Step 6: Declare the required iOS Preferences privacy reason**
+
+Create `ios/App/PrivacyInfo.xcprivacy` with `NSPrivacyAccessedAPICategoryUserDefaults` and reason `CA92.1`, matching the official `@capacitor/preferences` requirement. Extend `tests/mobile-build.test.mjs` to parse the file and assert both values are present. Do not declare tracking domains or unrelated data categories.
+
+- [ ] **Step 7: Verify native project contracts and sync cleanliness**
 
 Run: `node --test tests/mobile-build.test.mjs`
 
@@ -737,7 +742,7 @@ Run: `npm run mobile:verify`
 
 Expected: Capacitor reports successful copy/update for both platforms and a second run produces no Git diff.
 
-- [ ] **Step 7: Commit generated shells and assets**
+- [ ] **Step 8: Commit generated shells and assets**
 
 ```bash
 git add resources android ios tests/mobile-build.test.mjs
