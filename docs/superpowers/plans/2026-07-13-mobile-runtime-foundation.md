@@ -6,7 +6,7 @@
 
 **Architecture:** Keep rules and rendering in the existing ES modules, add esbuild only as the packaging boundary required by Capacitor plugins, and route platform-specific work through `src/platform/`. A small runtime coordinator owns subscriptions and snapshots; `src/app.js` remains the UI/state owner and supplies explicit callbacks. Capacitor-generated Android and iOS projects consume the same `dist/` output as GitHub Pages and contain no remote start URL.
 
-**Tech Stack:** Node.js 24.14.1, TypeScript 7.0.2 for Capacitor configuration loading, vanilla JavaScript ES modules, esbuild 0.28.1, Capacitor 8.4.1, official Capacitor plugins, Android Gradle, Swift Package Manager, Xcode 26, Node test runner, GitHub Actions.
+**Tech Stack:** Node.js 24.14.1, TypeScript 5.9.3 for Capacitor configuration loading, vanilla JavaScript ES modules, esbuild 0.28.1, Capacitor 8.4.1, official Capacitor plugins, Android Gradle, Swift Package Manager, Xcode 26, Node test runner, GitHub Actions.
 
 ---
 
@@ -73,7 +73,7 @@ test("mobile toolchain is pinned and uses bundled local web assets", () => {
   assert.equal(packageJson.dependencies["@capacitor/core"], "8.4.1");
   assert.equal(packageJson.devDependencies["@capacitor/cli"], "8.4.1");
   assert.equal(packageJson.devDependencies.esbuild, "0.28.1");
-  assert.equal(packageJson.devDependencies.typescript, "7.0.2");
+  assert.equal(packageJson.devDependencies.typescript, "5.9.3");
   assert.match(buildScript, /from "esbuild"/);
   assert.match(buildScript, /entryPoints:\s*\[resolve\(src, "app\.js"\)\]/);
   assert.match(capacitorConfig, /appId:\s*"io\.github\.agentaxiom\.salvo"/);
@@ -130,7 +130,7 @@ npm install --save-exact @capacitor/app@8.1.0 @capacitor/browser@8.0.3 @capacito
 Install build packages:
 
 ```bash
-npm install --save-dev --save-exact @capacitor/android@8.4.1 @capacitor/cli@8.4.1 @capacitor/ios@8.4.1 esbuild@0.28.1 typescript@7.0.2
+npm install --save-dev --save-exact @capacitor/android@8.4.1 @capacitor/cli@8.4.1 @capacitor/ios@8.4.1 esbuild@0.28.1 typescript@5.9.3
 ```
 
 Expected: `package-lock.json` is created and `npm audit` reports zero vulnerabilities.
