@@ -52,6 +52,7 @@ This is the first of three implementation plans derived from the approved mobile
 - Modify: `scripts/build.mjs`
 - Create: `capacitor.config.ts`
 - Create: `tests/mobile-build.test.mjs`
+- Modify: `.github/workflows/pages.yml`
 
 - [ ] **Step 1: Write the failing toolchain and build-contract test**
 
@@ -62,6 +63,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import capacitorCliConfig from "@capacitor/cli/dist/config.js";
 
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const buildScript = readFileSync("scripts/build.mjs", "utf8");
@@ -91,8 +93,22 @@ test("build emits copied static assets and a resolved browser bundle", () => {
   execFileSync(process.execPath, ["scripts/build.mjs"], { stdio: "pipe" });
   assert.equal(existsSync("dist/index.html"), true);
   assert.equal(existsSync("dist/assets"), true);
+  assert.equal(readFileSync("dist/index.html", "utf8"), readFileSync("src/index.html", "utf8"));
+  assert.deepEqual(
+    readFileSync("dist/assets/images/backgrounds/paper-texture-512.png"),
+    readFileSync("src/assets/images/backgrounds/paper-texture-512.png"),
+  );
   const bundle = readFileSync("dist/app.js", "utf8");
   assert.doesNotMatch(bundle, /(?:from\s*|import\s*\()["']@capacitor\//);
+  assert.doesNotMatch(bundle, /(?:from\s*|import\s*\()["']\.\.?\//);
+});
+
+test("Capacitor CLI loads the typed local configuration", async () => {
+  const config = await capacitorCliConfig.loadConfig();
+  assert.equal(config.app.appId, "io.github.agentaxiom.salvo");
+  assert.equal(config.app.appName, "Salvo");
+  assert.equal(config.app.webDir, "dist");
+  assert.equal(config.app.extConfig.server?.url, undefined);
 });
 ```
 
@@ -216,10 +232,14 @@ Run: `npm test`
 
 Expected: all existing and new tests PASS.
 
-- [ ] **Step 7: Commit the toolchain boundary**
+- [ ] **Step 7: Keep Pages CI valid on a clean runner**
+
+Update `.github/workflows/pages.yml` to configure `actions/setup-node@v5` with `node-version-file: .nvmrc` and `cache: npm`, then run `npm ci` before the existing Test step. This change belongs with the first dependency lockfile because tests now execute esbuild and cannot pass on a clean checkout without installation.
+
+- [ ] **Step 8: Commit the toolchain boundary**
 
 ```bash
-git add .nvmrc package.json package-lock.json scripts/build.mjs capacitor.config.ts tests/mobile-build.test.mjs
+git add .nvmrc package.json package-lock.json scripts/build.mjs capacitor.config.ts tests/mobile-build.test.mjs .github/workflows/pages.yml
 git commit -m "build: add Capacitor mobile toolchain"
 ```
 
@@ -789,9 +809,9 @@ Run: `node --test tests/mobile-build.test.mjs`
 
 Expected: FAIL because `.github/workflows/mobile.yml` is absent and Pages still uses Node 22.
 
-- [ ] **Step 3: Make Pages reproducible**
+- [ ] **Step 3: Re-verify the reproducible Pages setup from Task 1**
 
-Update `.github/workflows/pages.yml` to `actions/setup-node@v5` with `node-version-file: .nvmrc`, add `cache: npm`, and insert `npm ci` before tests. Keep the existing 98% coverage and Pages deployment behavior.
+Assert `.github/workflows/pages.yml` still uses `actions/setup-node@v5` with `node-version-file: .nvmrc`, `cache: npm`, and `npm ci` before tests. Keep the existing 98% coverage and Pages deployment behavior.
 
 - [ ] **Step 4: Add Android and iOS jobs**
 
