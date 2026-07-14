@@ -454,7 +454,19 @@ test("Android tests contain only the application ID smoke coverage", () => {
     appGradle,
     /androidTestImplementation\s+["']androidx\.test\.ext:junit:\$androidxJunitVersion["']/,
   );
+  assert.match(
+    appGradle,
+    /testInstrumentationRunner\s+["']androidx\.test\.runner\.AndroidJUnitRunner["']/,
+  );
+  assert.match(
+    appGradle,
+    /androidTestImplementation\s+["']androidx\.test:runner:\$androidxTestRunnerVersion["']/,
+  );
   assert.match(variablesGradle, /^\s*androidxJunitVersion\s*=/m);
+  assert.match(
+    variablesGradle,
+    /^\s*androidxTestRunnerVersion\s*=\s*["']1\.7\.0["']$/m,
+  );
 
   const unitTestSources = listFiles("android/app/src/test/java").filter(
     (path) => path.endsWith(".java"),
