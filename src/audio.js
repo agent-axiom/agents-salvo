@@ -45,7 +45,7 @@ export function createAudioController() {
   };
 
   const startMusic = async (enabled) => {
-    if (!enabled || musicTimer || musicElement) {
+    if (!enabled || musicTimer !== null || musicElement) {
       return;
     }
     const track = chooseMenuTrack();
@@ -80,14 +80,33 @@ export function createAudioController() {
       musicElement.currentTime = 0;
       musicElement = null;
     }
-    if (musicTimer) {
+    if (musicTimer !== null) {
       window.clearTimeout(musicTimer);
       musicTimer = null;
     }
   };
 
+  const pauseForLifecycle = async () => {
+    stopMusic();
+    if (context?.state === "running") {
+      await context.suspend();
+    }
+  };
+
+  const resumeForLifecycle = async (enabled, isMenu) => {
+    if (!enabled || !isMenu) {
+      return;
+    }
+    if (context?.state === "suspended") {
+      await context.resume();
+    }
+    await startMusic(true);
+  };
+
   return {
+    pauseForLifecycle,
     play,
+    resumeForLifecycle,
     startMusic,
     stopMusic,
   };

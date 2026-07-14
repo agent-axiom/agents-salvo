@@ -4,6 +4,7 @@ import { access, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import * as audioCore from "../src/core/audio.js";
+import { createAudioController } from "../src/audio.js";
 
 const { soundPresets, musicPreset, isKnownSound } = audioCore;
 
@@ -63,3 +64,196 @@ test("musicPreset is a looping menu melody", () => {
   assert.equal(musicPreset.loop, true);
   assert.ok(musicPreset.notes.length >= 4);
 });
+
+test("lifecycle pause does not instantiate an audio context", async () => {
+  const audio = audioHarness();
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+
+    await controller.pauseForLifecycle();
+
+    assert.equal(audio.contexts.length, 0);
+  });
+});
+
+test("lifecycle pause suspends and enabled menu resume resumes existing context", async () => {
+  const audio = audioHarness();
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+    await controller.play("ui", true);
+    assert.equal(audio.contexts.length, 1);
+
+    await controller.pauseForLifecycle();
+    assert.deepEqual(audio.contextCalls, ["suspend"]);
+    assert.equal(audio.contexts[0].state, "suspended");
+
+    await controller.resumeForLifecycle(true, true);
+    assert.deepEqual(audio.contextCalls, ["suspend", "resume"]);
+    assert.equal(audio.contexts[0].state, "running");
+  });
+});
+
+test("disabled and non-menu lifecycle resumes do not restart music", async () => {
+  const audio = audioHarness();
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+    await controller.startMusic(true);
+    await controller.pauseForLifecycle();
+
+    await controller.resumeForLifecycle(false, true);
+    await controller.resumeForLifecycle(true, false);
+
+    assert.equal(audio.elements.length, 1);
+    assert.equal(audio.elementCalls.filter((call) => call === "play").length, 1);
+    assert.equal(audio.elementCalls.filter((call) => call === "pause").length, 1);
+  });
+});
+
+test("enabled menu lifecycle resume restarts music without duplicates", async () => {
+  const audio = audioHarness();
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+    await controller.startMusic(true);
+    await controller.pauseForLifecycle();
+
+    await controller.resumeForLifecycle(true, true);
+    await controller.resumeForLifecycle(true, true);
+
+    assert.equal(audio.elements.length, 2);
+    assert.equal(audio.elementCalls.filter((call) => call === "play").length, 2);
+    assert.equal(audio.elements[0].currentTime, 0);
+  });
+});
+
+test("lifecycle resume does not duplicate a synthetic music timer with id zero", async () => {
+  const audio = audioHarness();
+  const timers = [];
+  const clearedTimers = [];
+  audio.globals.Audio = undefined;
+  audio.globals.window.setTimeout = (callback, delay) => {
+    timers.push({ callback, delay });
+    return 0;
+  };
+  audio.globals.window.clearTimeout = (timer) => clearedTimers.push(timer);
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+    await controller.startMusic(true);
+
+    await controller.resumeForLifecycle(true, true);
+    assert.equal(timers.length, 1);
+
+    await controller.pauseForLifecycle();
+    assert.deepEqual(clearedTimers, [0]);
+  });
+});
+
+function audioHarness() {
+  const contexts = [];
+  const contextCalls = [];
+  const elements = [];
+  const elementCalls = [];
+
+  class FakeAudioContext {
+    constructor() {
+      this.currentTime = 0;
+      this.destination = {};
+      this.state = "running";
+      contexts.push(this);
+    }
+
+    createOscillator() {
+      return {
+        connect() {},
+        frequency: { setValueAtTime() {} },
+        start() {},
+        stop() {},
+        type: "sine",
+      };
+    }
+
+    createGain() {
+      return {
+        connect() {},
+        gain: {
+          exponentialRampToValueAtTime() {},
+          setValueAtTime() {},
+        },
+      };
+    }
+
+    async suspend() {
+      contextCalls.push("suspend");
+      this.state = "suspended";
+    }
+
+    async resume() {
+      contextCalls.push("resume");
+      this.state = "running";
+    }
+  }
+
+  class FakeAudio {
+    constructor(source) {
+      this.currentTime = 0;
+      this.loop = false;
+      this.preload = "";
+      this.source = source;
+      this.volume = 1;
+      elements.push(this);
+    }
+
+    async play() {
+      elementCalls.push("play");
+    }
+
+    pause() {
+      elementCalls.push("pause");
+    }
+  }
+
+  return {
+    contexts,
+    contextCalls,
+    elements,
+    elementCalls,
+    globals: {
+      Audio: FakeAudio,
+      window: {
+        AudioContext: FakeAudioContext,
+        clearTimeout() {},
+        setTimeout() {
+          throw new Error("synthetic music timer should not be used");
+        },
+      },
+    },
+  };
+}
+
+async function withAudioGlobals(globals, action) {
+  const originals = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      value,
+      writable: true,
+    });
+  }
+
+  try {
+    await action();
+  } finally {
+    for (const [name, descriptor] of originals) {
+      if (descriptor) {
+        Object.defineProperty(globalThis, name, descriptor);
+      } else {
+        delete globalThis[name];
+      }
+    }
+  }
+}
