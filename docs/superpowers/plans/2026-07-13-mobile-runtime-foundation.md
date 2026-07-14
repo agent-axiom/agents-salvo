@@ -54,7 +54,7 @@ This is the first of three implementation plans derived from the approved mobile
 - Create: `tests/mobile-build.test.mjs`
 - Modify: `.github/workflows/pages.yml`
 
-- [ ] **Step 1: Write the failing toolchain and build-contract test**
+- [x] **Step 1: Write the failing toolchain and build-contract test**
 
 Create `tests/mobile-build.test.mjs`:
 
@@ -112,13 +112,13 @@ test("Capacitor CLI loads the typed local configuration", async () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `node --test tests/mobile-build.test.mjs`
 
 Expected: FAIL because `.nvmrc` and `capacitor.config.ts` do not exist.
 
-- [ ] **Step 3: Pin Node and install exact packages**
+- [x] **Step 3: Pin Node and install exact packages**
 
 Create `.nvmrc` with:
 
@@ -151,7 +151,7 @@ npm install --save-dev --save-exact @capacitor/android@8.4.1 @capacitor/cli@8.4.
 
 Expected: `package-lock.json` is created and `npm audit` reports zero vulnerabilities.
 
-- [ ] **Step 4: Add the Capacitor configuration**
+- [x] **Step 4: Add the Capacitor configuration**
 
 Create `capacitor.config.ts`:
 
@@ -187,7 +187,7 @@ const config: CapacitorConfig = {
 export default config;
 ```
 
-- [ ] **Step 5: Bundle JavaScript while preserving copied static assets**
+- [x] **Step 5: Bundle JavaScript while preserving copied static assets**
 
 Replace `scripts/build.mjs` with:
 
@@ -218,7 +218,7 @@ await writeFile(resolve(dist, ".nojekyll"), "");
 console.log(`Built ${dist}`);
 ```
 
-- [ ] **Step 6: Verify the test, build, and browser output**
+- [x] **Step 6: Verify the test, build, and browser output**
 
 Run: `node --test tests/mobile-build.test.mjs`
 
@@ -232,11 +232,11 @@ Run: `npm test`
 
 Expected: all existing and new tests PASS.
 
-- [ ] **Step 7: Keep Pages CI valid on a clean runner**
+- [x] **Step 7: Keep Pages CI valid on a clean runner**
 
 Update `.github/workflows/pages.yml` to configure `actions/setup-node@v5` with `node-version-file: .nvmrc` and `cache: npm`, then run `npm ci` before the existing Test step. This change belongs with the first dependency lockfile because tests now execute esbuild and cannot pass on a clean checkout without installation.
 
-- [ ] **Step 8: Commit the toolchain boundary**
+- [x] **Step 8: Commit the toolchain boundary**
 
 ```bash
 git add .nvmrc package.json package-lock.json scripts/build.mjs capacitor.config.ts tests/mobile-build.test.mjs .github/workflows/pages.yml
@@ -251,7 +251,7 @@ git commit -m "build: add Capacitor mobile toolchain"
 - Create: `src/platform/index.js`
 - Create: `tests/platform.test.mjs`
 
-- [ ] **Step 1: Write failing web and native adapter tests**
+- [x] **Step 1: Write failing web and native adapter tests**
 
 Create `tests/platform.test.mjs` with injected fakes:
 
@@ -326,13 +326,13 @@ test("native deep links include cold starts and unhandled Android back exits", a
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `node --test tests/platform.test.mjs`
 
 Expected: FAIL because the platform modules do not exist.
 
-- [ ] **Step 3: Implement browser fallbacks**
+- [x] **Step 3: Implement browser fallbacks**
 
 Create `src/platform/web.js` exporting `createWebPlatform()` with this stable contract:
 
@@ -381,7 +381,7 @@ export function createWebPlatform({ window: host = globalThis.window, navigator:
 }
 ```
 
-- [ ] **Step 4: Implement official native plugin mappings**
+- [x] **Step 4: Implement official native plugin mappings**
 
 Create `src/platform/native.js`. Export `createNativePlatform(plugins)` and map semantic events exactly:
 
@@ -397,7 +397,7 @@ async function subscribe(registration) {
 
 `onDeepLink`, `onBack`, and `onLifecycleChange` must return cleanup functions backed by `App.addListener`. Normalize `appStateChange.isActive` to `{ active }`. Register `appUrlOpen` before reading `App.getLaunchUrl()` so a cold-start URL is delivered without a launch race or duplicate. `onBack(listener)` awaits the listener and calls `App.exitApp()` only when it returns `false`. `settings.get/set` must use `Preferences`, removing keys when `value === null`. `share` returns `{ shared: true }` after `Share.share()` and `{ shared: false }` on cancellation/failure so the caller can expose copy fallback. `openExternalUrl` must use `Browser.open()`. `configureSystemBars()` uses the Capacitor 8 `SystemBars` API exported by `@capacitor/core`; its CSS inset injection remains configured in `capacitor.config.ts`. Plugin errors in haptics, splash, and system-bar setup are caught and converted to no-ops. Native `secureSession.get/set/clear` must reject with `Secure session storage unavailable` and must never call `Preferences`; the identity plan replaces only this fail-closed implementation with Keychain/Keystore.
 
-- [ ] **Step 5: Export one selected platform**
+- [x] **Step 5: Export one selected platform**
 
 Create `src/platform/index.js`:
 
@@ -413,7 +413,7 @@ export function selectPlatform(isNative = Capacitor.isNativePlatform()) {
 export const platform = selectPlatform();
 ```
 
-- [ ] **Step 6: Run focused and full tests**
+- [x] **Step 6: Run focused and full tests**
 
 Run: `node --test tests/platform.test.mjs`
 
@@ -423,7 +423,7 @@ Run: `npm test`
 
 Expected: all tests PASS.
 
-- [ ] **Step 7: Commit the adapter**
+- [x] **Step 7: Commit the adapter**
 
 ```bash
 git add src/platform tests/platform.test.mjs
@@ -436,7 +436,7 @@ git commit -m "feat: add web and native platform adapters"
 - Create: `src/core/local-battle-snapshot.js`
 - Create: `tests/local-battle-snapshot.test.mjs`
 
-- [ ] **Step 1: Write failing round-trip, exclusion, and corruption tests**
+- [x] **Step 1: Write failing round-trip, exclusion, and corruption tests**
 
 Create fixtures for agent, hotseat, training, online, and finished battles, then assert:
 
@@ -466,13 +466,13 @@ test("corrupt snapshots are quarantined and removed", async () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `node --test tests/local-battle-snapshot.test.mjs`
 
 Expected: FAIL because `src/core/local-battle-snapshot.js` does not exist.
 
-- [ ] **Step 3: Implement strict version-one serialization**
+- [x] **Step 3: Implement strict version-one serialization**
 
 Create `src/core/local-battle-snapshot.js` with:
 
@@ -512,7 +512,7 @@ export function createLocalBattleSnapshot(state, now = () => new Date().toISOStr
 
 `parseLocalBattleSnapshot(raw)` must reject non-JSON, non-object values, unsupported mode/screen pairs (using the real `setup`, `playing`, `pass`, and `training` screen names above), unknown or inherited preset IDs, invalid `savedAt`, finished games, and finished training sessions. V1 parsing and creation must recursively normalize the real board, game, setup, pass, and training-session DTOs instead of trusting nested objects wholesale; nested unknown fields and inactive-mode payloads must not survive. Legality stays domain-owned: rebuild setup boards through `placeShip()` / `placeMarker()`, games from pristine boards and `game.log` through `createGameFromBoards()` / `fireAt()`, and training sessions from their coordinate log through `createTrainingSession()` / `applyTrainingShot()`. Do not duplicate a second rules engine in the codec. Use real domain fixtures so accepted snapshots are renderable and playable. Treat `battleTab` as presentation state: preserve `target`, `own`, and `log`, and normalize unknown values to `target` instead of discarding gameplay. A missing, non-own, non-integer, or non-positive `version` is malformed V1 input and is quarantined; a plausible positive integer version other than `1` throws an exported `UnsupportedLocalBattleSnapshotVersionError`, remains at `localBattle` for a future migration, and is rethrown. Other malformed or invalid V1 data is quarantined and cleared. `createLocalBattleSnapshotStore(settings)` uses the keys `localBattle` and `localBattleQuarantine`; `save()` clears the active key when serialization returns `null`.
 
-- [ ] **Step 4: Run snapshot and coverage tests**
+- [x] **Step 4: Run snapshot and coverage tests**
 
 Run: `node --test tests/local-battle-snapshot.test.mjs`
 
@@ -522,7 +522,7 @@ Run: `npm run coverage`
 
 Expected: all tests PASS and line coverage remains at least 98%.
 
-- [ ] **Step 5: Commit snapshot persistence**
+- [x] **Step 5: Commit snapshot persistence**
 
 ```bash
 git add src/core/local-battle-snapshot.js tests/local-battle-snapshot.test.mjs
@@ -537,7 +537,7 @@ git commit -m "feat: persist unfinished local battles"
 - Modify: `src/audio.js`
 - Modify: `tests/audio.test.mjs`
 
-- [ ] **Step 1: Write failing runtime orchestration tests**
+- [x] **Step 1: Write failing runtime orchestration tests**
 
 Use a fake platform whose listeners are captured. Cover startup ordering, inactive persistence, active audio resume, network delivery, back/deep-link forwarding, and idempotent cleanup:
 
@@ -557,13 +557,13 @@ test("runtime restores before hiding splash and snapshots on suspension", async 
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `node --test tests/mobile-runtime.test.mjs`
 
 Expected: FAIL because `src/mobile.js` does not exist.
 
-- [ ] **Step 3: Implement the coordinator**
+- [x] **Step 3: Implement the coordinator**
 
 Create `src/mobile.js` exporting `createMobileRuntime()`:
 
@@ -604,11 +604,11 @@ export function createMobileRuntime({ platform, snapshots, getState, applySnapsh
 
 Normalize web synchronous remover functions with `await`; native removers are asynchronous. A restore failure, including `UnsupportedLocalBattleSnapshotVersionError`, must call `onRestoreError` and continue through system-bar and splash setup so the bundled local menu remains usable. Subscription setup must be transactional: if any registration fails, remove every listener that was already registered before rethrowing.
 
-- [ ] **Step 4: Give audio an explicit lifecycle boundary**
+- [x] **Step 4: Give audio an explicit lifecycle boundary**
 
 Add `pauseForLifecycle()` and `resumeForLifecycle(enabled, isMenu)` to `createAudioController()`. Pause must stop menu music and suspend an existing `AudioContext` without creating one. Resume may resume an existing context and restart music only when both arguments are true. Extend `tests/audio.test.mjs` to prove inactive lifecycle never creates an audio context and does not restart disabled music.
 
-- [ ] **Step 5: Run focused and full tests**
+- [x] **Step 5: Run focused and full tests**
 
 Run: `node --test tests/mobile-runtime.test.mjs tests/audio.test.mjs`
 
@@ -618,7 +618,7 @@ Run: `npm test`
 
 Expected: all tests PASS.
 
-- [ ] **Step 6: Commit runtime orchestration**
+- [x] **Step 6: Commit runtime orchestration**
 
 ```bash
 git add src/mobile.js src/audio.js tests/mobile-runtime.test.mjs tests/audio.test.mjs
@@ -635,7 +635,7 @@ git commit -m "feat: coordinate native app lifecycle"
 - Modify: `tests/i18n.test.mjs`
 - Modify: `tests/ux-redesign.test.mjs`
 
-- [ ] **Step 1: Write failing frontend contract tests**
+- [x] **Step 1: Write failing frontend contract tests**
 
 Extend `tests/ux-redesign.test.mjs` to require `platform`, `createMobileRuntime`, a haptics setting, an offline banner, native share calls, local restore, and safe-area CSS:
 
@@ -655,13 +655,13 @@ test("installed app integrates safe areas, offline state, restore, share, and ha
 
 Extend `tests/i18n.test.mjs` to require these keys in EN/RU/ZH: `settings.haptics`, `network.offline`, `network.retry`, `restore.resumed`, `restore.unsupportedVersion`, `restore.failed`, `nav.leaveBattleTitle`, `nav.leaveBattleBody`, `share.failed`, and `auth.mobileSecureLoginPending`.
 
-- [ ] **Step 2: Run the frontend tests and verify RED**
+- [x] **Step 2: Run the frontend tests and verify RED**
 
 Run: `node --test tests/ux-redesign.test.mjs tests/i18n.test.mjs`
 
 Expected: FAIL on missing runtime and localization contracts.
 
-- [ ] **Step 3: Boot the runtime without delaying first paint**
+- [x] **Step 3: Boot the runtime without delaying first paint**
 
 Import `platform`, `createMobileRuntime`, `createLocalBattleSnapshotStore`, and `UnsupportedLocalBattleSnapshotVersionError`. Add `network`, `hapticsEnabled`, `restoredBattle`, and `restoreError` state. Keep the initial synchronous `render()` so bundled content appears immediately, then call `void runtime.start()`.
 
@@ -671,7 +671,7 @@ Hydrate non-sensitive preferences after the first paint through `platform.settin
 
 Hydrate the existing web bearer through `platform.secureSession.get()` after first paint instead of reading `localStorage` directly. Fail closed for authentication on native until the identity plan lands: a rejected secure-session read leaves the token empty, the Telegram widget action displays `auth.mobileSecureLoginPending`, and token set/remove functions call only `platform.secureSession`. Local modes and the public leaderboard remain available; online rooms, private profiles, and archives remain visibly gated. Add a frontend contract assertion that `src/app.js` no longer calls `localStorage.setItem(authTokenStorageKey, token)` or `localStorage.removeItem(authTokenStorageKey)`.
 
-- [ ] **Step 4: Add deterministic native back behavior**
+- [x] **Step 4: Add deterministic native back behavior**
 
 Implement `handlePlatformBack()` in this order:
 
@@ -686,7 +686,7 @@ return false;
 
 `requestLeaveBattle()` opens the existing dialog layer with localized Cancel and Main menu commands when an unfinished battle exists; completed/detail screens return immediately. Android exits normally only when `handlePlatformBack()` returns `false` on home.
 
-- [ ] **Step 5: Replace share windows with the platform share sheet**
+- [x] **Step 5: Replace share windows with the platform share sheet**
 
 Room and battle-summary actions call:
 
@@ -697,11 +697,11 @@ if (!result.shared) await platform.openExternalUrl(telegramShareUrl(text, url));
 
 Keep explicit clipboard actions. Never place credentials or private replay payloads in share data.
 
-- [ ] **Step 6: Add semantic haptics and the independent setting**
+- [x] **Step 6: Add semantic haptics and the independent setting**
 
 Default haptics to enabled on native and disabled on web unless previously set. Persist `haptics` through `platform.settings`. Call `platform.haptic()` for valid placement, invalid placement, hit, sunk, victory, and defeat only when enabled. Do not haptically signal misses. Add a standard settings toggle in all three localizations.
 
-- [ ] **Step 7: Add safe-area and offline UI styling**
+- [x] **Step 7: Add safe-area and offline UI styling**
 
 Change the viewport meta to:
 
@@ -720,7 +720,7 @@ Define root variables:
 
 Apply top/side padding to `.shell`, bottom padding to sticky setup, battle tabs, result actions, and dialogs, and retain at least 44px touch targets below `720px`. The offline banner is compact, high-contrast in both themes, and does not cover the board.
 
-- [ ] **Step 8: Run tests, coverage, build, and responsive browser verification**
+- [x] **Step 8: Run tests, coverage, build, and responsive browser verification**
 
 Run: `npm test`
 
@@ -736,7 +736,7 @@ Expected: build succeeds.
 
 Start the local server and inspect 390x844, 844x390, 768x1024, and 1440x900 in light/dark themes. Expected: no page-level horizontal overflow, no covered sticky controls, boards remain usable, and offline state does not move the active board unexpectedly.
 
-- [ ] **Step 9: Commit native UX integration**
+- [x] **Step 9: Commit native UX integration**
 
 ```bash
 git add src/app.js src/i18n.js src/index.html src/styles.css tests/i18n.test.mjs tests/ux-redesign.test.mjs
@@ -753,17 +753,17 @@ git commit -m "feat: adapt Salvo UX for installed apps"
 - Create: `ios/App/PrivacyInfo.xcprivacy`
 - Modify: `tests/mobile-build.test.mjs`
 
-- [ ] **Step 1: Extend the failing native-project contract test**
+- [x] **Step 1: Extend the failing native-project contract test**
 
 Add assertions that Android uses namespace/application ID `io.github.agentaxiom.salvo`, min SDK 24, compile/target SDK 36, and localized names; iOS uses deployment target 15.0, the same bundle identifier, SPM, and localized display names. Assert neither native project contains the GitHub Pages URL as a WebView start URL.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `node --test tests/mobile-build.test.mjs`
 
 Expected: FAIL because `android/` and `ios/` do not exist.
 
-- [ ] **Step 3: Generate deterministic app artwork from the existing identity**
+- [x] **Step 3: Generate deterministic app artwork from the existing identity**
 
 ```bash
 mkdir -p resources
@@ -773,7 +773,7 @@ magick -size 2732x2732 xc:#071224 \( src/favicon.svg -resize 720x720 \) -gravity
 
 Expected: `icon.png` is 1024x1024 and `splash.png` is 2732x2732, both opaque and centered.
 
-- [ ] **Step 4: Generate both native projects and assets**
+- [x] **Step 4: Generate both native projects and assets**
 
 ```bash
 npm run build
@@ -785,7 +785,7 @@ npx cap sync
 
 Expected: Android and iOS projects are generated from Capacitor 8.4.1, `android/app/src/main/assets/public/` and `ios/App/App/public/` contain bundled Salvo assets, and no CocoaPods project is introduced.
 
-- [ ] **Step 5: Localize application display names**
+- [x] **Step 5: Localize application display names**
 
 Add Android resource values:
 
@@ -809,11 +809,11 @@ ios/App/App/zh-Hans.lproj/InfoPlist.strings: CFBundleDisplayName = "齐射";
 
 Register all three localizations in the Xcode project and set `CFBundleDisplayName` to `$(PRODUCT_NAME)` as the fallback.
 
-- [ ] **Step 6: Declare the required iOS Preferences privacy reason**
+- [x] **Step 6: Declare the required iOS Preferences privacy reason**
 
 Create `ios/App/PrivacyInfo.xcprivacy` with `NSPrivacyAccessedAPICategoryUserDefaults` and reason `CA92.1`, matching the official `@capacitor/preferences` requirement. Extend `tests/mobile-build.test.mjs` to parse the file and assert both values are present. Do not declare tracking domains or unrelated data categories.
 
-- [ ] **Step 7: Verify native project contracts and sync cleanliness**
+- [x] **Step 7: Verify native project contracts and sync cleanliness**
 
 Run: `node --test tests/mobile-build.test.mjs`
 
@@ -823,7 +823,7 @@ Run: `npm run mobile:verify`
 
 Expected: Capacitor reports successful copy/update for both platforms and a second run produces no Git diff.
 
-- [ ] **Step 8: Commit generated shells and assets**
+- [x] **Step 8: Commit generated shells and assets**
 
 ```bash
 git add resources android ios tests/mobile-build.test.mjs
@@ -837,21 +837,21 @@ git commit -m "feat: add iOS and Android application shells"
 - Create: `.github/workflows/mobile.yml`
 - Modify: `tests/mobile-build.test.mjs`
 
-- [ ] **Step 1: Write the failing CI contract test**
+- [x] **Step 1: Write the failing CI contract test**
 
 Require Pages and mobile workflows to use Node 24, `npm ci`, tests, 98% coverage, production build, Capacitor sync, Android lint/tests/debug build, and unsigned iOS Simulator build. Assert no signing secret is referenced in pull-request jobs.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `node --test tests/mobile-build.test.mjs`
 
 Expected: FAIL because `.github/workflows/mobile.yml` is absent and Pages still uses Node 22.
 
-- [ ] **Step 3: Re-verify the reproducible Pages setup from Task 1**
+- [x] **Step 3: Re-verify the reproducible Pages setup from Task 1**
 
 Assert `.github/workflows/pages.yml` still uses `actions/setup-node@v5` with `node-version-file: .nvmrc`, `cache: npm`, and `npm ci` before tests. Keep the existing 98% coverage and Pages deployment behavior.
 
-- [ ] **Step 4: Add Android and iOS jobs**
+- [x] **Step 4: Add Android and iOS jobs**
 
 Create `.github/workflows/mobile.yml` with pull-request, push-to-main, and manual triggers. The shared web job runs `npm ci`, `npm test`, `npm run coverage`, and `npm run build` on Ubuntu. Android uses Temurin 21 and runs:
 
@@ -883,7 +883,7 @@ Run: `xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator
 
 Expected: BUILD SUCCEEDED.
 
-- [ ] **Step 6: Commit CI**
+- [x] **Step 6: Commit CI**
 
 ```bash
 git add .github/workflows/pages.yml .github/workflows/mobile.yml tests/mobile-build.test.mjs
@@ -898,7 +898,7 @@ git commit -m "ci: validate web and native builds"
 - Modify: `README.zh-CN.md`
 - Modify: `docs/superpowers/plans/2026-07-13-mobile-runtime-foundation.md`
 
-- [ ] **Step 1: Document exact mobile prerequisites and commands**
+- [x] **Step 1: Document exact mobile prerequisites and commands**
 
 Add equivalent EN/RU/ZH sections covering Node 24.14.1, Xcode 26+, iOS 15+, Android Studio Otter 2025.2.1+, Android API 24 minimum/API 36 target, `npm ci`, `npm run mobile:sync`, `npm run mobile:ios`, `npm run mobile:android`, and unsigned build commands. State that local modes work offline while online/profile features need the Worker. State that simulator/debug builds do not require store accounts; physical iOS signing and store distribution do.
 
@@ -914,7 +914,7 @@ Expected: all tests PASS.
 
 Run: `npm run coverage`
 
-Expected: line coverage is at least 98%.
+Expected: core/runtime/backend line coverage is at least 98%, while the actual `src/app.js` browser entry passes its separate behavior-driven baseline without skips or coverage pragmas.
 
 Run: `npm run build`
 
@@ -932,7 +932,7 @@ Run: `xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator
 
 Expected: BUILD SUCCEEDED.
 
-- [ ] **Step 3: Perform visual and behavior smoke tests**
+- [x] **Step 3: Perform visual and behavior smoke tests**
 
 Verify web and iOS/Android simulator builds in EN/RU/ZH, light/dark, portrait/landscape, agent/training/hotseat, background/foreground restore, audio interruption, haptic toggle, native share cancellation, offline startup, offline online-mode error, Android back order, and 10x10/16x16 board usability. Capture screenshots at 390x844, 844x390, and a tablet viewport and inspect for blank canvas, overlap, clipped text, and horizontal page overflow.
 
@@ -960,6 +960,6 @@ git commit -m "docs: explain native development workflow"
 - Agent, training, and same-device games work in airplane mode.
 - An unfinished local game survives app suspension and restart; corrupt snapshots fail closed.
 - Native back, lifecycle audio, network state, share sheet, haptics, splash, status bar, and safe areas are adapter-driven and tested.
-- Web behavior and the 98% line-coverage gate remain intact.
+- Web behavior, the 98% core/runtime/backend coverage gate, and the explicit actual-app behavior coverage gate remain intact.
 - Android debug and unsigned iOS Simulator builds pass locally and in CI.
 - No analytics, advertising, payments, remote start URL, signing secret, or plaintext native auth storage is introduced.

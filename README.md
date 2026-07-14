@@ -34,6 +34,40 @@ npm start
 
 After `npm start`, open `http://localhost:5173`.
 
+## iOS And Android Development
+
+The mobile apps bundle the same `dist/` build as GitHub Pages; they do not load the public site at startup. Agent, training, and same-device battles therefore work offline. Online rooms, Telegram login, profiles, and leaderboards require access to the Cloudflare Worker.
+
+Prerequisites:
+
+- Node.js 24.14.1 (`.nvmrc`).
+- iOS: macOS with Xcode 26 or newer; deployment target iOS 15.
+- Android: Android Studio Otter 2025.2.1 or newer, JDK 21, and Android SDK 36; minimum supported API is 24.
+
+Install dependencies and synchronize the web bundle with both native projects:
+
+```bash
+npm ci
+npm run mobile:sync
+```
+
+Open either native project from the command line:
+
+```bash
+npm run mobile:ios
+npm run mobile:android
+```
+
+Build unsigned development artifacts without store accounts:
+
+```bash
+android/gradlew -p android test lint assembleDebug
+xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator \
+  -configuration Debug CODE_SIGNING_ALLOWED=NO build
+```
+
+The Android debug APK and iOS Simulator build require no Google Play or Apple Developer account. Running on a physical iOS device and distributing through TestFlight or either store requires the corresponding signing credentials; release signing and store delivery are intentionally outside this foundation.
+
 ## GitHub Pages
 
 1. Push the repository to GitHub.

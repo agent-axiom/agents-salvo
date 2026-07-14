@@ -34,6 +34,40 @@ npm start
 
 运行 `npm start` 后打开 `http://localhost:5173`。
 
+## iOS 和 Android 开发
+
+移动应用打包的 `dist/` 与 GitHub Pages 使用同一份构建产物，启动时不会加载公开网站。因此，智能体对战、训练和同机双人模式可离线运行。在线房间、Telegram 登录、玩家档案和排行榜需要连接 Cloudflare Worker。
+
+环境要求：
+
+- Node.js 24.14.1（见 `.nvmrc`）。
+- iOS：安装 Xcode 26 或更高版本的 macOS；最低支持 iOS 15。
+- Android：Android Studio Otter 2025.2.1 或更高版本、JDK 21 和 Android SDK 36；最低支持 API 24。
+
+安装依赖，并将 Web 构建同步到两个原生项目：
+
+```bash
+npm ci
+npm run mobile:sync
+```
+
+从命令行打开原生项目：
+
+```bash
+npm run mobile:ios
+npm run mobile:android
+```
+
+无需商店账号即可构建未签名的开发产物：
+
+```bash
+android/gradlew -p android test lint assembleDebug
+xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator \
+  -configuration Debug CODE_SIGNING_ALLOWED=NO build
+```
+
+Android debug APK 和 iOS Simulator 构建不需要 Google Play 或 Apple Developer 账号。在实体 iOS 设备上运行以及通过 TestFlight 或应用商店分发时，需要相应的签名凭据；发布签名和商店交付不属于本阶段范围。
+
 ## GitHub Pages
 
 1. 将仓库推送到 GitHub。
