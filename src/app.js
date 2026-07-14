@@ -421,7 +421,12 @@ function setupPlayerTitle(playerId) {
 }
 
 function isOnlineAuthReady() {
-  return Boolean(state.auth.user && state.auth.token && state.online.workerUrl);
+  return Boolean(
+    !state.auth.loading
+    && state.auth.user
+    && state.auth.token
+    && state.online.workerUrl
+  );
 }
 
 function gameStatusText(game) {
@@ -2883,10 +2888,7 @@ async function handlePlatformBack() {
 
 async function requestLeaveBattle(transition = null) {
   if (state.leaveBattleDialog) {
-    if (transition) {
-      pendingLeaveTransition = transition;
-      return true;
-    }
+    if (transition) return false;
     cancelLeaveBattle();
     return true;
   }
@@ -4268,6 +4270,8 @@ async function invalidateAuthSession({ error = "", preserveRequestedId = true } 
   render();
   try {
     return await secureSessionCoordinator.invalidate(() => {
+      abortAllPrivateRequests();
+      resetOnlineConnectionState();
       state.auth.token = "";
       state.auth.user = null;
       state.auth.error = error;

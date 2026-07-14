@@ -215,6 +215,14 @@ async function runDeepLinkGuardScenario() {
   assert.equal(app.getState().screen, "setup");
   assert.equal(app.getState().leaveBattleDialog, false);
 
+  await harness.root.click("menu");
+  assert.equal(app.getState().leaveBattleDialog, true);
+  assert.equal(await harness.emitDeepLink("salvo://open/room/repl"), false);
+  await harness.root.click("confirm-leave-battle");
+  assert.equal(app.getState().screen, "menu");
+  assert.equal(app.getState().online.roomCodeInput, "");
+
+  await harness.root.click("start-agent");
   await harness.emitDeepLink("salvo://open/room/abcd");
   await harness.root.click("confirm-leave-battle");
   assert.equal(app.getState().screen, "online");
@@ -223,7 +231,7 @@ async function runDeepLinkGuardScenario() {
   assert.equal(app.getState().online.roomCodeInput, "ABCD");
   assert.deepEqual(
     harness.calls.settingWrites.filter(([key]) => key === "localBattle"),
-    [["localBattle", null]],
+    [["localBattle", null], ["localBattle", null]],
   );
   await app.stop();
 }
@@ -232,9 +240,14 @@ async function runLogoutScenario() {
   const secureClear = deferred();
   const profileResponse = deferred();
   let profileRequests = 0;
+  let onlineClientStarts = 0;
   const harness = createAppHarness({
     secureSession: resolvedDeferred("session-token"),
     onSecureClear: () => secureClear.promise,
+    createRemoteClient() {
+      onlineClientStarts += 1;
+      throw new Error("Online client must not start during logout");
+    },
     fetchResponse(url, init) {
       if (url.endsWith("/auth/me")) {
         return response({ user: { id: "player-1", name: "Player One", username: "one" } });
@@ -269,6 +282,9 @@ async function runLogoutScenario() {
   assert.equal(app.getState().auth.loading, true);
   assert.equal(harness.calls.secureClears, 1);
   assert.match(harness.root.innerHTML, /data-action="toggle-profile"[^>]*disabled/);
+  await harness.root.click("show-online");
+  await harness.root.click("online-create");
+  assert.equal(onlineClientStarts, 0);
 
   secureClear.reject(new Error("secure clear failed"));
   await Promise.all([profile, logout]);
