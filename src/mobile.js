@@ -13,6 +13,9 @@ export function createMobileRuntime({
 }) {
   let activeRemovers = [];
   let desiredStarted = false;
+  let lastNetworkStatus = null;
+  let lifecycleTail = Promise.resolve();
+  let networkEventVersion = 0;
   let started = false;
   let transitionTail = Promise.resolve();
 
@@ -25,18 +28,54 @@ export function createMobileRuntime({
     }
   };
 
-  const handleLifecycle = async ({ active }) => {
-    try {
-      if (active) {
+  const performLifecycle = async ({ active }) => {
+    if (active) {
+      try {
         await resumeAudio();
-        return;
+      } catch (error) {
+        await reportRuntimeError(error);
       }
+      return;
+    }
 
+    const failures = [];
+    try {
       await pauseAudio();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
       await snapshots.save(getState());
     } catch (error) {
-      await reportRuntimeError(error);
+      failures.push(error);
     }
+    for (const error of failures) await reportRuntimeError(error);
+  };
+
+  const handleLifecycle = (event) => {
+    const operation = lifecycleTail.then(() => performLifecycle(event));
+    lifecycleTail = operation.catch(reportRuntimeError);
+    return lifecycleTail;
+  };
+
+  const deliverNetwork = async (status) => {
+    if (
+      lastNetworkStatus
+      && lastNetworkStatus.connected === status?.connected
+      && lastNetworkStatus.connectionType === status?.connectionType
+    ) {
+      return;
+    }
+    lastNetworkStatus = {
+      connected: status?.connected,
+      connectionType: status?.connectionType,
+    };
+    await onNetwork(status);
+  };
+
+  const handleNetworkChange = (status) => {
+    networkEventVersion += 1;
+    return deliverNetwork(status);
   };
 
   const removeSubscriptions = async (removers) => {
@@ -59,7 +98,7 @@ export function createMobileRuntime({
   const registerSubscriptions = async () => {
     const removers = [];
     try {
-      removers.push(await platform.onNetworkChange(onNetwork));
+      removers.push(await platform.onNetworkChange(handleNetworkChange));
       removers.push(await platform.onDeepLink(onDeepLink));
       removers.push(await platform.onBack(onBack));
       removers.push(await platform.onLifecycleChange(handleLifecycle));
@@ -78,7 +117,9 @@ export function createMobileRuntime({
   };
 
   const performStart = async () => {
-    await onNetwork(await platform.getNetworkStatus());
+    lastNetworkStatus = null;
+    networkEventVersion = 0;
+    await deliverNetwork(await platform.getNetworkStatus());
 
     try {
       const snapshot = await snapshots.load();
@@ -93,7 +134,26 @@ export function createMobileRuntime({
 
     await platform.configureSystemBars();
     await platform.hideSplash();
-    activeRemovers = await registerSubscriptions();
+    const removers = await registerSubscriptions();
+    try {
+      const versionBeforeSample = networkEventVersion;
+      const status = await platform.getNetworkStatus();
+      if (networkEventVersion === versionBeforeSample) {
+        await deliverNetwork(status);
+      }
+    } catch (error) {
+      const cleanup = await removeSubscriptions(removers);
+      await lifecycleTail;
+      if (cleanup.errors.length > 0) {
+        activeRemovers = cleanup.failedRemovers;
+        throw new AggregateError(
+          [error, ...cleanup.errors],
+          "Failed to sample network and clean up mobile runtime subscriptions",
+        );
+      }
+      throw error;
+    }
+    activeRemovers = removers;
     started = true;
   };
 
@@ -102,6 +162,7 @@ export function createMobileRuntime({
     const removers = activeRemovers;
     activeRemovers = [];
     const cleanup = await removeSubscriptions(removers);
+    await lifecycleTail;
     if (cleanup.errors.length > 0) {
       activeRemovers = cleanup.failedRemovers;
       throw new AggregateError(

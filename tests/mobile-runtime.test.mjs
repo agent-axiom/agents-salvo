@@ -153,6 +153,104 @@ test("start obtains network, restores, configures bars, then hides splash", asyn
   await runtime.stop();
 });
 
+test("post-subscription network sample closes the startup event gap", async () => {
+  const harness = runtimeHarness();
+  const changedStatus = { connected: false, connectionType: "none" };
+  let sampleCalls = 0;
+  harness.platform.getNetworkStatus = async () => {
+    sampleCalls += 1;
+    return sampleCalls === 1 ? harness.networkStatus : changedStatus;
+  };
+  const runtime = createMobileRuntime(harness.options);
+
+  await runtime.start();
+
+  assert.equal(sampleCalls, 2);
+  assert.deepEqual(harness.deliveries.network, [
+    harness.networkStatus,
+    changedStatus,
+  ]);
+  assert.deepEqual(harness.events.slice(0, 4), [
+    "network",
+    "restore",
+    "bars",
+    "splash",
+  ]);
+  assert.deepEqual(harness.events.slice(4), [
+    "subscribe:network",
+    "subscribe:deep-link",
+    "subscribe:back",
+    "subscribe:lifecycle",
+    "network",
+  ]);
+  await runtime.stop();
+});
+
+test("network event during registration is not duplicated by the post-sample", async () => {
+  const harness = runtimeHarness();
+  const eventStatus = {
+    connected: false,
+    connectionType: "none",
+    source: "listener",
+  };
+  const sampledStatus = {
+    connected: false,
+    connectionType: "none",
+    source: "sample",
+  };
+  let sampleCalls = 0;
+  harness.platform.getNetworkStatus = async () => {
+    sampleCalls += 1;
+    return sampleCalls === 1 ? harness.networkStatus : sampledStatus;
+  };
+  const registerNetwork = harness.platform.onNetworkChange;
+  harness.platform.onNetworkChange = async (listener) => {
+    const remove = await registerNetwork(listener);
+    await listener(eventStatus);
+    return remove;
+  };
+  const runtime = createMobileRuntime(harness.options);
+
+  await runtime.start();
+
+  assert.equal(sampleCalls, 2);
+  assert.deepEqual(harness.deliveries.network, [
+    harness.networkStatus,
+    eventStatus,
+  ]);
+  assert.equal(harness.deliveries.network.at(-1), eventStatus);
+  await runtime.stop();
+});
+
+test("post-subscription network sample failure cleans every listener", async () => {
+  const harness = runtimeHarness();
+  const failure = new Error("post-subscription network sample failed");
+  let sampleCalls = 0;
+  harness.platform.getNetworkStatus = async () => {
+    sampleCalls += 1;
+    if (sampleCalls === 1) return harness.networkStatus;
+    throw failure;
+  };
+  const runtime = createMobileRuntime(harness.options);
+
+  await assert.rejects(runtime.start(), (error) => error === failure);
+
+  assert.equal(sampleCalls, 2);
+  assert.equal(harness.activeListenerCount(), 0);
+  assert.deepEqual(
+    harness.subscriptions.map(({ name, removalAttempts }) => [
+      name,
+      removalAttempts,
+    ]),
+    [
+      ["network", 1],
+      ["deep-link", 1],
+      ["back", 1],
+      ["lifecycle", 1],
+    ],
+  );
+});
+
 test("start reports unsupported snapshot load failures and remains usable", async () => {
   const harness = runtimeHarness();
   const failure = new UnsupportedLocalBattleSnapshotVersionError(2);
@@ -272,6 +370,95 @@ test("active lifecycle resumes audio", async () => {
   await harness.emit("lifecycle", { active: true });
 
   assert.equal(harness.events.at(-1), "resume-audio");
+  await runtime.stop();
+});
+
+test("lifecycle events finish in arrival order so the latest active event wins", async () => {
+  const harness = runtimeHarness();
+  const pauseStarted = deferred();
+  const releasePause = deferred();
+  harness.options.pauseAudio = async () => {
+    harness.events.push("pause-start");
+    pauseStarted.resolve();
+    await releasePause.promise;
+    harness.events.push("pause-end");
+  };
+  const runtime = createMobileRuntime(harness.options);
+  await runtime.start();
+
+  const inactive = harness.emit("lifecycle", { active: false });
+  await pauseStarted.promise;
+  const active = harness.emit("lifecycle", { active: true });
+  await Promise.resolve();
+  assert.equal(harness.events.includes("resume-audio"), false);
+
+  releasePause.resolve();
+  await Promise.all([inactive, active]);
+  assert.deepEqual(
+    harness.events.filter((event) => [
+      "pause-start",
+      "pause-end",
+      "save",
+      "resume-audio",
+    ].includes(event)),
+    ["pause-start", "pause-end", "save", "resume-audio"],
+  );
+  await runtime.stop();
+});
+
+test("stop removes listeners and waits for queued lifecycle work", async () => {
+  const harness = runtimeHarness();
+  const pauseStarted = deferred();
+  const releasePause = deferred();
+  harness.options.pauseAudio = async () => {
+    harness.events.push("pause-audio");
+    pauseStarted.resolve();
+    await releasePause.promise;
+  };
+  const runtime = createMobileRuntime(harness.options);
+  await runtime.start();
+
+  const lifecycle = harness.emit("lifecycle", { active: false });
+  await pauseStarted.promise;
+  let stopSettled = false;
+  const stopping = runtime.stop().then(() => {
+    stopSettled = true;
+  });
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.equal(harness.activeListenerCount(), 0);
+  assert.equal(stopSettled, false);
+  releasePause.resolve();
+  await Promise.all([lifecycle, stopping]);
+  assert.equal(harness.events.includes("save"), true);
+});
+
+test("inactive lifecycle saves after pause failure and observes both failures", async () => {
+  const harness = runtimeHarness();
+  const pauseFailure = new Error("lifecycle pause failed");
+  const saveFailure = new Error("lifecycle save failed");
+  harness.options.pauseAudio = async () => {
+    harness.events.push("pause-audio");
+    throw pauseFailure;
+  };
+  harness.snapshots.save = async (value) => {
+    harness.events.push("save");
+    harness.deliveries.snapshots.push(value);
+    throw saveFailure;
+  };
+  const runtime = createMobileRuntime(harness.options);
+  await runtime.start();
+
+  await assert.doesNotReject(
+    harness.emit("lifecycle", { active: false }),
+  );
+
+  assert.deepEqual(harness.events.slice(-2), ["pause-audio", "save"]);
+  assert.equal(harness.deliveries.snapshots.at(-1), harness.state);
+  assert.deepEqual(harness.deliveries.runtimeErrors, [
+    pauseFailure,
+    saveFailure,
+  ]);
   await runtime.stop();
 });
 
