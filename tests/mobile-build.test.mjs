@@ -166,7 +166,7 @@ function assertPngBorderColor(path, expected) {
 function readAndroidString(path, name) {
   const strings = readFileSync(path, "utf8");
   const value = strings.match(
-    new RegExp(`<string\\s+name=["']${name}["']>([^<]+)</string>`),
+    new RegExp(`<string\\s+name=["']${name}["'][^>]*>([^<]+)</string>`),
   )?.[1];
   assert.notEqual(value, undefined, `${name} is missing from ${path}`);
   return value;
@@ -507,6 +507,16 @@ test("Android shell uses the Salvo identity, SDK baseline, and names", () => {
     readAndroidString(english, "custom_url_scheme"),
     "io.github.agentaxiom.salvo",
   );
+  const defaultStrings = readFileSync(english, "utf8");
+  for (const name of ["package_name", "custom_url_scheme"]) {
+    assert.match(
+      defaultStrings,
+      new RegExp(
+        `<string\\s+name=["']${name}["']\\s+translatable=["']false["']>`,
+      ),
+      `${name} must be excluded from Android translation checks`,
+    );
+  }
 
   for (const [locale, name] of [
     ["values-ru", "Залп"],
