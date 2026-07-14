@@ -281,6 +281,77 @@ function validSnapshot(overrides = {}) {
   };
 }
 
+async function withObjectPrototypeField(field, value, callback) {
+  const previousDescriptor = Object.getOwnPropertyDescriptor(
+    Object.prototype,
+    field,
+  );
+
+  try {
+    Object.defineProperty(Object.prototype, field, {
+      configurable: true,
+      writable: true,
+      value,
+    });
+    return await callback();
+  } finally {
+    if (previousDescriptor) {
+      Object.defineProperty(Object.prototype, field, previousDescriptor);
+    } else {
+      delete Object.prototype[field];
+    }
+  }
+}
+
+function inheritedRequiredFieldCases() {
+  const perelmanSetup = () =>
+    setupState("agent", {
+      presetId: "perelman",
+      setupBoard: completeBoard("perelman"),
+      setupSelectedShipId: "",
+    });
+  const topLevel = (value) => value;
+  const setupBoard = (value) => value.setupBoard;
+  const firstShip = (value) => value.setupBoard.ships[0];
+  const firstMarker = (value) => value.setupBoard.markers[0];
+  const firstShipCell = (value) => value.setupBoard.ships[0].cells[0];
+  const trainingSession = (value) => value.training.session;
+
+  return [
+    ["top-level mode", "mode", localState, topLevel],
+    ["top-level screen", "screen", localState, topLevel],
+    ["top-level preset id", "presetId", localState, topLevel],
+    ["top-level agent difficulty", "agentDifficulty", localState, topLevel],
+    ["top-level boards", "boards", localState, topLevel],
+    ["top-level game", "game", localState, topLevel],
+    ["V1 saved timestamp", "savedAt", localState, topLevel, true],
+    ["setup payload", "setupBoard", setupState, topLevel],
+    ["pass payload", "passPlayerId", gamePassState, topLevel],
+    ["training payload", "training", trainingState, topLevel],
+    ["board ships array", "ships", setupState, setupBoard],
+    ["ship length", "length", setupState, firstShip],
+    ["marker type", "type", perelmanSetup, firstMarker],
+    ["coordinate row", "row", setupState, firstShipCell],
+    ["coordinate column", "col", setupState, firstShipCell],
+    ["game log", "log", localState, (value) => value.game],
+    ["training session", "session", trainingState, (value) => value.training],
+    ["session phase", "phase", trainingState, trainingSession],
+    ["session log", "log", trainingState, trainingSession],
+    [
+      "training log coordinate",
+      "coordinate",
+      trainingState,
+      (value) => value.training.session.log[0],
+    ],
+  ].map(([name, field, makeState, target, parseOnly = false]) => ({
+    name,
+    field,
+    makeState,
+    target,
+    parseOnly,
+  }));
+}
+
 function addBoardExtras(board) {
   board.privateToken = NESTED_SECRET;
   board.ships[0].privateToken = NESTED_SECRET;
@@ -448,6 +519,69 @@ test("inherited preset ids cannot validate a V1 snapshot", async () => {
     } else {
       delete Object.prototype.presetId;
     }
+  }
+});
+
+test("snapshot creation rejects inherited required DTO fields", async () => {
+  for (const invalidCase of inheritedRequiredFieldCases()) {
+    if (invalidCase.parseOnly) continue;
+    const state = invalidCase.makeState();
+    const target = invalidCase.target(state);
+    const inheritedValue = target[invalidCase.field];
+    delete target[invalidCase.field];
+
+    await withObjectPrototypeField(
+      invalidCase.field,
+      inheritedValue,
+      () => {
+        assert.equal(
+          createLocalBattleSnapshot(state, () => NOW),
+          null,
+          invalidCase.name,
+        );
+      },
+    );
+  }
+});
+
+test("inherited V1 DTO fields are quarantined and cleared", async () => {
+  for (const invalidCase of inheritedRequiredFieldCases()) {
+    const snapshot = createLocalBattleSnapshot(invalidCase.makeState(), () => NOW);
+    assert.notEqual(snapshot, null, invalidCase.name);
+    const target = invalidCase.target(snapshot);
+    const inheritedValue = target[invalidCase.field];
+    delete target[invalidCase.field];
+    const raw = JSON.stringify(snapshot);
+
+    await withObjectPrototypeField(
+      invalidCase.field,
+      inheritedValue,
+      async () => {
+        assert.throws(
+          () => parseLocalBattleSnapshot(raw),
+          invalidCase.name,
+        );
+
+        const settings = memorySettings({ localBattle: raw });
+        const snapshots = createLocalBattleSnapshotStore(settings);
+        assert.equal(await snapshots.load(), null, invalidCase.name);
+        assert.equal(
+          settings.values.get("localBattleQuarantine"),
+          raw,
+          invalidCase.name,
+        );
+        assert.equal(
+          settings.values.has("localBattle"),
+          false,
+          invalidCase.name,
+        );
+        assert.deepEqual(settings.calls, [
+          ["get", "localBattle"],
+          ["set", "localBattleQuarantine", raw],
+          ["set", "localBattle", null],
+        ], invalidCase.name);
+      },
+    );
   }
 });
 

@@ -31,6 +31,25 @@ const TRAINING_RATING_IDS = new Set(["needsWork", "steady", "excellent"]);
 const TRAINING_SCENARIO_IDS = new Set(trainingScenarios.map(({ id }) => id));
 const TRAINING_AWARD_IDS = new Set(trainingProgramAwardIds);
 const DEFAULT_TRAINING_SCENARIO_ID = trainingScenarios[0].id;
+const LOCAL_BATTLE_STATE_REQUIRED_FIELDS = [
+  "screen",
+  "mode",
+  "presetId",
+  "setupPlayerId",
+  "setupBoard",
+  "setupOrientation",
+  "setupSelectedShipId",
+  "boards",
+  "game",
+  "agentDifficulty",
+  "passPlayerId",
+  "training",
+];
+const LOCAL_BATTLE_V1_REQUIRED_FIELDS = [
+  "version",
+  "savedAt",
+  ...LOCAL_BATTLE_STATE_REQUIRED_FIELDS,
+];
 
 class LocalBattleSnapshotValidationError extends TypeError {}
 
@@ -38,17 +57,26 @@ function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function ownsAll(value, keys) {
-  return keys.every((key) => Object.hasOwn(value, key));
+function hasOwnFields(value, fields) {
+  return isObject(value) && fields.every((field) => Object.hasOwn(value, field));
 }
 
 function isSupportedModeScreen(value) {
-  return LOCAL_SCREENS_BY_MODE.get(value?.mode)?.has(value?.screen) === true;
+  return hasOwnFields(value, ["mode", "screen"]) &&
+    LOCAL_SCREENS_BY_MODE.get(value.mode)?.has(value.screen) === true;
 }
 
 function isFinished(value) {
-  if (value?.mode === "training") return value?.training?.session?.phase === "finished";
-  return (value?.mode === "agent" || value?.mode === "hotseat") && value?.game?.phase === "finished";
+  if (!hasOwnFields(value, ["mode"])) return false;
+  if (value.mode === "training") {
+    return hasOwnFields(value, ["training"]) &&
+      hasOwnFields(value.training, ["session"]) &&
+      hasOwnFields(value.training.session, ["phase"]) &&
+      value.training.session.phase === "finished";
+  }
+  return (value.mode === "agent" || value.mode === "hotseat") &&
+    hasOwnFields(value, ["game"]) && hasOwnFields(value.game, ["phase"]) &&
+    value.game.phase === "finished";
 }
 
 function presetForSnapshot(value) {
@@ -65,9 +93,11 @@ function isValidSavedAt(value) {
 }
 
 function coordinateDto(value) {
-  return isObject(value) && Number.isInteger(value.row) && Number.isInteger(value.col)
-    ? { row: value.row, col: value.col }
-    : null;
+  if (!hasOwnFields(value, ["row", "col"]) ||
+      !Number.isInteger(value.row) || !Number.isInteger(value.col)) {
+    return null;
+  }
+  return { row: value.row, col: value.col };
 }
 
 function sameCoordinate(first, second) {
@@ -97,7 +127,8 @@ function placementFromCells(rawCells, length) {
 }
 
 function rebuildPristineBoard(rawBoard, preset, { complete = false } = {}) {
-  if (!isObject(rawBoard) || rawBoard.size !== preset.size ||
+  if (!hasOwnFields(rawBoard, ["size", "ships", "markers", "shots"]) ||
+      rawBoard.size !== preset.size ||
       !Array.isArray(rawBoard.ships) || !Array.isArray(rawBoard.markers) ||
       !Array.isArray(rawBoard.shots) || rawBoard.shots.length !== 0) {
     return null;
@@ -106,7 +137,8 @@ function rebuildPristineBoard(rawBoard, preset, { complete = false } = {}) {
   const knownShips = new Map(preset.fleet.map((ship) => [ship.id, ship]));
   const shipsById = new Map();
   for (const ship of rawBoard.ships) {
-    const known = isObject(ship) && Object.hasOwn(ship, "id") ? knownShips.get(ship.id) : null;
+    if (!hasOwnFields(ship, ["id", "length", "cells", "hits"])) return null;
+    const known = knownShips.get(ship.id);
     if (!known || shipsById.has(ship.id) || ship.length !== known.length ||
         !Array.isArray(ship.hits) || ship.hits.length !== 0) {
       return null;
@@ -117,7 +149,8 @@ function rebuildPristineBoard(rawBoard, preset, { complete = false } = {}) {
   const knownMarkers = new Map((preset.markers ?? []).map((marker) => [marker.id, marker]));
   const markersById = new Map();
   for (const marker of rawBoard.markers) {
-    const known = isObject(marker) && Object.hasOwn(marker, "id") ? knownMarkers.get(marker.id) : null;
+    if (!hasOwnFields(marker, ["id", "type", "cell"])) return null;
+    const known = knownMarkers.get(marker.id);
     if (!known || markersById.has(marker.id) || marker.type !== known.type) return null;
     markersById.set(marker.id, marker);
   }
@@ -156,21 +189,26 @@ function hasValidSetupSelection(selectedId, board, preset) {
 }
 
 function rebuildCompleteBoards(rawBoards, preset) {
-  if (!isObject(rawBoards) || !ownsAll(rawBoards, ["p1", "p2"])) return null;
+  if (!hasOwnFields(rawBoards, ["p1", "p2"])) return null;
   const p1 = rebuildPristineBoard(rawBoards.p1, preset, { complete: true });
   const p2 = rebuildPristineBoard(rawBoards.p2, preset, { complete: true });
   return p1 && p2 ? { p1, p2 } : null;
 }
 
 function replayGame(rawGame, boards, preset) {
-  if (!isObject(rawGame) || rawGame.phase !== "playing" || !Array.isArray(rawGame.log)) return null;
+  if (!hasOwnFields(rawGame, ["phase", "log"]) || rawGame.phase !== "playing" ||
+      !Array.isArray(rawGame.log)) {
+    return null;
+  }
   try {
     let game = createGameFromBoards(boards.p1, boards.p2, "p1", {
       presetId: preset.id, rules: preset.rules,
     });
     for (const entry of rawGame.log) {
-      if (!isObject(entry) ||
-          !ownsAll(entry, ["playerId", "targetPlayerId", "coordinate", "result", "shipId"]) ||
+      if (!hasOwnFields(
+        entry,
+        ["playerId", "targetPlayerId", "coordinate", "result", "shipId"],
+      ) ||
           !PLAYER_IDS.has(entry.playerId) || !PLAYER_IDS.has(entry.targetPlayerId)) {
         return null;
       }
@@ -190,8 +228,9 @@ function replayGame(rawGame, boards, preset) {
 }
 
 function replayTraining(rawTraining) {
-  if (!isObject(rawTraining) || !Object.hasOwn(rawTraining, "scenarioId") ||
-      !TRAINING_SCENARIO_IDS.has(rawTraining.scenarioId) || !isObject(rawTraining.session) ||
+  if (!hasOwnFields(rawTraining, ["scenarioId", "session", "progress"]) ||
+      !TRAINING_SCENARIO_IDS.has(rawTraining.scenarioId) ||
+      !hasOwnFields(rawTraining.session, ["scenarioId", "phase", "log"]) ||
       rawTraining.session.scenarioId !== rawTraining.scenarioId ||
       rawTraining.session.phase !== "playing" || !Array.isArray(rawTraining.session.log) ||
       !isObject(rawTraining.progress)) {
@@ -200,7 +239,9 @@ function replayTraining(rawTraining) {
   try {
     let session = createTrainingSession(rawTraining.scenarioId);
     for (const entry of rawTraining.session.log) {
-      const coordinate = isObject(entry) ? coordinateDto(entry.coordinate) : null;
+      const coordinate = hasOwnFields(entry, ["coordinate"])
+        ? coordinateDto(entry.coordinate)
+        : null;
       if (!coordinate) return null;
       session = applyTrainingShot(session, coordinate);
       const canonical = session.log.at(-1);
@@ -268,18 +309,32 @@ function normalizeTrainingProgress(progress) {
 }
 
 function normalizeInactiveTraining(training) {
+  const scenarioId = hasOwnFields(training, ["scenarioId"])
+    ? training.scenarioId
+    : undefined;
+  const progress = hasOwnFields(training, ["progress"])
+    ? training.progress
+    : undefined;
   return {
-    scenarioId: TRAINING_SCENARIO_IDS.has(training?.scenarioId)
-      ? training.scenarioId
+    scenarioId: TRAINING_SCENARIO_IDS.has(scenarioId)
+      ? scenarioId
       : DEFAULT_TRAINING_SCENARIO_ID,
     session: null,
-    progress: normalizeTrainingProgress(training?.progress),
+    progress: normalizeTrainingProgress(progress),
   };
 }
 
 function normalizeSetupSnapshot(value, preset) {
-  if (value.game !== null || !SETUP_ORIENTATIONS.has(value.setupOrientation) ||
-      !isObject(value.boards) || !ownsAll(value.boards, ["p1", "p2"])) {
+  if (!hasOwnFields(value, [
+    "mode",
+    "game",
+    "setupPlayerId",
+    "setupBoard",
+    "setupOrientation",
+    "setupSelectedShipId",
+    "boards",
+  ]) || value.game !== null || !SETUP_ORIENTATIONS.has(value.setupOrientation) ||
+      !hasOwnFields(value.boards, ["p1", "p2"])) {
     return null;
   }
   const setupBoard = rebuildPristineBoard(value.setupBoard, preset);
@@ -300,6 +355,7 @@ function normalizeSetupSnapshot(value, preset) {
 }
 
 function normalizePlayingSnapshot(value, preset) {
+  if (!hasOwnFields(value, ["boards", "game"])) return null;
   const boards = rebuildCompleteBoards(value.boards, preset);
   if (!boards) return null;
   const game = replayGame(value.game, boards, preset);
@@ -307,16 +363,24 @@ function normalizePlayingSnapshot(value, preset) {
 }
 
 function normalizePassSnapshot(value, preset) {
-  if (value.mode !== "hotseat" || !PLAYER_IDS.has(value.passPlayerId)) return null;
+  if (!hasOwnFields(value, ["mode", "boards", "game", "passPlayerId"]) ||
+      value.mode !== "hotseat" || !PLAYER_IDS.has(value.passPlayerId)) {
+    return null;
+  }
   if (value.game !== null) {
     const playing = normalizePlayingSnapshot(value, preset);
     return playing && value.passPlayerId === playing.game.currentPlayerId
       ? { ...playing, passPlayerId: value.passPlayerId }
       : null;
   }
-  if (value.passPlayerId !== "p2" || value.setupPlayerId !== "p2" ||
+  if (!hasOwnFields(value, [
+    "setupPlayerId",
+    "setupBoard",
+    "setupOrientation",
+    "setupSelectedShipId",
+  ]) || value.passPlayerId !== "p2" || value.setupPlayerId !== "p2" ||
       !SETUP_ORIENTATIONS.has(value.setupOrientation) || value.setupSelectedShipId !== "" ||
-      !isObject(value.boards) || !ownsAll(value.boards, ["p1", "p2"]) || value.boards.p2 !== null) {
+      !hasOwnFields(value.boards, ["p1", "p2"]) || value.boards.p2 !== null) {
     return null;
   }
   const setupBoard = rebuildPristineBoard(value.setupBoard, preset, { complete: true });
@@ -335,6 +399,7 @@ function normalizePassSnapshot(value, preset) {
 }
 
 function normalizeActivePayload(value, preset) {
+  if (!hasOwnFields(value, ["screen"])) return null;
   if (value.screen === "setup") {
     const setup = normalizeSetupSnapshot(value, preset);
     return setup && {
@@ -347,21 +412,21 @@ function normalizeActivePayload(value, preset) {
   }
   if (value.screen === "playing") return normalizePlayingSnapshot(value, preset);
   if (value.screen === "pass") return normalizePassSnapshot(value, preset);
+  if (!hasOwnFields(value, ["training"])) return null;
   const training = replayTraining(value.training);
   return training ? { training } : null;
 }
 
 function normalizeV1Snapshot(value) {
-  if (!isObject(value) || !Object.hasOwn(value, "version") ||
+  if (!hasOwnFields(value, LOCAL_BATTLE_V1_REQUIRED_FIELDS) ||
       value.version !== LOCAL_BATTLE_SNAPSHOT_VERSION || !isSupportedModeScreen(value) ||
-      !isValidSavedAt(value.savedAt) || !AGENT_DIFFICULTIES.has(value.agentDifficulty) ||
-      isFinished(value)) {
+      !isValidSavedAt(value.savedAt) || !AGENT_DIFFICULTIES.has(value.agentDifficulty)) {
     return null;
   }
   const preset = presetForSnapshot(value);
   if (!preset) return null;
   const active = normalizeActivePayload(value, preset);
-  if (!active) return null;
+  if (!active || isFinished(value)) return null;
   const payload = {
     setupPlayerId: "p1",
     setupBoard: null,
@@ -396,7 +461,10 @@ function normalizeV1Snapshot(value) {
 }
 
 export function createLocalBattleSnapshot(state, now = () => new Date().toISOString()) {
-  if (!isObject(state) || !isSupportedModeScreen(state) || isFinished(state)) return null;
+  if (!hasOwnFields(state, LOCAL_BATTLE_STATE_REQUIRED_FIELDS) ||
+      !isSupportedModeScreen(state)) {
+    return null;
+  }
   return normalizeV1Snapshot({
     version: LOCAL_BATTLE_SNAPSHOT_VERSION,
     savedAt: now(),
