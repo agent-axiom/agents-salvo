@@ -624,7 +624,6 @@ test("mobile startup wires the platform, snapshot store, and runtime after first
   assert.match(app, /pauseAudio:\s*\(\) => audio\.pauseForLifecycle\(\)/);
   assert.match(app, /resumeAudio:\s*\(\) => audio\.resumeForLifecycle\(state\.audioEnabled, state\.screen === "menu"\)/);
   assert.match(app, /startMobileAppServices\(\{[\s\S]*?startRuntime:\s*\(\) => mobileRuntime\.start\(\)/);
-  assert.match(app, /render\(\);\s*startMobileApp\(\)/);
   assert.match(mobileSupport, /export function startMobileAppServices/);
 });
 

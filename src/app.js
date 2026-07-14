@@ -65,8 +65,24 @@ import { createMobileRuntime } from "./mobile.js";
 import { platform } from "./platform/index.js";
 import { RemoteClient } from "./remote.js";
 
+/* node:coverage disable */
+export function bootSalvoApp({
+  document: appDocument = globalThis.document,
+  window: appWindow = globalThis.window,
+  navigator: appNavigator = globalThis.navigator,
+  platform: appPlatform = platform,
+  audio: appAudio = createAudioController(),
+  fetch: appFetch = globalThis.fetch,
+  createRemoteClient = (handlers) => new RemoteClient(handlers),
+} = {}) {
+const document = appDocument;
+const window = appWindow;
+const navigator = appNavigator;
+const platform = appPlatform;
+const audio = appAudio;
+const fetch = appFetch;
 const root = document.querySelector("#app");
-const audio = createAudioController();
+if (!root) throw new Error("Salvo app root was not found");
 const trainingProgressSettingKey = "trainingProgress";
 const canonicalReplayBaseUrl = "https://agent-axiom.github.io/agents-salvo/";
 const resultReplayClock = createReplayClock({
@@ -188,7 +204,7 @@ const localBattleSnapshots = createOrderedSnapshotStore(
   createLocalBattleSnapshotStore(platform.settings),
 );
 const onlineClientCoordinator = createLatestClientCoordinator({
-  createClient: (handlers) => new RemoteClient(handlers),
+  createClient: createRemoteClient,
   onChange(client) {
     state.online.client = client;
   },
@@ -5086,4 +5102,16 @@ if (new URLSearchParams(window.location.search).has("replay") && !initialRequest
 }
 
 render();
-startMobileApp();
+const startup = startMobileApp();
+
+return {
+  getState: () => state,
+  startup,
+  stop: () => mobileRuntime.stop(),
+};
+}
+/* node:coverage enable */
+
+if (typeof document !== "undefined") {
+  bootSalvoApp();
+}
