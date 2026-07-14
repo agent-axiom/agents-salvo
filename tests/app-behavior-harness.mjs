@@ -19,6 +19,8 @@ const hooks = registerHooks({
 const scenarios = {
   startup: runDeferredStartupScenario,
   navigation: runNavigationScenario,
+  "deep-link-guard": runDeepLinkGuardScenario,
+  logout: runLogoutScenario,
 };
 const scenario = scenarios[scenarioName];
 assert.ok(scenario, `Unknown app behavior scenario: ${scenarioName}`);
@@ -191,11 +193,98 @@ async function runNavigationScenario() {
   await app.stop();
 }
 
+async function runDeepLinkGuardScenario() {
+  const harness = createAppHarness();
+  const { bootSalvoApp } = await import("../src/app.js");
+  const app = bootSalvoApp(harness.dependencies);
+  await app.startup.done;
+
+  await harness.root.click("start-agent");
+  assert.equal(app.getState().screen, "setup");
+
+  await harness.emitDeepLink("salvo://open/room/abcd");
+  assert.equal(app.getState().screen, "setup");
+  assert.equal(app.getState().leaveBattleDialog, true);
+  assert.equal(app.getState().online.roomCodeInput, "");
+  assert.deepEqual(
+    harness.calls.settingWrites.filter(([key]) => key === "localBattle"),
+    [],
+  );
+
+  await harness.root.click("cancel-leave-battle");
+  assert.equal(app.getState().screen, "setup");
+  assert.equal(app.getState().leaveBattleDialog, false);
+
+  await harness.emitDeepLink("salvo://open/room/abcd");
+  await harness.root.click("confirm-leave-battle");
+  assert.equal(app.getState().screen, "online");
+  assert.equal(app.getState().leaveBattleDialog, false);
+  assert.equal(harness.root.background.inert, false);
+  assert.equal(app.getState().online.roomCodeInput, "ABCD");
+  assert.deepEqual(
+    harness.calls.settingWrites.filter(([key]) => key === "localBattle"),
+    [["localBattle", null]],
+  );
+  await app.stop();
+}
+
+async function runLogoutScenario() {
+  const secureClear = deferred();
+  const profileResponse = deferred();
+  let profileRequests = 0;
+  const harness = createAppHarness({
+    secureSession: resolvedDeferred("session-token"),
+    onSecureClear: () => secureClear.promise,
+    fetchResponse(url, init) {
+      if (url.endsWith("/auth/me")) {
+        return response({ user: { id: "player-1", name: "Player One", username: "one" } });
+      }
+      if (url.endsWith("/profile/me")) {
+        profileRequests += 1;
+        if (profileRequests === 1) return response({ profile: { leaderboard: [] } });
+        init.signal.addEventListener("abort", () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          profileResponse.reject(error);
+        }, { once: true });
+        return profileResponse.promise;
+      }
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const { bootSalvoApp } = await import("../src/app.js");
+  const app = bootSalvoApp(harness.dependencies);
+  await app.startup.done;
+
+  const profile = harness.root.click("toggle-profile");
+  await waitFor(() => profileRequests === 2);
+  const activeProfileRequest = harness.fetchCalls.filter(({ url }) => url.endsWith("/profile/me")).at(-1);
+  assert.equal(activeProfileRequest.init.signal.aborted, false);
+
+  const logout = harness.root.click("auth-logout");
+  await flushMicrotasks();
+  assert.equal(activeProfileRequest.init.signal.aborted, true);
+  assert.equal(app.getState().auth.user.name, "Player One");
+  assert.equal(app.getState().auth.loading, true);
+  assert.equal(harness.calls.secureClears, 1);
+  assert.match(harness.root.innerHTML, /data-action="toggle-profile"[^>]*disabled/);
+
+  secureClear.reject(new Error("secure clear failed"));
+  await Promise.all([profile, logout]);
+  assert.equal(app.getState().auth.user.name, "Player One");
+  assert.equal(app.getState().auth.loading, false);
+  assert.notEqual(app.getState().auth.error, "");
+  assert.match(harness.root.innerHTML, /auth-error/);
+  await app.stop();
+}
+
 function createAppHarness({
   network = resolvedDeferred({ connected: true, connectionType: "wifi" }),
   snapshot = resolvedDeferred(null),
   preferences = resolvedDeferred(null),
   secureSession = resolvedDeferred(""),
+  onSecureClear = () => Promise.resolve(),
   onSettingWrite = () => Promise.resolve(),
   createRemoteClient = () => {
     throw new Error("Remote client was not expected");
@@ -214,6 +303,7 @@ function createAppHarness({
     preferencesSettled: false,
     secureReads: 0,
     snapshotReads: 0,
+    secureClears: 0,
     settingWrites: [],
   };
   void preferences.promise.then(() => {
@@ -222,6 +312,7 @@ function createAppHarness({
   const fetchCalls = [];
   let firstNetworkSample = true;
   let lifecycleHandler = null;
+  let deepLinkHandler = null;
   const platform = {
     isNative: () => false,
     settings: {
@@ -244,7 +335,10 @@ function createAppHarness({
         return secureSession.promise;
       },
       async set() {},
-      async clear() {},
+      clear() {
+        calls.secureClears += 1;
+        return onSecureClear();
+      },
     },
     getNetworkStatus() {
       calls.networkSamples += 1;
@@ -259,8 +353,11 @@ function createAppHarness({
     async onNetworkChange() {
       return async () => {};
     },
-    async onDeepLink() {
-      return async () => {};
+    async onDeepLink(handler) {
+      deepLinkHandler = handler;
+      return async () => {
+        if (deepLinkHandler === handler) deepLinkHandler = null;
+      };
     },
     async onBack() {
       return async () => {};
@@ -296,6 +393,10 @@ function createAppHarness({
     emitLifecycle(event) {
       assert.ok(lifecycleHandler, "Lifecycle handler is not registered");
       return lifecycleHandler(event);
+    },
+    emitDeepLink(url) {
+      assert.ok(deepLinkHandler, "Deep-link handler is not registered");
+      return deepLinkHandler(url);
     },
     fetchCalls,
     root,

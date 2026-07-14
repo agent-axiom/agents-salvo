@@ -91,6 +91,7 @@ const resultReplayClock = createReplayClock({
 let telegramWidgetScheduled = false;
 let platformHydrationRenderScheduled = false;
 let leaveDialogReturnFocus = null;
+let pendingLeaveTransition = null;
 const initialRequestedReplayId = replayIdFromSearch(window.location.search);
 let authEpoch = 0;
 const privateRequestControllers = {
@@ -535,6 +536,7 @@ function renderTopbarProfile() {
       data-action="toggle-profile"
       aria-haspopup="dialog"
       aria-expanded="${state.profileOpen}"
+      ${state.auth.loading ? "disabled" : ""}
     >
       ${renderAuthAvatar(state.auth.user)}
       <span>
@@ -682,8 +684,10 @@ function renderAuthControl() {
             <strong>${escapeHtml(user.name || translate("auth.telegram"))}</strong>
             <small>${user.username ? `@${escapeHtml(user.username)}` : translate("auth.telegram")}</small>
           </div>
-          <button class="icon-button auth-logout" data-action="auth-logout" aria-label="${translate("auth.logout")}">×</button>
+          <button class="icon-button auth-logout" data-action="auth-logout" aria-label="${translate("auth.logout")}" ${state.auth.loading ? "disabled" : ""}>×</button>
         </div>
+        ${state.auth.loading ? `<small>${translate("auth.loading")}</small>` : ""}
+        ${state.auth.error ? `<small class="auth-error">${translate("auth.error", { message: state.auth.error })}</small>` : ""}
       </div>
     `;
   }
@@ -721,7 +725,7 @@ function renderLeaveBattleDialog() {
         <p id="leave-battle-body">${translate("nav.leaveBattleBody")}</p>
         <div class="leave-battle-actions button-row">
           <button data-action="cancel-leave-battle">${translate("nav.cancel")}</button>
-          <button class="primary-button" data-action="confirm-leave-battle">${translate("nav.mainMenu")}</button>
+          <button class="primary-button" data-action="confirm-leave-battle">${translate(pendingLeaveTransition ? "game.continue" : "nav.mainMenu")}</button>
         </div>
       </section>
     </div>
@@ -2877,16 +2881,22 @@ async function handlePlatformBack() {
   return false;
 }
 
-async function requestLeaveBattle() {
+async function requestLeaveBattle(transition = null) {
   if (state.leaveBattleDialog) {
+    if (transition) {
+      pendingLeaveTransition = transition;
+      return true;
+    }
     cancelLeaveBattle();
     return true;
   }
   if (!hasUnfinishedBattle()) {
+    if (transition) return transition();
     const handled = state.screen !== "menu";
     if (handled) await goToMenu();
     return handled;
   }
+  pendingLeaveTransition = transition;
   leaveDialogReturnFocus = leaveDialogFocus.captureReturnFocus();
   state.leaveBattleDialog = true;
   render();
@@ -2903,6 +2913,7 @@ function hasUnfinishedBattle() {
 
 function cancelLeaveBattle() {
   const returnFocus = leaveDialogReturnFocus;
+  pendingLeaveTransition = null;
   state.leaveBattleDialog = false;
   render();
   leaveDialogFocus.restoreFocus(returnFocus);
@@ -2910,8 +2921,16 @@ function cancelLeaveBattle() {
 }
 
 async function confirmLeaveBattle() {
-  const completed = await goToMenu();
-  if (completed) leaveDialogReturnFocus = null;
+  const transition = pendingLeaveTransition;
+  const completed = transition ? await transition() : await goToMenu();
+  if (completed) {
+    pendingLeaveTransition = null;
+    leaveDialogReturnFocus = null;
+    if (state.leaveBattleDialog) {
+      state.leaveBattleDialog = false;
+      render();
+    }
+  }
 }
 
 function dismissRestoreNotice() {
@@ -2923,18 +2942,20 @@ function dismissRestoreNotice() {
 async function handlePlatformDeepLink(rawUrl) {
   const route = parseSalvoDeepLink(rawUrl);
   if (!route) return false;
-  try {
-    if (route.type === "room") {
-      return await appNavigation.run(() => {
-        showOnline();
-        state.online.roomCodeInput = route.roomCode;
-        render();
-      });
+  return requestLeaveBattle(async () => {
+    try {
+      if (route.type === "room") {
+        return await appNavigation.run(() => {
+          showOnline();
+          state.online.roomCodeInput = route.roomCode;
+          render();
+        });
+      }
+      return await openArchivedReplay(route.replayId, { source: "direct" });
+    } catch {
+      return false;
     }
-    return await openArchivedReplay(route.replayId, { source: "direct" });
-  } catch {
-    return false;
-  }
+  });
 }
 
 async function goToMenu({ updateHistory = true } = {}) {
@@ -4238,11 +4259,15 @@ function applyAuthenticatedSession(token, user) {
 }
 
 async function invalidateAuthSession({ error = "", preserveRequestedId = true } = {}) {
+  const invalidationEpoch = ++authEpoch;
+  abortAllPrivateRequests();
+  resetOnlineConnectionState();
+  state.auth.loading = true;
+  state.auth.error = "";
+  state.profileOpen = false;
+  render();
   try {
-    await secureSessionCoordinator.invalidate(() => {
-      authEpoch += 1;
-      abortAllPrivateRequests();
-      resetOnlineConnectionState();
+    return await secureSessionCoordinator.invalidate(() => {
       state.auth.token = "";
       state.auth.user = null;
       state.auth.error = error;
@@ -4251,10 +4276,13 @@ async function invalidateAuthSession({ error = "", preserveRequestedId = true } 
       clearPrivateReplayData({ preserveRequestedId });
       resetResultReplayPlayback();
     });
-    return true;
   } catch (storageError) {
     reportRuntimeError(storageError);
-    if (!state.auth.error) state.auth.error = translate("auth.secureStorageFailed");
+    if (authEpoch === invalidationEpoch) {
+      state.auth.loading = false;
+      if (!state.auth.error) state.auth.error = translate("auth.secureStorageFailed");
+      render();
+    }
     return false;
   }
 }

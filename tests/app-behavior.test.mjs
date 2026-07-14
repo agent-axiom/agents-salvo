@@ -15,6 +15,14 @@ test("actual app routes close online state and require destructive confirmation"
   await runScenarioInChild("navigation");
 });
 
+test("actual app requires destructive confirmation before applying a deep link", async () => {
+  await runScenarioInChild("deep-link-guard");
+});
+
+test("actual app aborts private work while secure logout is pending", async () => {
+  await runScenarioInChild("logout");
+});
+
 async function runScenarioInChild(name) {
   const inheritCoverage = childCoverageMode === "inherit";
   const childEnvironment = {
