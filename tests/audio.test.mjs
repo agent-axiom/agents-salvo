@@ -65,6 +65,140 @@ test("musicPreset is a looping menu melody", () => {
   assert.ok(musicPreset.notes.length >= 4);
 });
 
+test("play ignores disabled sounds without creating an audio context", async () => {
+  const audio = audioHarness();
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+
+    await controller.play("ui", false);
+
+    assert.equal(audio.contexts.length, 0);
+  });
+});
+
+test("play ignores sounds when no audio context implementation is available", async () => {
+  const audio = audioHarness();
+  audio.globals.window.AudioContext = undefined;
+  audio.globals.window.webkitAudioContext = undefined;
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+
+    await controller.play("ui", true);
+    await controller.play("unknown", true);
+
+    assert.equal(audio.contexts.length, 0);
+  });
+});
+
+test("play uses the webkit audio context fallback", async () => {
+  const audio = audioHarness();
+  audio.globals.window.webkitAudioContext = audio.globals.window.AudioContext;
+  audio.globals.window.AudioContext = undefined;
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+
+    await controller.play("ui", true);
+
+    assert.equal(audio.contexts.length, 1);
+  });
+});
+
+test("menu music exits cleanly when no audio implementation is available", async () => {
+  const audio = audioHarness();
+  audio.globals.Audio = undefined;
+  audio.globals.window.AudioContext = undefined;
+  audio.globals.window.webkitAudioContext = undefined;
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+
+    await controller.startMusic(true);
+
+    assert.equal(audio.elements.length, 0);
+    assert.equal(audio.contexts.length, 0);
+  });
+});
+
+test("rejected MP3 playback falls back to synthetic menu music", async () => {
+  const audio = audioHarness();
+  const failure = new Error("MP3 playback rejected");
+  const timers = [];
+  audio.globals.Audio.prototype.play = async function play() {
+    audio.elementCalls.push("play");
+    throw failure;
+  };
+  audio.globals.window.setTimeout = (callback, delay) => {
+    timers.push({ callback, delay });
+    return timers.length;
+  };
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+
+    await assert.doesNotReject(controller.startMusic(true));
+
+    assert.equal(audio.elements.length, 1);
+    assert.equal(audio.contexts.length, 1);
+    assert.equal(timers.length, 1);
+    assert.deepEqual(audio.elementCalls, ["play"]);
+    controller.stopMusic();
+  });
+});
+
+test("stopping a pending MP3 start cleans up after playback resolves", async () => {
+  const audio = audioHarness();
+  const playStarted = deferred();
+  const playPending = deferred();
+  audio.globals.Audio.prototype.play = function play() {
+    audio.elementCalls.push("play");
+    playStarted.resolve();
+    return playPending.promise;
+  };
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+    const starting = controller.startMusic(true);
+    await playStarted.promise;
+
+    controller.stopMusic();
+    playPending.resolve();
+    await starting;
+
+    assert.equal(audio.contexts.length, 0);
+    assert.equal(audio.elements[0].currentTime, 0);
+    assert.deepEqual(audio.elementCalls, ["play", "pause", "pause"]);
+  });
+});
+
+test("stopping a rejected pending MP3 start prevents synthetic fallback", async () => {
+  const audio = audioHarness();
+  const failure = new Error("pending MP3 playback rejected");
+  const playStarted = deferred();
+  const playPending = deferred();
+  audio.globals.Audio.prototype.play = function play() {
+    audio.elementCalls.push("play");
+    playStarted.resolve();
+    return playPending.promise;
+  };
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+    const starting = controller.startMusic(true);
+    await playStarted.promise;
+
+    controller.stopMusic();
+    const completion = assert.doesNotReject(starting);
+    playPending.reject(failure);
+    await completion;
+
+    assert.equal(audio.contexts.length, 0);
+    assert.deepEqual(audio.elementCalls, ["play", "pause"]);
+  });
+});
+
 test("lifecycle pause does not instantiate an audio context", async () => {
   const audio = audioHarness();
 
@@ -250,6 +384,47 @@ test("lifecycle pause invalidates a pending synthetic resume", async () => {
     assert.equal(context.state, "suspended");
   });
 });
+
+test("lifecycle pause continues when a pending context resume rejects", async () => {
+  const audio = audioHarness();
+  const failure = new Error("audio context resume rejected");
+  const resumeStarted = deferred();
+  const resumePending = deferred();
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+    await controller.play("ui", true);
+    await controller.pauseForLifecycle();
+    const context = audio.contexts[0];
+    context.resume = () => {
+      audio.contextCalls.push("resume");
+      resumeStarted.resolve();
+      return resumePending.promise;
+    };
+
+    const rejectedResume = assert.rejects(
+      controller.resumeForLifecycle(true, true),
+      (error) => error === failure,
+    );
+    await resumeStarted.promise;
+    const pausing = controller.pauseForLifecycle();
+    resumePending.reject(failure);
+    await Promise.all([rejectedResume, pausing]);
+
+    assert.equal(context.state, "suspended");
+    assert.deepEqual(audio.contextCalls, ["suspend", "resume"]);
+  });
+});
+
+function deferred() {
+  let reject;
+  let resolve;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    reject = rejectPromise;
+    resolve = resolvePromise;
+  });
+  return { promise, reject, resolve };
+}
 
 function audioHarness() {
   const contexts = [];

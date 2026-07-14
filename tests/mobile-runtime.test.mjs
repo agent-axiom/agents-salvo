@@ -406,6 +406,34 @@ test("post-subscription network sample failure cleans every listener", async () 
   );
 });
 
+test("post-subscription sample preserves cleanup failures", async () => {
+  const harness = runtimeHarness();
+  const sampleFailure = new Error("post-subscription network sample failed");
+  const cleanupFailure = new Error("network cleanup failed");
+  let sampleCalls = 0;
+  harness.platform.getNetworkStatus = async () => {
+    sampleCalls += 1;
+    if (sampleCalls === 1) return harness.networkStatus;
+    throw sampleFailure;
+  };
+  harness.removalFailures.set("network", cleanupFailure);
+  const runtime = createMobileRuntime(harness.options);
+
+  await assert.rejects(runtime.start(), (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.match(error.message, /sample network and clean up/i);
+    assert.deepEqual(error.errors, [sampleFailure, cleanupFailure]);
+    return true;
+  });
+
+  assert.equal(harness.activeListenerCount(), 1);
+  assert.equal(harness.subscriptions[0].removalAttempts, 1);
+  harness.removalFailures.clear();
+  await runtime.stop();
+  assert.equal(harness.activeListenerCount(), 0);
+  assert.equal(harness.subscriptions[0].removalAttempts, 2);
+});
+
 test("start reports unsupported snapshot load failures and remains usable", async () => {
   const harness = runtimeHarness();
   const failure = new UnsupportedLocalBattleSnapshotVersionError(2);
@@ -525,6 +553,25 @@ test("active lifecycle resumes audio", async () => {
   await harness.emit("lifecycle", { active: true });
 
   assert.equal(harness.events.at(-1), "resume-audio");
+  await runtime.stop();
+});
+
+test("active lifecycle observes resume audio failures", async () => {
+  const harness = runtimeHarness();
+  const failure = new Error("audio resume failed");
+  harness.options.resumeAudio = async () => {
+    harness.events.push("resume-audio");
+    throw failure;
+  };
+  const runtime = createMobileRuntime(harness.options);
+  await runtime.start();
+
+  await assert.doesNotReject(
+    harness.emit("lifecycle", { active: true }),
+  );
+
+  assert.equal(harness.events.at(-1), "resume-audio");
+  assert.deepEqual(harness.deliveries.runtimeErrors, [failure]);
   await runtime.stop();
 });
 
