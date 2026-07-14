@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import capacitorCliConfig from "@capacitor/cli/dist/config.js";
 import plist from "plist";
 
@@ -41,6 +42,13 @@ function readAndroidString(path, name) {
   )?.[1];
   assert.notEqual(value, undefined, `${name} is missing from ${path}`);
   return value;
+}
+
+function listFiles(root) {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(root, entry.name);
+    return entry.isDirectory() ? listFiles(path) : [path];
+  });
 }
 
 test("mobile toolchain is pinned and uses bundled local web assets", () => {
@@ -209,6 +217,54 @@ test("Android shell uses the Salvo identity, SDK baseline, and names", () => {
     assert.equal(readAndroidString(localized, "app_name"), name);
     assert.equal(readAndroidString(localized, "title_activity_main"), name);
   }
+});
+
+test("Android test sources use the Salvo package and application ID", () => {
+  const testRoots = [
+    "android/app/src/test/java",
+    "android/app/src/androidTest/java",
+  ];
+  const testSources = testRoots
+    .flatMap((root) => listFiles(root))
+    .filter((path) => path.endsWith(".java"));
+
+  assert.notEqual(testSources.length, 0);
+  for (const path of testSources) {
+    assert.doesNotMatch(
+      readFileSync(path, "utf8"),
+      /\bcom\.getcapacitor(?:\.(?:app|myapp))?\b/,
+      `${path} contains a stale Capacitor package`,
+    );
+  }
+
+  const packagePath = "io/github/agentaxiom/salvo";
+  const unitTest = `android/app/src/test/java/${packagePath}/ExampleUnitTest.java`;
+  const instrumentedTest =
+    `android/app/src/androidTest/java/${packagePath}/ExampleInstrumentedTest.java`;
+  for (const path of [unitTest, instrumentedTest]) {
+    assert.equal(existsSync(path), true, `${path} is missing`);
+    assert.match(
+      readFileSync(path, "utf8"),
+      /^package io\.github\.agentaxiom\.salvo;/m,
+    );
+  }
+
+  assert.match(
+    readFileSync(instrumentedTest, "utf8"),
+    /assertEquals\(\s*"io\.github\.agentaxiom\.salvo",\s*appContext\.getPackageName\(\)\s*\)/s,
+  );
+  assert.equal(
+    existsSync(
+      "android/app/src/test/java/com/getcapacitor/myapp/ExampleUnitTest.java",
+    ),
+    false,
+  );
+  assert.equal(
+    existsSync(
+      "android/app/src/androidTest/java/com/getcapacitor/myapp/ExampleInstrumentedTest.java",
+    ),
+    false,
+  );
 });
 
 test("iOS shell uses the Salvo identity, SPM, deployment target, and names", () => {

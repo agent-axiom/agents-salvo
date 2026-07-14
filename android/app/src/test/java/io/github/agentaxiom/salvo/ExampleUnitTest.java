@@ -1,4 +1,4 @@
-package com.getcapacitor.myapp;
+package io.github.agentaxiom.salvo;
 
 import static org.junit.Assert.*;
 
