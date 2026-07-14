@@ -12,9 +12,9 @@ export function createMobileRuntime({
   onRuntimeError,
 }) {
   let activeRemovers = [];
+  let desiredStarted = false;
   let started = false;
-  let startPromise = null;
-  let stopPromise = null;
+  let transitionTail = Promise.resolve();
 
   const reportRuntimeError = async (error) => {
     if (!onRuntimeError) return;
@@ -84,7 +84,11 @@ export function createMobileRuntime({
       const snapshot = await snapshots.load();
       if (snapshot) await applySnapshot(snapshot);
     } catch (error) {
-      await onRestoreError(error);
+      try {
+        await onRestoreError(error);
+      } catch (observerError) {
+        await reportRuntimeError(observerError);
+      }
     }
 
     await platform.configureSystemBars();
@@ -93,27 +97,7 @@ export function createMobileRuntime({
     started = true;
   };
 
-  const start = () => {
-    if (stopPromise) return stopPromise.then(start);
-    if (started) return Promise.resolve();
-    if (startPromise) return startPromise;
-    if (activeRemovers.length > 0) return stop().then(start);
-
-    startPromise = performStart().finally(() => {
-      startPromise = null;
-    });
-    return startPromise;
-  };
-
   const performStop = async () => {
-    if (startPromise) {
-      try {
-        await startPromise;
-      } catch {
-        // Startup already cleaned up or retained only failed removers below.
-      }
-    }
-
     started = false;
     const removers = activeRemovers;
     activeRemovers = [];
@@ -127,19 +111,35 @@ export function createMobileRuntime({
     }
   };
 
-  const stop = () => {
-    if (stopPromise) return stopPromise;
-    stopPromise = performStop().finally(() => {
-      stopPromise = null;
-    });
-    return stopPromise;
+  const reconcileState = async () => {
+    while (true) {
+      if (desiredStarted) {
+        if (started) return;
+        if (activeRemovers.length > 0) {
+          await performStop();
+          continue;
+        }
+        await performStart();
+        continue;
+      }
+
+      if (!started && activeRemovers.length === 0) return;
+      await performStop();
+    }
+  };
+
+  const requestState = (nextStarted) => {
+    desiredStarted = nextStarted;
+    const transition = transitionTail.then(reconcileState);
+    transitionTail = transition.catch(() => {});
+    return transition;
   };
 
   return {
-    start,
+    start: () => requestState(true),
     async persist() {
       await snapshots.save(getState());
     },
-    stop,
+    stop: () => requestState(false),
   };
 }

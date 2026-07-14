@@ -195,6 +195,34 @@ test("start reports apply failures and still installs subscriptions", async () =
   await runtime.stop();
 });
 
+test("restore error observer failures do not block native startup", async () => {
+  const harness = runtimeHarness();
+  const restoreFailure = new Error("snapshot load failed");
+  const observerFailure = new Error("restore observer failed");
+  harness.snapshots.load = async () => {
+    throw restoreFailure;
+  };
+  harness.options.onRestoreError = async (error) => {
+    harness.events.push("restore-error");
+    harness.deliveries.restoreErrors.push(error);
+    throw observerFailure;
+  };
+  const runtime = createMobileRuntime(harness.options);
+
+  await runtime.start();
+
+  assert.deepEqual(harness.deliveries.restoreErrors, [restoreFailure]);
+  assert.deepEqual(harness.deliveries.runtimeErrors, [observerFailure]);
+  assert.deepEqual(harness.events.slice(0, 4), [
+    "network",
+    "restore-error",
+    "bars",
+    "splash",
+  ]);
+  assert.equal(harness.activeListenerCount(), 4);
+  await runtime.stop();
+});
+
 test("network, deep-link, and back events are forwarded unchanged", async () => {
   const harness = runtimeHarness();
   const runtime = createMobileRuntime(harness.options);
@@ -313,6 +341,37 @@ test("start and stop are idempotent and start can restart after stop", async () 
   await runtime.stop();
 });
 
+test("latest stop wins an overlapping partial start, stop, start, stop", async () => {
+  const harness = runtimeHarness();
+  const loadStarted = deferred();
+  const releaseLoad = deferred();
+  harness.snapshots.load = async () => {
+    loadStarted.resolve();
+    return releaseLoad.promise;
+  };
+  const runtime = createMobileRuntime(harness.options);
+
+  const partialStart = runtime.start();
+  await loadStarted.promise;
+  const firstStop = runtime.stop();
+  const overlappingStart = runtime.start();
+  const finalStop = runtime.stop();
+  releaseLoad.resolve(harness.snapshot);
+
+  await Promise.all([
+    partialStart,
+    firstStop,
+    overlappingStart,
+    finalStop,
+  ]);
+  assert.equal(harness.activeListenerCount(), 0);
+
+  await runtime.start();
+  assert.equal(harness.activeListenerCount(), 4);
+  await runtime.stop();
+  assert.equal(harness.activeListenerCount(), 0);
+});
+
 test("failed subscription setup removes earlier listeners and permits retry", async () => {
   const harness = runtimeHarness();
   const failure = new Error("back registration failed");
@@ -341,7 +400,33 @@ test("failed subscription setup removes earlier listeners and permits retry", as
   await runtime.stop();
 });
 
-test("stop attempts every remover and reports all cleanup failures", async () => {
+test("failed transactional rollback removers are retried before restart", async () => {
+  const harness = runtimeHarness();
+  const registrationFailure = new Error("back registration failed");
+  const cleanupFailure = new Error("network rollback failed");
+  harness.registrationFailures.set("back", registrationFailure);
+  harness.removalFailures.set("network", cleanupFailure);
+  const runtime = createMobileRuntime(harness.options);
+
+  await assert.rejects(runtime.start(), (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(error.errors, [registrationFailure, cleanupFailure]);
+    return true;
+  });
+  assert.equal(harness.activeListenerCount(), 1);
+  assert.equal(harness.subscriptions[0].removalAttempts, 1);
+
+  harness.registrationFailures.clear();
+  harness.removalFailures.clear();
+  await runtime.start();
+
+  assert.equal(harness.subscriptions[0].removalAttempts, 2);
+  assert.equal(harness.activeListenerCount(), 4);
+  await runtime.stop();
+  assert.equal(harness.activeListenerCount(), 0);
+});
+
+test("stop reports cleanup failures and retries only failed removers", async () => {
   const harness = runtimeHarness();
   const networkFailure = new Error("network remove failed");
   const backFailure = new Error("back remove failed");
@@ -366,6 +451,23 @@ test("stop attempts every remover and reports all cleanup failures", async () =>
       ["network", 1],
       ["deep-link", 1],
       ["back", 1],
+      ["lifecycle", 1],
+    ],
+  );
+
+  harness.removalFailures.clear();
+  await runtime.stop();
+
+  assert.equal(harness.activeListenerCount(), 0);
+  assert.deepEqual(
+    harness.subscriptions.map(({ name, removalAttempts }) => [
+      name,
+      removalAttempts,
+    ]),
+    [
+      ["network", 2],
+      ["deep-link", 1],
+      ["back", 2],
       ["lifecycle", 1],
     ],
   );

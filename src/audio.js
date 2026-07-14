@@ -4,6 +4,9 @@ const MUSIC_VOLUME = 0.32;
 
 export function createAudioController() {
   let context = null;
+  let contextResumePromise = null;
+  let musicGeneration = 0;
+  let musicStartPromise = null;
   let musicTimer = null;
   let musicElement = null;
 
@@ -16,14 +19,26 @@ export function createAudioController() {
     return context;
   };
 
+  const resumeContext = async (audioContext) => {
+    if (audioContext.state !== "suspended") {
+      return;
+    }
+    if (!contextResumePromise) {
+      const operation = Promise.resolve().then(() => audioContext.resume());
+      const tracked = operation.finally(() => {
+        if (contextResumePromise === tracked) contextResumePromise = null;
+      });
+      contextResumePromise = tracked;
+    }
+    await contextResumePromise;
+  };
+
   const ensureRunning = async () => {
     const audioContext = getContext();
     if (!audioContext) {
       return null;
     }
-    if (audioContext.state === "suspended") {
-      await audioContext.resume();
-    }
+    await resumeContext(audioContext);
     return audioContext;
   };
 
@@ -44,21 +59,22 @@ export function createAudioController() {
     }
   };
 
-  const startMusic = async (enabled) => {
-    if (!enabled || musicTimer !== null || musicElement) {
+  const performMusicStart = async (generation) => {
+    const track = chooseMenuTrack();
+    if (track && (await startMp3Music(track, generation))) {
       return;
     }
-    const track = chooseMenuTrack();
-    if (track && (await startMp3Music(track))) {
+    if (generation !== musicGeneration) {
       return;
     }
 
     const audioContext = await ensureRunning();
-    if (!audioContext) {
+    if (!audioContext || generation !== musicGeneration) {
       return;
     }
 
     const loop = () => {
+      if (generation !== musicGeneration) return;
       let offset = 0;
       for (const note of musicPreset.notes) {
         playTone(
@@ -74,7 +90,22 @@ export function createAudioController() {
     loop();
   };
 
+  const startMusic = (enabled) => {
+    if (!enabled) return Promise.resolve();
+    if (musicStartPromise) return musicStartPromise;
+    if (musicTimer !== null || musicElement) return Promise.resolve();
+
+    const operation = performMusicStart(musicGeneration);
+    const tracked = operation.finally(() => {
+      if (musicStartPromise === tracked) musicStartPromise = null;
+    });
+    musicStartPromise = tracked;
+    return tracked;
+  };
+
   const stopMusic = () => {
+    musicGeneration += 1;
+    musicStartPromise = null;
     if (musicElement) {
       musicElement.pause();
       musicElement.currentTime = 0;
@@ -88,6 +119,13 @@ export function createAudioController() {
 
   const pauseForLifecycle = async () => {
     stopMusic();
+    if (contextResumePromise) {
+      try {
+        await contextResumePromise;
+      } catch {
+        // The resume caller observes its own failure; pausing still continues.
+      }
+    }
     if (context?.state === "running") {
       await context.suspend();
     }
@@ -97,9 +135,9 @@ export function createAudioController() {
     if (!enabled || !isMenu) {
       return;
     }
-    if (context?.state === "suspended") {
-      await context.resume();
-    }
+    const generation = musicGeneration;
+    if (context) await resumeContext(context);
+    if (generation !== musicGeneration) return;
     await startMusic(true);
   };
 
@@ -111,21 +149,26 @@ export function createAudioController() {
     stopMusic,
   };
 
-  async function startMp3Music(source) {
+  async function startMp3Music(source, generation) {
     if (typeof Audio === "undefined") {
       return false;
     }
 
-    musicElement = new Audio(resolveAudioUrl(source));
-    musicElement.loop = true;
-    musicElement.preload = "auto";
-    musicElement.volume = MUSIC_VOLUME;
+    const element = new Audio(resolveAudioUrl(source));
+    element.loop = true;
+    element.preload = "auto";
+    element.volume = MUSIC_VOLUME;
+    musicElement = element;
 
     try {
-      await musicElement.play();
+      await element.play();
+      if (generation !== musicGeneration || musicElement !== element) {
+        element.pause();
+        element.currentTime = 0;
+      }
       return true;
     } catch {
-      musicElement = null;
+      if (musicElement === element) musicElement = null;
       return false;
     }
   }

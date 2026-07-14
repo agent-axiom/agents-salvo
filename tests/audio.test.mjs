@@ -152,6 +152,105 @@ test("lifecycle resume does not duplicate a synthetic music timer with id zero",
   });
 });
 
+test("concurrent lifecycle resumes share one synthetic music start", async () => {
+  const audio = audioHarness();
+  const timers = [];
+  audio.globals.Audio = undefined;
+  audio.globals.window.setTimeout = (callback, delay) => {
+    timers.push({ callback, delay });
+    return timers.length;
+  };
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+
+    await Promise.all([
+      controller.resumeForLifecycle(true, true),
+      controller.resumeForLifecycle(true, true),
+    ]);
+
+    assert.equal(audio.contexts.length, 1);
+    assert.equal(timers.length, 1);
+    await controller.pauseForLifecycle();
+  });
+});
+
+test("concurrent lifecycle resumes share one pending mp3 start", async () => {
+  const audio = audioHarness();
+  let releasePlay;
+  let markPlayStarted;
+  const playStarted = new Promise((resolvePromise) => {
+    markPlayStarted = resolvePromise;
+  });
+  const playPending = new Promise((resolvePromise) => {
+    releasePlay = resolvePromise;
+  });
+  audio.globals.Audio.prototype.play = function play() {
+    audio.elementCalls.push("play");
+    markPlayStarted();
+    return playPending;
+  };
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+    const firstResume = controller.resumeForLifecycle(true, true);
+    let secondSettled = false;
+    const secondResume = controller.resumeForLifecycle(true, true).then(() => {
+      secondSettled = true;
+    });
+    await playStarted;
+    await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+    assert.equal(audio.elements.length, 1);
+    assert.equal(audio.elementCalls.filter((call) => call === "play").length, 1);
+    assert.equal(secondSettled, false);
+    releasePlay();
+    await Promise.all([firstResume, secondResume]);
+    await controller.pauseForLifecycle();
+  });
+});
+
+test("lifecycle pause invalidates a pending synthetic resume", async () => {
+  const audio = audioHarness();
+  const timers = [];
+  audio.globals.Audio = undefined;
+  audio.globals.window.setTimeout = (callback, delay) => {
+    timers.push({ callback, delay });
+    return timers.length;
+  };
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+    await controller.play("ui", true);
+    await controller.pauseForLifecycle();
+
+    const context = audio.contexts[0];
+    let releaseResume;
+    let markResumeStarted;
+    const resumeStarted = new Promise((resolvePromise) => {
+      markResumeStarted = resolvePromise;
+    });
+    const resumePending = new Promise((resolvePromise) => {
+      releaseResume = resolvePromise;
+    });
+    context.resume = async () => {
+      audio.contextCalls.push("resume");
+      markResumeStarted();
+      await resumePending;
+      context.state = "running";
+    };
+
+    const resuming = controller.resumeForLifecycle(true, true);
+    await resumeStarted;
+    const pausing = controller.pauseForLifecycle();
+    releaseResume();
+    await Promise.all([resuming, pausing]);
+
+    assert.equal(timers.length, 0);
+    assert.equal(context.state, "suspended");
+  });
+});
+
 function audioHarness() {
   const contexts = [];
   const contextCalls = [];
