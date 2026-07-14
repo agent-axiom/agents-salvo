@@ -49,11 +49,15 @@ import {
 } from "./core/training.js";
 import { coordinateColumnLabel, getInitialLanguage, languages, t } from "./i18n.js";
 import {
+  createAppNavigationCoordinator,
   createDialogFocusController,
   createLatestClientCoordinator,
   createOrderedSnapshotStore,
   createPreferenceCoordinator,
   createSecureSessionCoordinator,
+  createUnknownNetworkState,
+  hasConfirmedNetworkConnection,
+  networkStateFromSample,
   parseSalvoDeepLink,
   startMobileAppServices,
 } from "./mobile-app-support.js";
@@ -95,7 +99,7 @@ const state = {
   leaveBattleDialog: false,
   restoredBattle: false,
   restoreError: "",
-  network: { connected: true, connectionType: "unknown" },
+  network: createUnknownNetworkState(),
   screen: initialRequestedReplayId ? "replay" : "menu",
   mode: null,
   presetId: "classic",
@@ -189,9 +193,16 @@ const onlineClientCoordinator = createLatestClientCoordinator({
     state.online.client = client;
   },
 });
+const appNavigation = createAppNavigationCoordinator({
+  shouldDiscardLocalBattle: hasLocalBattleSnapshotContext,
+  clearLocalBattle: () => localBattleSnapshots.clear(),
+  resetOnline: resetOnlineConnectionState,
+  onError: reportRuntimeError,
+});
 const leaveDialogFocus = createDialogFocusController({
   root,
   document,
+  dialogSelector: '[data-dialog="leave-battle"]',
   onCancel: cancelLeaveBattle,
 });
 const mobileRuntime = createMobileRuntime({
@@ -329,17 +340,12 @@ function handleLocalBattleRestoreError(error) {
 }
 
 function handleNetwork(status) {
-  state.network = {
-    connected: Boolean(status?.connected),
-    connectionType: typeof status?.connectionType === "string"
-      ? status.connectionType
-      : "unknown",
-  };
+  state.network = networkStateFromSample(status);
   render();
 }
 
 function requireOnline(onOffline) {
-  if (state.network.connected) return true;
+  if (hasConfirmedNetworkConnection(state.network)) return true;
   const message = `${translate("network.offline")} ${translate("network.retry")}`;
   onOffline?.(message);
   render();
@@ -469,7 +475,7 @@ function render() {
 function renderStatusBanners() {
   return `
     ${
-      !state.network.connected
+      state.network.confirmed && !state.network.connected
         ? `<div class="offline-banner" role="status">${translate("network.offline")} ${translate("network.retry")}</div>`
         : ""
     }
@@ -690,6 +696,7 @@ function renderLeaveBattleDialog() {
   return `
     <div
       class="modal-backdrop leave-battle-backdrop"
+      data-dialog="leave-battle"
       role="dialog" aria-modal="true"
       aria-labelledby="leave-battle-title"
       aria-describedby="leave-battle-body"
@@ -2888,9 +2895,8 @@ function cancelLeaveBattle() {
 }
 
 async function confirmLeaveBattle() {
-  state.leaveBattleDialog = false;
-  leaveDialogReturnFocus = null;
-  await goToMenu();
+  const completed = await goToMenu();
+  if (completed) leaveDialogReturnFocus = null;
 }
 
 function dismissRestoreNotice() {
@@ -2904,21 +2910,23 @@ async function handlePlatformDeepLink(rawUrl) {
   if (!route) return false;
   try {
     if (route.type === "room") {
-      showOnline();
-      state.online.roomCodeInput = route.roomCode;
-      render();
-      return true;
+      return await appNavigation.run(() => {
+        showOnline();
+        state.online.roomCodeInput = route.roomCode;
+        render();
+      });
     }
-    await openArchivedReplay(route.replayId, { source: "direct" });
-    return true;
+    return await openArchivedReplay(route.replayId, { source: "direct" });
   } catch {
     return false;
   }
 }
 
 async function goToMenu({ updateHistory = true } = {}) {
-  const discardLocalSnapshot = hasLocalBattleSnapshotContext();
-  closeRemote();
+  return appNavigation.run(() => applyMenuState({ updateHistory }));
+}
+
+function applyMenuState({ updateHistory }) {
   abortPrivateRequest("archive");
   abortPrivateRequest("replay");
   state.settingsOpen = false;
@@ -2948,13 +2956,6 @@ async function goToMenu({ updateHistory = true } = {}) {
     updateReplayHistory("", "push", "menu");
   }
   render();
-  if (discardLocalSnapshot) {
-    try {
-      await localBattleSnapshots.clear();
-    } catch (error) {
-      reportRuntimeError(error);
-    }
-  }
 }
 
 function hasLocalBattleSnapshotContext() {
@@ -2965,46 +2966,50 @@ function hasLocalBattleSnapshotContext() {
 }
 
 async function openReplayArchive({ historyMode = "push" } = {}) {
-  resetResultReplayPlayback();
-  abortPrivateRequest("archive");
-  abortPrivateRequest("replay");
-  state.settingsOpen = false;
-  state.profileOpen = false;
-  state.leaderboardOpen = false;
-  state.screen = "archive";
-  state.replayArchive.requestedId = "";
-  state.replayArchive.data = null;
-  state.replayArchive.loading = false;
-  state.replayArchive.error = "";
-  state.replayArchive.copyStatus = "";
-  state.replayArchive.openedFromArchive = false;
-  state.replayArchive.requestId += 1;
-  updateReplayHistory("", historyMode, "archive");
-  await loadReplayArchive();
+  return appNavigation.run(async () => {
+    resetResultReplayPlayback();
+    abortPrivateRequest("archive");
+    abortPrivateRequest("replay");
+    state.settingsOpen = false;
+    state.profileOpen = false;
+    state.leaderboardOpen = false;
+    state.screen = "archive";
+    state.replayArchive.requestedId = "";
+    state.replayArchive.data = null;
+    state.replayArchive.loading = false;
+    state.replayArchive.error = "";
+    state.replayArchive.copyStatus = "";
+    state.replayArchive.openedFromArchive = false;
+    state.replayArchive.requestId += 1;
+    updateReplayHistory("", historyMode, "archive");
+    await loadReplayArchive();
+  });
 }
 
 async function openArchivedReplay(id, { source = "direct" } = {}) {
   const replayId = replayIdFromSearch(`?replay=${encodeURIComponent(id || "")}`);
   if (!replayId) {
-    return;
+    return false;
   }
-  resetResultReplayPlayback();
-  abortPrivateRequest("archive");
-  abortPrivateRequest("replay");
-  state.settingsOpen = false;
-  state.profileOpen = false;
-  state.leaderboardOpen = false;
-  state.screen = "replay";
-  state.replayArchive.requestedId = replayId;
-  state.replayArchive.data = null;
-  state.replayArchive.error = "";
-  state.replayArchive.tab = "own";
-  state.replayArchive.copyStatus = "";
-  state.replayArchive.openedFromArchive = source === "archive";
-  state.archive.requestId += 1;
-  state.archive.loading = false;
-  updateReplayHistory(replayId, "push", "replay", { replaySource: source });
-  await loadArchivedReplay(replayId);
+  return appNavigation.run(async () => {
+    resetResultReplayPlayback();
+    abortPrivateRequest("archive");
+    abortPrivateRequest("replay");
+    state.settingsOpen = false;
+    state.profileOpen = false;
+    state.leaderboardOpen = false;
+    state.screen = "replay";
+    state.replayArchive.requestedId = replayId;
+    state.replayArchive.data = null;
+    state.replayArchive.error = "";
+    state.replayArchive.tab = "own";
+    state.replayArchive.copyStatus = "";
+    state.replayArchive.openedFromArchive = source === "archive";
+    state.archive.requestId += 1;
+    state.archive.loading = false;
+    updateReplayHistory(replayId, "push", "replay", { replaySource: source });
+    await loadArchivedReplay(replayId);
+  });
 }
 
 async function backToReplayArchive() {
@@ -3036,27 +3041,29 @@ function updateReplayHistory(replayId, mode, screen, details = {}) {
 
 async function handleReplayPopState(event) {
   const replayId = replayIdFromSearch(window.location.search);
-  resetResultReplayPlayback();
-  abortPrivateRequest("archive");
-  abortPrivateRequest("replay");
-  if (replayId) {
-    state.screen = "replay";
-    state.replayArchive.requestedId = replayId;
-    state.replayArchive.data = null;
-    state.replayArchive.error = "";
-    state.replayArchive.openedFromArchive = event.state?.replaySource === "archive";
-    await loadArchivedReplay(replayId);
-    return;
-  }
-  if (event.state?.screen === "archive") {
-    state.screen = "archive";
-    state.replayArchive.requestedId = "";
-    state.replayArchive.data = null;
-    state.replayArchive.openedFromArchive = false;
-    await loadReplayArchive();
-    return;
-  }
-  await goToMenu({ updateHistory: false });
+  return appNavigation.run(async () => {
+    resetResultReplayPlayback();
+    abortPrivateRequest("archive");
+    abortPrivateRequest("replay");
+    if (replayId) {
+      state.screen = "replay";
+      state.replayArchive.requestedId = replayId;
+      state.replayArchive.data = null;
+      state.replayArchive.error = "";
+      state.replayArchive.openedFromArchive = event.state?.replaySource === "archive";
+      await loadArchivedReplay(replayId);
+      return;
+    }
+    if (event.state?.screen === "archive") {
+      state.screen = "archive";
+      state.replayArchive.requestedId = "";
+      state.replayArchive.data = null;
+      state.replayArchive.openedFromArchive = false;
+      await loadReplayArchive();
+      return;
+    }
+    await applyMenuState({ updateHistory: false });
+  });
 }
 
 function selectArchivedReplayTab(tab) {
@@ -4189,11 +4196,11 @@ function clearPrivateReplayData({ preserveRequestedId = false } = {}) {
   state.replayArchive.requestId += 1;
 }
 
-async function establishAuthSession(token, user) {
+async function establishAuthSession(token, user, isCurrent) {
   try {
     return await secureSessionCoordinator.establish(token, () => {
       applyAuthenticatedSession(token, user);
-    });
+    }, { isCurrent: () => isCurrent() });
   } catch {
     throw new Error(translate("auth.secureStorageFailed"));
   }
@@ -4277,7 +4284,11 @@ async function handleTelegramAuth(payload) {
     if (!authPayload.token || !authPayload.user) {
       throw new Error("Telegram authentication response is incomplete");
     }
-    const established = await establishAuthSession(authPayload.token, authPayload.user);
+    const established = await establishAuthSession(
+      authPayload.token,
+      authPayload.user,
+      () => authOperationIsCurrent(request, controller),
+    );
     if (!established) return;
     render();
     const sessionRequest = captureAuthRequest();

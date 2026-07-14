@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createAppNavigationCoordinator,
   createDialogFocusController,
   createLatestClientCoordinator,
   createOrderedSnapshotStore,
   createPreferenceCoordinator,
   createSecureSessionCoordinator,
+  createUnknownNetworkState,
+  hasConfirmedNetworkConnection,
+  networkStateFromSample,
   parseSalvoDeepLink,
   startMobileAppServices,
 } from "../src/mobile-app-support.js";
@@ -16,11 +20,14 @@ test("startup begins runtime while preferences remain pending and gates network 
   const preferences = deferred();
   const secureSession = deferred();
   const calls = [];
+  let network = createUnknownNetworkState();
 
   const startup = startMobileAppServices({
     startRuntime() {
       calls.push("runtime");
-      return runtime.promise;
+      return runtime.promise.then((status) => {
+        network = networkStateFromSample(status);
+      });
     },
     hydratePreferences() {
       calls.push("preferences");
@@ -31,9 +38,11 @@ test("startup begins runtime while preferences remain pending and gates network 
       return secureSession.promise;
     },
     async refreshAuth() {
+      assert.equal(hasConfirmedNetworkConnection(network), true);
       calls.push("auth");
     },
     async refreshLeaderboard() {
+      assert.equal(hasConfirmedNetworkConnection(network), true);
       calls.push("leaderboard");
     },
     onError(error) {
@@ -43,13 +52,15 @@ test("startup begins runtime while preferences remain pending and gates network 
 
   await flushMicrotasks();
   assert.deepEqual(calls, ["runtime", "preferences", "secure-session"]);
-
-  runtime.resolve();
-  await startup.leaderboardReady;
-  assert.equal(calls.includes("leaderboard"), true);
-  assert.equal(calls.includes("auth"), false);
+  assert.equal(hasConfirmedNetworkConnection(network), false);
 
   secureSession.resolve();
+  await flushMicrotasks();
+  assert.equal(calls.includes("auth"), false);
+
+  runtime.resolve({ connected: true, connectionType: "wifi" });
+  await startup.leaderboardReady;
+  assert.equal(calls.includes("leaderboard"), true);
   await startup.authReady;
   assert.equal(calls.includes("auth"), true);
 
@@ -61,6 +72,28 @@ test("startup begins runtime while preferences remain pending and gates network 
   assert.equal(preferencesFinished, false);
   preferences.resolve();
   await startup.done;
+});
+
+test("network requests stay fail closed until a connected platform sample", () => {
+  const initial = createUnknownNetworkState();
+  assert.deepEqual(initial, {
+    connected: false,
+    connectionType: "unknown",
+    confirmed: false,
+  });
+  assert.equal(hasConfirmedNetworkConnection(initial), false);
+  assert.equal(
+    hasConfirmedNetworkConnection(networkStateFromSample({ connected: false, connectionType: "none" })),
+    false,
+  );
+  assert.equal(
+    hasConfirmedNetworkConnection(networkStateFromSample({ connected: "yes", connectionType: "wifi" })),
+    false,
+  );
+  assert.equal(
+    hasConfirmedNetworkConnection(networkStateFromSample({ connected: true, connectionType: "wifi" })),
+    true,
+  );
 });
 
 test("late preference hydration cannot overwrite a newer user action", async () => {
@@ -203,6 +236,94 @@ test("secure persistence fails closed and logout clear follows an earlier set", 
   assert.equal(authenticated, false);
 });
 
+test("secure persistence clears an auth result superseded by its request generation", async () => {
+  const set = deferred();
+  const clear = deferred();
+  const calls = [];
+  let requestGeneration = 1;
+  let authenticatedUser = "";
+  const sessions = createSecureSessionCoordinator({
+    secureSession: {
+      async get() {
+        return "";
+      },
+      set(token) {
+        calls.push(["set", token]);
+        return set.promise;
+      },
+      clear() {
+        calls.push(["clear"]);
+        return clear.promise;
+      },
+    },
+  });
+
+  const login = sessions.establish(
+    "stale-token",
+    () => {
+      authenticatedUser = "stale-user";
+    },
+    { isCurrent: () => requestGeneration === 1 },
+  );
+  await flushMicrotasks();
+  requestGeneration = 2;
+  set.resolve();
+  await flushMicrotasks();
+
+  assert.deepEqual(calls, [["set", "stale-token"], ["clear"]]);
+  assert.equal(authenticatedUser, "");
+  clear.resolve();
+  assert.equal(await login, false);
+});
+
+test("a newer secure login overwrites a superseded pending token without a late clear", async () => {
+  const firstSet = deferred();
+  const secondSet = deferred();
+  const calls = [];
+  let requestGeneration = 1;
+  let authenticatedUser = "";
+  const sessions = createSecureSessionCoordinator({
+    secureSession: {
+      async get() {
+        return "";
+      },
+      set(token) {
+        calls.push(["set", token]);
+        return token === "first-token" ? firstSet.promise : secondSet.promise;
+      },
+      async clear() {
+        calls.push(["clear"]);
+      },
+    },
+  });
+
+  const firstLogin = sessions.establish(
+    "first-token",
+    () => {
+      authenticatedUser = "first-user";
+    },
+    { isCurrent: () => requestGeneration === 1 },
+  );
+  await flushMicrotasks();
+  requestGeneration = 2;
+  const secondLogin = sessions.establish(
+    "second-token",
+    () => {
+      authenticatedUser = "second-user";
+    },
+    { isCurrent: () => requestGeneration === 2 },
+  );
+
+  firstSet.resolve();
+  assert.equal(await firstLogin, false);
+  await flushMicrotasks();
+  assert.deepEqual(calls, [["set", "first-token"], ["set", "second-token"]]);
+  secondSet.resolve();
+  assert.equal(await secondLogin, true);
+  assert.equal(authenticatedUser, "second-user");
+  assert.equal(calls.some(([operation]) => operation === "clear"), false);
+});
+
 test("snapshot clear is ordered after a pending lifecycle save", async () => {
   const pendingSave = deferred();
   let stored = null;
@@ -232,6 +353,78 @@ test("snapshot clear is ordered after a pending lifecycle save", async () => {
   await clear;
   assert.equal(clearCalls, 1);
   assert.equal(await snapshots.load(), null);
+});
+
+test("app navigation clears a local snapshot before changing route and closing online state", async () => {
+  const clear = deferred();
+  const state = { mode: "agent", screen: "playing" };
+  const calls = [];
+  const navigation = createAppNavigationCoordinator({
+    shouldDiscardLocalBattle: () => state.mode === "agent" && state.screen === "playing",
+    clearLocalBattle: () => {
+      calls.push("clear");
+      return clear.promise;
+    },
+    resetOnline: () => calls.push("close-online"),
+    onError(error) {
+      assert.fail(error);
+    },
+  });
+
+  const route = navigation.run(() => {
+    calls.push("route");
+    state.screen = "archive";
+  });
+  await flushMicrotasks();
+  assert.equal(state.screen, "playing");
+  assert.deepEqual(calls, ["clear"]);
+
+  clear.resolve();
+  assert.equal(await route, true);
+  assert.equal(state.screen, "archive");
+  assert.deepEqual(calls, ["clear", "close-online", "route"]);
+});
+
+test("failed local snapshot disposal blocks route completion", async () => {
+  const failure = new Error("snapshot storage failed");
+  const errors = [];
+  let screen = "training";
+  let onlineClosed = false;
+  const navigation = createAppNavigationCoordinator({
+    shouldDiscardLocalBattle: () => true,
+    clearLocalBattle: async () => {
+      throw failure;
+    },
+    resetOnline: () => {
+      onlineClosed = true;
+    },
+    onError(error) {
+      errors.push(error);
+    },
+  });
+
+  const completed = await navigation.run(() => {
+    screen = "replay";
+  });
+
+  assert.equal(completed, false);
+  assert.equal(screen, "training");
+  assert.equal(onlineClosed, false);
+  assert.deepEqual(errors, [failure]);
+});
+
+test("archive and replay navigation close an active online client before routing", async () => {
+  const calls = [];
+  const navigation = createAppNavigationCoordinator({
+    shouldDiscardLocalBattle: () => false,
+    clearLocalBattle: async () => assert.fail("online routes must not clear local snapshots"),
+    resetOnline: () => calls.push("close-online"),
+  });
+
+  const completed = await navigation.run(() => calls.push("replay-route"));
+
+  assert.equal(completed, true);
+  assert.deepEqual(calls, ["close-online", "replay-route"]);
 });
 
 test("latest online create closes and supersedes an earlier create", async () => {
@@ -368,12 +561,13 @@ test("deep-link parser rejects unsafe origins, schemes, credentials, ports, and 
   }
 });
 
-test("leave dialog controller makes background inert, traps focus, cancels, and restores", () => {
-  const harness = createDialogHarness();
+test("leave dialog controller targets the destructive dialog when another dialog comes first", () => {
+  const harness = createDialogHarness({ withCompetingDialog: true });
   let cancellations = 0;
   const controller = createDialogFocusController({
     root: harness.root,
     document: harness.document,
+    dialogSelector: '[data-dialog="leave-battle"]',
     onCancel() {
       cancellations += 1;
     },
@@ -385,6 +579,7 @@ test("leave dialog controller makes background inert, traps focus, cancels, and 
   assert.equal(harness.background.inert, true);
   assert.equal(harness.background.attributes.get("aria-hidden"), "true");
   assert.equal(harness.document.activeElement, harness.cancel);
+  assert.notEqual(harness.document.activeElement, harness.competingClose);
 
   harness.dispatchKey("Tab", { shiftKey: true });
   assert.equal(harness.document.activeElement, harness.confirm);
@@ -441,7 +636,7 @@ function createClientHarness() {
   };
 }
 
-function createDialogHarness() {
+function createDialogHarness({ withCompetingDialog = false } = {}) {
   const listeners = new Map();
   const document = {
     activeElement: null,
@@ -469,6 +664,7 @@ function createDialogHarness() {
     },
   });
   const trigger = makeElement({ action: "menu" });
+  const competingClose = makeElement({ action: "close-profile" });
   const cancel = makeElement({ action: "cancel-leave-battle" });
   const confirm = makeElement({ action: "confirm-leave-battle" });
   const background = makeElement();
@@ -480,10 +676,19 @@ function createDialogHarness() {
       return [cancel, confirm];
     },
   };
+  const competingDialog = {
+    contains(element) {
+      return element === competingClose;
+    },
+    querySelectorAll() {
+      return [competingClose];
+    },
+  };
   const root = {
     querySelector(selector) {
       if (selector === "[data-dialog-background]") return background;
-      if (selector === '[role="dialog"]') return dialog;
+      if (selector === '[data-dialog="leave-battle"]') return dialog;
+      if (selector === '[role="dialog"]') return withCompetingDialog ? competingDialog : dialog;
       return null;
     },
     querySelectorAll(selector) {
@@ -494,6 +699,7 @@ function createDialogHarness() {
   return {
     background,
     cancel,
+    competingClose,
     confirm,
     document,
     root,

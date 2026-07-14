@@ -649,7 +649,7 @@ test("preferences and secure auth hydrate asynchronously through the platform", 
   assert.match(mobileSupport, /secureSession\.get\(\)/);
   assert.match(mobileSupport, /secureSession\.set\(token\)/);
   assert.match(mobileSupport, /secureSession\.clear\(\)/);
-  assert.match(app, /await secureSessionCoordinator\.establish\(/);
+  assert.match(app, /await secureSessionCoordinator\.establish\([\s\S]*?isCurrent:/);
   assert.match(app, /await secureSessionCoordinator\.invalidate\(/);
   assert.match(app, /auth\.secureStorageFailed/);
   assert.match(app, /platform\.isNative\(\)[\s\S]*auth\.mobileSecureLoginPending/);
@@ -687,9 +687,11 @@ test("restores only normalized local battle fields and reports recoverable resto
 });
 
 test("network state renders an offline banner and guards remote work", () => {
-  assert.match(app, /network:\s*\{\s*connected:\s*true,\s*connectionType:\s*"unknown"\s*\}/);
+  assert.match(app, /network:\s*createUnknownNetworkState\(\)/);
   assert.match(app, /function handleNetwork\(status\)/);
-  assert.match(app, /state\.network = \{[\s\S]*?connected:[\s\S]*?connectionType:/);
+  assert.match(app, /state\.network = networkStateFromSample\(status\)/);
+  assert.match(app, /hasConfirmedNetworkConnection\(state\.network\)/);
+  assert.match(app, /state\.network\.confirmed && !state\.network\.connected/);
   assert.match(app, /class="offline-banner" role="status"/);
   assert.match(app, /translate\("network\.offline"\)/);
   assert.match(app, /function requireOnline/);
@@ -737,11 +739,22 @@ test("native back navigation uses ordered overlays and a destructive-leave dialo
   assert.match(app, /data-action="confirm-leave-battle"/);
   assert.match(app, /translate\("nav\.leaveBattleTitle"\)/);
   assert.match(app, /translate\("nav\.leaveBattleBody"\)/);
-  assert.match(app, /createDialogFocusController\(\{/);
+  assert.match(app, /createDialogFocusController\(\{[\s\S]*?dialogSelector:\s*'\[data-dialog="leave-battle"\]'/);
+  assert.match(app, /data-dialog="leave-battle"/);
   assert.match(app, /data-dialog-background/);
   assert.match(app, /leaveDialogFocus\.captureReturnFocus\(\)/);
   assert.match(app, /leaveDialogFocus\.restoreFocus\(/);
-  assert.match(app, /await localBattleSnapshots\.clear\(\)/);
+  assert.match(app, /clearLocalBattle:\s*\(\) => localBattleSnapshots\.clear\(\)/);
+});
+
+test("menu, archive, replay, and history routes use the guarded app transition", () => {
+  assert.match(app, /createAppNavigationCoordinator\(\{/);
+  assert.match(app, /shouldDiscardLocalBattle:\s*hasLocalBattleSnapshotContext/);
+  assert.match(app, /resetOnline:\s*resetOnlineConnectionState/);
+  for (const functionName of ["goToMenu", "openReplayArchive", "openArchivedReplay", "handleReplayPopState"]) {
+    const section = sourceFunction(`async function ${functionName}`);
+    assert.match(section, /appNavigation\.run\(/, `${functionName} must guard route changes`);
+  }
 });
 
 test("deep links fail closed while routing sanitized room and replay targets", () => {
@@ -763,6 +776,7 @@ test("online operations use latest-client generations and auth resets active roo
   const establish = sourceBetween("async function establishAuthSession", "async function invalidateAuthSession");
   const invalidate = sourceBetween("async function invalidateAuthSession", "function authOperationIsCurrent");
   assert.match(establish, /resetOnlineConnectionState\(\)/);
+  assert.match(establish, /isCurrent/);
   assert.match(invalidate, /resetOnlineConnectionState\(\)/);
   assert.match(mobileSupport, /guardHandlers/);
 });

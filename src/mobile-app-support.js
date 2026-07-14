@@ -3,6 +3,47 @@ const canonicalDeepLinkBasePath = "/agents-salvo";
 const replayIdPattern = /^[A-Za-z0-9-]{1,128}$/;
 const roomCodePattern = /^[A-Za-z0-9]{4,12}$/;
 
+export function createUnknownNetworkState() {
+  return { connected: false, connectionType: "unknown", confirmed: false };
+}
+
+export function networkStateFromSample(status) {
+  return {
+    connected: status?.connected === true,
+    connectionType: typeof status?.connectionType === "string"
+      ? status.connectionType
+      : "unknown",
+    confirmed: true,
+  };
+}
+
+export function hasConfirmedNetworkConnection(network) {
+  return network?.confirmed === true && network.connected === true;
+}
+
+export function createAppNavigationCoordinator({
+  shouldDiscardLocalBattle,
+  clearLocalBattle,
+  resetOnline,
+  onError,
+}) {
+  return {
+    async run(navigate) {
+      if (shouldDiscardLocalBattle()) {
+        try {
+          await clearLocalBattle();
+        } catch (error) {
+          await reportObservedError(onError, error);
+          return false;
+        }
+      }
+      await resetOnline();
+      await navigate();
+      return true;
+    },
+  };
+}
+
 export function startMobileAppServices({
   startRuntime,
   hydratePreferences,
@@ -104,10 +145,21 @@ export function createSecureSessionCoordinator({ secureSession }) {
       apply(token);
       return Boolean(token);
     },
-    async establish(token, commit) {
+    async establish(token, commit, { isCurrent = () => true } = {}) {
       const writeRevision = ++revision;
       await enqueueWrite(() => secureSession.set(token));
       if (revision !== writeRevision) return false;
+      let requestIsCurrent = false;
+      try {
+        requestIsCurrent = isCurrent();
+      } catch {
+        requestIsCurrent = false;
+      }
+      if (!requestIsCurrent) {
+        revision += 1;
+        await enqueueWrite(() => secureSession.clear());
+        return false;
+      }
       commit();
       return true;
     },
@@ -287,11 +339,16 @@ function hasExplicitPort(rawUrl) {
   return /:\d+$/.test(host);
 }
 
-export function createDialogFocusController({ root, document, onCancel }) {
+export function createDialogFocusController({
+  root,
+  document,
+  dialogSelector = '[role="dialog"]',
+  onCancel,
+}) {
   let listening = false;
 
   const focusableControls = () => {
-    const dialog = root.querySelector('[role="dialog"]');
+    const dialog = root.querySelector(dialogSelector);
     return dialog
       ? [...dialog.querySelectorAll("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])")]
       : [];
@@ -309,7 +366,7 @@ export function createDialogFocusController({ root, document, onCancel }) {
       event.preventDefault();
       return;
     }
-    const dialog = root.querySelector('[role="dialog"]');
+    const dialog = root.querySelector(dialogSelector);
     const first = controls[0];
     const last = controls.at(-1);
     const active = document.activeElement;
@@ -339,7 +396,7 @@ export function createDialogFocusController({ root, document, onCancel }) {
         document.addEventListener("keydown", handleKeydown);
         listening = true;
       }
-      const dialog = root.querySelector('[role="dialog"]');
+      const dialog = root.querySelector(dialogSelector);
       if (!dialog?.contains(document.activeElement)) {
         focusableControls()[0]?.focus();
       }
