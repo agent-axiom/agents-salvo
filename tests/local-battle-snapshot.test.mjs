@@ -291,7 +291,7 @@ function validSnapshot(overrides = {}) {
   };
 }
 
-async function withObjectPrototypeFields(fields, callback) {
+async function withObjectPrototypeDescriptors(fields, callback) {
   const previousDescriptors = new Map(
     fields.map(([field]) => [
       field,
@@ -300,11 +300,10 @@ async function withObjectPrototypeFields(fields, callback) {
   );
 
   try {
-    for (const [field, value] of fields) {
+    for (const [field, descriptor] of fields) {
       Object.defineProperty(Object.prototype, field, {
         configurable: true,
-        writable: true,
-        value,
+        ...descriptor,
       });
     }
     return await callback();
@@ -318,6 +317,13 @@ async function withObjectPrototypeFields(fields, callback) {
       }
     }
   }
+}
+
+function withObjectPrototypeFields(fields, callback) {
+  return withObjectPrototypeDescriptors(
+    fields.map(([field, value]) => [field, { value, writable: true }]),
+    callback,
+  );
 }
 
 function withObjectPrototypeField(field, value, callback) {
@@ -1054,6 +1060,63 @@ test("training progress ignores inherited containers and nested fields", async (
       );
     });
   }
+});
+
+test("training progress output ignores inherited scenario and daily setters", async () => {
+  const setterCalls = { checkerboard: 0, daily: 0 };
+  const state = trainingState();
+  const raw = JSON.stringify(createLocalBattleSnapshot(state, () => NOW));
+
+  await withObjectPrototypeDescriptors(
+    [
+      ["checkerboard", { set() { setterCalls.checkerboard += 1; } }],
+      ["daily", { set() { setterCalls.daily += 1; } }],
+    ],
+    () => {
+      const snapshots = [
+        createLocalBattleSnapshot(state, () => NOW),
+        parseLocalBattleSnapshot(raw),
+      ];
+
+      assert.deepEqual(setterCalls, { checkerboard: 0, daily: 0 });
+      for (const snapshot of snapshots) {
+        const progress = snapshot.training.progress;
+        assert.equal(Object.getPrototypeOf(progress), Object.prototype);
+        assert.deepEqual(progress, trainingProgress());
+        for (const field of ["checkerboard", "daily"]) {
+          const descriptor = Object.getOwnPropertyDescriptor(progress, field);
+          assert.equal(descriptor?.enumerable, true, field);
+          assert.equal(descriptor?.writable, true, field);
+          assert.equal(descriptor?.configurable, true, field);
+        }
+      }
+    },
+  );
+});
+
+test("training progress output overrides inherited non-writable data", async () => {
+  const state = trainingState();
+  const raw = JSON.stringify(createLocalBattleSnapshot(state, () => NOW));
+
+  await withObjectPrototypeDescriptors(
+    [
+      ["checkerboard", { value: "blocked", writable: false }],
+      ["daily", { value: "blocked", writable: false }],
+    ],
+    () => {
+      const snapshots = [
+        createLocalBattleSnapshot(state, () => NOW),
+        parseLocalBattleSnapshot(raw),
+      ];
+
+      for (const snapshot of snapshots) {
+        const progress = snapshot.training.progress;
+        assert.equal(Object.getPrototypeOf(progress), Object.prototype);
+        assert.deepEqual(progress, trainingProgress());
+        assert.deepEqual(JSON.parse(JSON.stringify(progress)), trainingProgress());
+      }
+    },
+  );
 });
 
 test("snapshot creation and parsing detach nested mutable state", () => {
