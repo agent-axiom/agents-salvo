@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { inflateSync } from "node:zlib";
 import capacitorCliConfig from "@capacitor/cli/dist/config.js";
 import plist from "plist";
 
@@ -13,26 +14,152 @@ const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const buildScript = readFileSync("scripts/build.mjs", "utf8");
 const capacitorConfig = readFileSync("capacitor.config.ts", "utf8");
 
-function readPngMetadata(path) {
+function readPng(path) {
   const png = readFileSync(path);
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   assert.deepEqual(png.subarray(0, signature.length), signature);
 
   const chunkTypes = [];
+  const imageData = [];
   let offset = signature.length;
   while (offset < png.length) {
     const length = png.readUInt32BE(offset);
     const type = png.toString("ascii", offset + 4, offset + 8);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
     chunkTypes.push(type);
-    offset += 12 + length;
+    if (type === "IDAT") {
+      imageData.push(png.subarray(dataStart, dataEnd));
+    }
+    offset = dataEnd + 4;
   }
 
   return {
     width: png.readUInt32BE(16),
     height: png.readUInt32BE(20),
+    bitDepth: png[24],
     colorType: png[25],
+    interlace: png[28],
     chunkTypes,
+    imageData,
   };
+}
+
+function readPngMetadata(path) {
+  const { imageData: _imageData, ...metadata } = readPng(path);
+  return metadata;
+}
+
+function paethPredictor(left, up, upperLeft) {
+  const estimate = left + up - upperLeft;
+  const leftDistance = Math.abs(estimate - left);
+  const upDistance = Math.abs(estimate - up);
+  const upperLeftDistance = Math.abs(estimate - upperLeft);
+
+  if (leftDistance <= upDistance && leftDistance <= upperLeftDistance) {
+    return left;
+  }
+  return upDistance <= upperLeftDistance ? up : upperLeft;
+}
+
+function readPngPixels(path) {
+  const png = readPng(path);
+  assert.equal(png.bitDepth, 8, `${path} must use 8-bit channels`);
+  assert.equal(png.interlace, 0, `${path} must not be interlaced`);
+  assert.equal(
+    [2, 6].includes(png.colorType),
+    true,
+    `${path} must be RGB or RGBA truecolor`,
+  );
+
+  const channels = png.colorType === 2 ? 3 : 4;
+  const stride = png.width * channels;
+  const filtered = inflateSync(Buffer.concat(png.imageData));
+  assert.equal(filtered.length, png.height * (stride + 1));
+
+  const pixels = Buffer.alloc(png.height * stride);
+  for (let y = 0; y < png.height; y += 1) {
+    const filteredRow = y * (stride + 1);
+    const filter = filtered[filteredRow];
+    const row = y * stride;
+    const previousRow = row - stride;
+
+    for (let x = 0; x < stride; x += 1) {
+      const value = filtered[filteredRow + x + 1];
+      const left = x >= channels ? pixels[row + x - channels] : 0;
+      const up = y > 0 ? pixels[previousRow + x] : 0;
+      const upperLeft =
+        y > 0 && x >= channels
+          ? pixels[previousRow + x - channels]
+          : 0;
+
+      let predictor;
+      switch (filter) {
+        case 0:
+          predictor = 0;
+          break;
+        case 1:
+          predictor = left;
+          break;
+        case 2:
+          predictor = up;
+          break;
+        case 3:
+          predictor = Math.floor((left + up) / 2);
+          break;
+        case 4:
+          predictor = paethPredictor(left, up, upperLeft);
+          break;
+        default:
+          assert.fail(`${path} uses unsupported PNG filter ${filter}`);
+      }
+      pixels[row + x] = (value + predictor) & 0xff;
+    }
+  }
+
+  return { ...png, channels, pixels };
+}
+
+function assertPngBorderColor(path, expected) {
+  const png = readPngPixels(path);
+  const rgbAt = (x, y) => {
+    const offset = (y * png.width + x) * png.channels;
+    return [...png.pixels.subarray(offset, offset + 3)];
+  };
+
+  for (let x = 0; x < png.width; x += 1) {
+    const top = rgbAt(x, 0);
+    const bottom = rgbAt(x, png.height - 1);
+    if (
+      top.some((channel, index) => channel !== expected[index]) ||
+      bottom.some((channel, index) => channel !== expected[index])
+    ) {
+      assert.fail(`${path} has a non-brand horizontal border pixel at x=${x}`);
+    }
+  }
+  for (let y = 1; y < png.height - 1; y += 1) {
+    const left = rgbAt(0, y);
+    const right = rgbAt(png.width - 1, y);
+    if (
+      left.some((channel, index) => channel !== expected[index]) ||
+      right.some((channel, index) => channel !== expected[index])
+    ) {
+      assert.fail(`${path} has a non-brand vertical border pixel at y=${y}`);
+    }
+  }
+
+  let templateDarkOffset = -1;
+  for (let offset = 0; offset < png.pixels.length; offset += png.channels) {
+    const isTemplateDark =
+      png.pixels[offset] === 17 &&
+      png.pixels[offset + 1] === 17 &&
+      png.pixels[offset + 2] === 17;
+    if (isTemplateDark) {
+      templateDarkOffset = offset;
+      break;
+    }
+  }
+  assert.equal(templateDarkOffset, -1, `${path} contains template #111111`);
 }
 
 function readAndroidString(path, name) {
@@ -45,6 +172,9 @@ function readAndroidString(path, name) {
 }
 
 function listFiles(root) {
+  if (!existsSync(root)) {
+    return [];
+  }
   return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
     const path = join(root, entry.name);
     return entry.isDirectory() ? listFiles(path) : [path];
@@ -185,6 +315,94 @@ test("mobile source artwork has deterministic opaque dimensions", () => {
   assert.equal(splash.chunkTypes.includes("tRNS"), false);
 });
 
+test("iOS dark splash canvases use the Salvo brand background", () => {
+  const splashSet = "ios/App/App/Assets.xcassets/Splash.imageset";
+  const contents = JSON.parse(
+    readFileSync(join(splashSet, "Contents.json"), "utf8"),
+  );
+  const darkImages = contents.images
+    .filter((image) =>
+      image.appearances?.some(
+        ({ appearance, value }) =>
+          appearance === "luminosity" && value === "dark",
+      ),
+    )
+    .map(({ filename }) => filename);
+
+  assert.equal(darkImages.length, 3);
+  for (const filename of darkImages) {
+    const path = join(splashSet, filename);
+    assert.equal(existsSync(path), true, `${path} is missing`);
+    const { width, height } = readPngMetadata(path);
+    assert.deepEqual({ width, height }, { width: 2732, height: 2732 });
+    assertPngBorderColor(path, [7, 18, 36]);
+  }
+});
+
+test("native asset catalogs contain only referenced splash and launcher files", () => {
+  const splashSet = "ios/App/App/Assets.xcassets/Splash.imageset";
+  const contents = JSON.parse(
+    readFileSync(join(splashSet, "Contents.json"), "utf8"),
+  );
+  const referencedIosSplashes = contents.images
+    .map(({ filename }) => filename)
+    .filter(Boolean)
+    .sort();
+  const actualIosSplashes = readdirSync(splashSet)
+    .filter((filename) => filename.endsWith(".png"))
+    .sort();
+  assert.deepEqual(actualIosSplashes, referencedIosSplashes);
+
+  const resRoot = "android/app/src/main/res";
+  const densities = ["ldpi", "mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"];
+  const launcherNames = [
+    "ic_launcher.png",
+    "ic_launcher_round.png",
+    "ic_launcher_background.png",
+    "ic_launcher_foreground.png",
+  ];
+  const expectedLauncherFiles = [
+    join(resRoot, "mipmap-anydpi-v26/ic_launcher.xml"),
+    join(resRoot, "mipmap-anydpi-v26/ic_launcher_round.xml"),
+    ...densities.flatMap((density) =>
+      launcherNames.map((name) => join(resRoot, `mipmap-${density}`, name)),
+    ),
+  ].sort();
+  const actualLauncherFiles = listFiles(resRoot)
+    .filter((path) =>
+      /\/ic_launcher(?:_background|_foreground|_round)?\.(?:png|xml)$/.test(
+        path,
+      ),
+    )
+    .sort();
+  assert.deepEqual(actualLauncherFiles, expectedLauncherFiles);
+
+  const manifest = readFileSync(
+    "android/app/src/main/AndroidManifest.xml",
+    "utf8",
+  );
+  assert.match(manifest, /android:icon="@mipmap\/ic_launcher"/);
+  assert.match(manifest, /android:roundIcon="@mipmap\/ic_launcher_round"/);
+  for (const name of ["ic_launcher.xml", "ic_launcher_round.xml"]) {
+    const adaptiveIcon = readFileSync(
+      join(resRoot, "mipmap-anydpi-v26", name),
+      "utf8",
+    );
+    assert.match(adaptiveIcon, /@mipmap\/ic_launcher_background/);
+    assert.match(adaptiveIcon, /@mipmap\/ic_launcher_foreground/);
+  }
+
+  const styles = readFileSync(join(resRoot, "values/styles.xml"), "utf8");
+  const androidSplashes = listFiles(resRoot).filter((path) =>
+    path.endsWith("/splash.png"),
+  );
+  assert.notEqual(androidSplashes.length, 0);
+  assert.match(
+    styles,
+    /<item name="android:background">@drawable\/splash<\/item>/,
+  );
+});
+
 test("Android shell uses the Salvo identity, SDK baseline, and names", () => {
   assert.equal(existsSync("android/app/build.gradle"), true, "Android shell is missing");
 
@@ -219,51 +437,52 @@ test("Android shell uses the Salvo identity, SDK baseline, and names", () => {
   }
 });
 
-test("Android test sources use the Salvo package and application ID", () => {
-  const testRoots = [
-    "android/app/src/test/java",
-    "android/app/src/androidTest/java",
-  ];
-  const testSources = testRoots
-    .flatMap((root) => listFiles(root))
-    .filter((path) => path.endsWith(".java"));
+test("Android ignores signing keys", () => {
+  const gitignore = readFileSync("android/.gitignore", "utf8");
+  assert.match(gitignore, /^\*\.jks$/m);
+  assert.match(gitignore, /^\*\.keystore$/m);
+});
 
-  assert.notEqual(testSources.length, 0);
-  for (const path of testSources) {
-    assert.doesNotMatch(
-      readFileSync(path, "utf8"),
-      /\bcom\.getcapacitor(?:\.(?:app|myapp))?\b/,
-      `${path} contains a stale Capacitor package`,
-    );
-  }
+test("Android tests contain only the application ID smoke coverage", () => {
+  const appGradle = readFileSync("android/app/build.gradle", "utf8");
+  const variablesGradle = readFileSync("android/variables.gradle", "utf8");
+  assert.doesNotMatch(appGradle, /^\s*testImplementation\b/m);
+  assert.doesNotMatch(appGradle, /espresso/i);
+  assert.doesNotMatch(variablesGradle, /^\s*junitVersion\s*=/m);
+  assert.doesNotMatch(variablesGradle, /espresso/i);
+  assert.match(
+    appGradle,
+    /androidTestImplementation\s+["']androidx\.test\.ext:junit:\$androidxJunitVersion["']/,
+  );
+  assert.match(variablesGradle, /^\s*androidxJunitVersion\s*=/m);
+
+  const unitTestSources = listFiles("android/app/src/test/java").filter(
+    (path) => path.endsWith(".java"),
+  );
+  assert.deepEqual(unitTestSources, []);
 
   const packagePath = "io/github/agentaxiom/salvo";
-  const unitTest = `android/app/src/test/java/${packagePath}/ExampleUnitTest.java`;
   const instrumentedTest =
-    `android/app/src/androidTest/java/${packagePath}/ExampleInstrumentedTest.java`;
-  for (const path of [unitTest, instrumentedTest]) {
-    assert.equal(existsSync(path), true, `${path} is missing`);
-    assert.match(
-      readFileSync(path, "utf8"),
-      /^package io\.github\.agentaxiom\.salvo;/m,
-    );
-  }
+    `android/app/src/androidTest/java/${packagePath}/ApplicationIdSmokeTest.java`;
+  const instrumentedTestSources = listFiles(
+    "android/app/src/androidTest/java",
+  )
+    .filter((path) => path.endsWith(".java"))
+    .sort();
+  assert.deepEqual(instrumentedTestSources, [instrumentedTest]);
 
+  const source = readFileSync(instrumentedTest, "utf8");
+  assert.match(source, /^package io\.github\.agentaxiom\.salvo;/m);
+  assert.match(source, /public class ApplicationIdSmokeTest\s*\{/);
+  assert.match(source, /public void applicationIdMatchesConfiguredPackage\(\)/);
   assert.match(
-    readFileSync(instrumentedTest, "utf8"),
+    source,
     /assertEquals\(\s*"io\.github\.agentaxiom\.salvo",\s*appContext\.getPackageName\(\)\s*\)/s,
   );
-  assert.equal(
-    existsSync(
-      "android/app/src/test/java/com/getcapacitor/myapp/ExampleUnitTest.java",
-    ),
-    false,
-  );
-  assert.equal(
-    existsSync(
-      "android/app/src/androidTest/java/com/getcapacitor/myapp/ExampleInstrumentedTest.java",
-    ),
-    false,
+  assert.doesNotMatch(source, /\bExample\w*/);
+  assert.doesNotMatch(
+    source,
+    /\bcom\.getcapacitor(?:\.(?:app|myapp))?\b/,
   );
 });
 
