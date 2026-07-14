@@ -181,6 +181,39 @@ function listFiles(root) {
   });
 }
 
+function readWorkflow(path) {
+  assert.equal(existsSync(path), true, `${path} is missing`);
+  return readFileSync(path, "utf8");
+}
+
+function workflowJob(workflow, name) {
+  const lines = workflow.split("\n");
+  const start = lines.indexOf(`  ${name}:`);
+  assert.notEqual(start, -1, `${name} job is missing`);
+
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^  [a-zA-Z0-9_-]+:$/.test(lines[index])) {
+      end = index;
+      break;
+    }
+  }
+  return lines.slice(start, end).join("\n");
+}
+
+function actionVersions(workflow, action) {
+  const escapedAction = action.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return [
+    ...workflow.matchAll(new RegExp(`uses: ${escapedAction}@([^\\s]+)`, "g")),
+  ].map((match) => match[1]);
+}
+
+function scalarRunCommands(workflow) {
+  return [...workflow.matchAll(/^\s+run: (?!\|)(.+)$/gm)].map(
+    (match) => match[1],
+  );
+}
+
 test("mobile toolchain is pinned and uses bundled local web assets", () => {
   assert.equal(readFileSync(".nvmrc", "utf8").trim(), "24.14.1");
   assert.equal(packageJson.engines.node, ">=24.14.1 <25");
@@ -592,4 +625,135 @@ test("native shells do not configure a GitHub Pages WebView start URL", () => {
       /https:\/\/agent-axiom\.github\.io\/agents-salvo\/?/i,
     );
   }
+});
+
+test("Pages CI uses the pinned Node toolchain and preserves deployment", () => {
+  const workflow = readWorkflow(".github/workflows/pages.yml");
+  const build = workflowJob(workflow, "build");
+  const deploy = workflowJob(workflow, "deploy");
+
+  assert.equal(readFileSync(".nvmrc", "utf8").trim(), "24.14.1");
+  assert.deepEqual(actionVersions(workflow, "actions/checkout"), ["v7"]);
+  assert.deepEqual(actionVersions(workflow, "actions/setup-node"), ["v7"]);
+  assert.match(
+    build,
+    /uses: actions\/setup-node@v7\n\s+with:\n\s+node-version-file: \.nvmrc\n\s+cache: npm/,
+  );
+  assert.deepEqual(scalarRunCommands(build), [
+    "npm ci",
+    "npm test",
+    "npm run coverage",
+    "npm run build",
+  ]);
+  assert.match(build, /uses: actions\/configure-pages@v6/);
+  assert.match(
+    build,
+    /uses: actions\/upload-pages-artifact@v5\n\s+with:\n\s+path: dist/,
+  );
+  assert.match(deploy, /uses: actions\/deploy-pages@v5/);
+});
+
+test("mobile CI covers branch builds without signing credentials", () => {
+  const workflow = readWorkflow(".github/workflows/mobile.yml");
+
+  assert.match(workflow, /^on:\n/m);
+  assert.match(workflow, /^  pull_request:\s*$/m);
+  assert.match(workflow, /^  push:\n    branches:\n      - main$/m);
+  assert.match(workflow, /^  workflow_dispatch:\s*$/m);
+  assert.match(
+    workflow,
+    /^concurrency:\n  group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\n  cancel-in-progress: true$/m,
+  );
+  assert.deepEqual(actionVersions(workflow, "actions/checkout"), [
+    "v7",
+    "v7",
+    "v7",
+  ]);
+  assert.deepEqual(actionVersions(workflow, "actions/setup-node"), [
+    "v7",
+    "v7",
+    "v7",
+  ]);
+  assert.deepEqual(actionVersions(workflow, "actions/setup-java"), ["v5"]);
+  assert.deepEqual(actionVersions(workflow, "actions/upload-artifact"), [
+    "v7",
+    "v7",
+  ]);
+  assert.doesNotMatch(workflow, /\$\{\{\s*secrets(?:\.|\[)/i);
+  assert.doesNotMatch(
+    workflow,
+    /\b(?:ANDROID_KEYSTORE|KEYSTORE_PASSWORD|KEY_PASSWORD|STORE_PASSWORD|P12_PASSWORD|MATCH_PASSWORD|APPLE_CERTIFICATE|PROVISIONING_PROFILE(?:_SPECIFIER)?|CODE_SIGN_IDENTITY)\b/i,
+  );
+});
+
+test("mobile CI validates the web build and coverage gate", () => {
+  const workflow = readWorkflow(".github/workflows/mobile.yml");
+  const web = workflowJob(workflow, "web");
+
+  assert.match(web, /^  web:\n    runs-on: ubuntu-latest$/m);
+  assert.deepEqual(actionVersions(web, "actions/checkout"), ["v7"]);
+  assert.deepEqual(actionVersions(web, "actions/setup-node"), ["v7"]);
+  assert.match(
+    web,
+    /uses: actions\/setup-node@v7\n\s+with:\n\s+node-version-file: \.nvmrc\n\s+cache: npm/,
+  );
+  assert.deepEqual(scalarRunCommands(web), [
+    "npm ci",
+    "npm test",
+    "npm run coverage",
+    "npm run build",
+  ]);
+});
+
+test("mobile CI tests, lints, and packages the Android debug app", () => {
+  const workflow = readWorkflow(".github/workflows/mobile.yml");
+  const android = workflowJob(workflow, "android");
+
+  assert.match(android, /^  android:\n    runs-on: ubuntu-latest$/m);
+  assert.deepEqual(actionVersions(android, "actions/checkout"), ["v7"]);
+  assert.deepEqual(actionVersions(android, "actions/setup-node"), ["v7"]);
+  assert.deepEqual(actionVersions(android, "actions/setup-java"), ["v5"]);
+  assert.match(
+    android,
+    /uses: actions\/setup-node@v7\n\s+with:\n\s+node-version-file: \.nvmrc\n\s+cache: npm/,
+  );
+  assert.match(
+    android,
+    /uses: actions\/setup-java@v5\n\s+with:\n\s+distribution: temurin\n\s+java-version: ["']21["']\n\s+cache: gradle/,
+  );
+  assert.deepEqual(scalarRunCommands(android), [
+    "npm ci",
+    "npm run mobile:sync",
+    "android/gradlew -p android test lint assembleDebug",
+  ]);
+  assert.match(
+    android,
+    /uses: actions\/upload-artifact@v7\n\s+with:\n\s+name: android-debug-apk\n\s+path: android\/app\/build\/outputs\/apk\/debug\/app-debug\.apk\n\s+if-no-files-found: error/,
+  );
+});
+
+test("mobile CI builds an unsigned iOS Simulator app and retains failures", () => {
+  const workflow = readWorkflow(".github/workflows/mobile.yml");
+  const ios = workflowJob(workflow, "ios");
+
+  assert.match(ios, /^  ios:\n    runs-on: macos-26$/m);
+  assert.deepEqual(actionVersions(ios, "actions/checkout"), ["v7"]);
+  assert.deepEqual(actionVersions(ios, "actions/setup-node"), ["v7"]);
+  assert.match(
+    ios,
+    /uses: actions\/setup-node@v7\n\s+with:\n\s+node-version-file: \.nvmrc\n\s+cache: npm/,
+  );
+  assert.deepEqual(scalarRunCommands(ios), [
+    "sudo xcode-select -s /Applications/Xcode.app/Contents/Developer",
+    "npm ci",
+    "npm run mobile:sync",
+  ]);
+  assert.match(
+    ios,
+    /shell: bash\n\s+run: \|\n\s+set -o pipefail\n\s+xcodebuild -project ios\/App\/App\.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build 2>&1 \| tee xcodebuild\.log/,
+  );
+  assert.match(
+    ios,
+    /if: failure\(\)\n\s+uses: actions\/upload-artifact@v7\n\s+with:\n\s+name: ios-xcodebuild-log\n\s+path: xcodebuild\.log\n\s+if-no-files-found: error/,
+  );
 });
