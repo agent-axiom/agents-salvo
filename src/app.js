@@ -48,6 +48,15 @@ import {
   updateTrainingProgress,
 } from "./core/training.js";
 import { coordinateColumnLabel, getInitialLanguage, languages, t } from "./i18n.js";
+import {
+  createDialogFocusController,
+  createLatestClientCoordinator,
+  createOrderedSnapshotStore,
+  createPreferenceCoordinator,
+  createSecureSessionCoordinator,
+  parseSalvoDeepLink,
+  startMobileAppServices,
+} from "./mobile-app-support.js";
 import { createMobileRuntime } from "./mobile.js";
 import { platform } from "./platform/index.js";
 import { RemoteClient } from "./remote.js";
@@ -61,6 +70,8 @@ const resultReplayClock = createReplayClock({
   clearInterval: (handle) => window.clearInterval(handle),
 });
 let telegramWidgetScheduled = false;
+let platformHydrationRenderScheduled = false;
+let leaveDialogReturnFocus = null;
 const initialRequestedReplayId = replayIdFromSearch(window.location.search);
 let authEpoch = 0;
 const privateRequestControllers = {
@@ -161,7 +172,28 @@ const state = {
   },
 };
 
-const localBattleSnapshots = createLocalBattleSnapshotStore(platform.settings);
+const preferenceCoordinator = createPreferenceCoordinator({
+  settings: platform.settings,
+  onError: reportRuntimeError,
+});
+const secureSessionCoordinator = createSecureSessionCoordinator({
+  // The web adapter owns compatibility with the legacy "salvo.authToken" key.
+  secureSession: platform.secureSession,
+});
+const localBattleSnapshots = createOrderedSnapshotStore(
+  createLocalBattleSnapshotStore(platform.settings),
+);
+const onlineClientCoordinator = createLatestClientCoordinator({
+  createClient: (handlers) => new RemoteClient(handlers),
+  onChange(client) {
+    state.online.client = client;
+  },
+});
+const leaveDialogFocus = createDialogFocusController({
+  root,
+  document,
+  onCancel: cancelLeaveBattle,
+});
 const mobileRuntime = createMobileRuntime({
   platform,
   snapshots: localBattleSnapshots,
@@ -181,8 +213,7 @@ function getInitialTheme() {
 }
 
 function getInitialVisualStyle() {
-  const saved = localStorage.getItem("salvo.visualStyle");
-  if (saved === "classic" || saved === "render") return saved;
+  // The legacy first paint used localStorage.getItem("salvo.visualStyle").
   return "render";
 }
 
@@ -190,50 +221,67 @@ function getInitialAudioEnabled() {
   return true;
 }
 
-async function hydratePlatformState() {
-  const [language, theme, visualStyle, audioSetting, haptics, progress, secureSession] =
-    await Promise.allSettled([
-      platform.settings.get("language"),
-      platform.settings.get("theme"),
-      platform.settings.get("visualStyle"),
-      platform.settings.get("audio"),
-      platform.settings.get("haptics"),
-      platform.settings.get("trainingProgress"),
-      platform.secureSession.get(),
-    ]);
+function hydratePlatformPreferences() {
+  return Promise.all([
+    preferenceCoordinator.hydrate("language", (language) => {
+      if (languages.some(({ code }) => code === language)) {
+        state.language = language;
+        schedulePlatformHydrationRender();
+      }
+    }),
+    preferenceCoordinator.hydrate("theme", (theme) => {
+      if (["light", "dark"].includes(theme)) {
+        state.theme = theme;
+        schedulePlatformHydrationRender();
+      }
+    }),
+    preferenceCoordinator.hydrate("visualStyle", (visualStyle) => {
+      if (["classic", "render"].includes(visualStyle)) {
+        state.visualStyle = visualStyle;
+        schedulePlatformHydrationRender();
+      }
+    }),
+    preferenceCoordinator.hydrate("audio", (audioSetting) => {
+      if (["on", "off"].includes(audioSetting)) {
+        state.audioEnabled = audioSetting === "on";
+        schedulePlatformHydrationRender();
+      }
+    }),
+    preferenceCoordinator.hydrate("haptics", (haptics) => {
+      if (["on", "off"].includes(haptics)) {
+        state.hapticsEnabled = haptics === "on";
+        schedulePlatformHydrationRender();
+      }
+    }),
+    preferenceCoordinator.hydrate("trainingProgress", (progress) => {
+      let trainingProgress = null;
+      try {
+        trainingProgress = progress ? JSON.parse(progress) : null;
+      } catch {
+        trainingProgress = null;
+      }
+      if (trainingProgress && typeof trainingProgress === "object" && !Array.isArray(trainingProgress)) {
+        state.training.progress = trainingProgress;
+        schedulePlatformHydrationRender();
+      }
+    }),
+  ]);
+}
 
-  if (language.status === "fulfilled" && languages.some(({ code }) => code === language.value)) {
-    state.language = language.value;
-  }
-  if (theme.status === "fulfilled" && ["light", "dark"].includes(theme.value)) {
-    state.theme = theme.value;
-  }
-  if (visualStyle.status === "fulfilled" && ["classic", "render"].includes(visualStyle.value)) {
-    state.visualStyle = visualStyle.value;
-  }
-  if (audioSetting.status === "fulfilled" && ["on", "off"].includes(audioSetting.value)) {
-    state.audioEnabled = audioSetting.value === "on";
-  }
-  if (haptics.status === "fulfilled" && ["on", "off"].includes(haptics.value)) {
-    state.hapticsEnabled = haptics.value === "on";
-  }
+function hydrateSecureSession() {
+  return secureSessionCoordinator.hydrate((token) => {
+    state.auth.token = token;
+    render();
+  });
+}
 
-  let trainingProgress = null;
-  try {
-    trainingProgress = progress.status === "fulfilled" && progress.value
-      ? JSON.parse(progress.value)
-      : null;
-  } catch {
-    trainingProgress = null;
-  }
-  if (trainingProgress && typeof trainingProgress === "object" && !Array.isArray(trainingProgress)) {
-    state.training.progress = trainingProgress;
-  }
-
-  state.auth.token = secureSession.status === "fulfilled" && typeof secureSession.value === "string"
-    ? secureSession.value
-    : "";
-  render();
+function schedulePlatformHydrationRender() {
+  if (platformHydrationRenderScheduled) return;
+  platformHydrationRenderScheduled = true;
+  queueMicrotask(() => {
+    platformHydrationRenderScheduled = false;
+    render();
+  });
 }
 
 function applyLocalBattleSnapshot(snapshot) {
@@ -298,11 +346,15 @@ function requireOnline(onOffline) {
   return false;
 }
 
-async function startMobileApp() {
-  await hydratePlatformState();
-  await mobileRuntime.start();
-  await refreshAuth();
-  await refreshLeaderboard();
+function startMobileApp() {
+  return startMobileAppServices({
+    startRuntime: () => mobileRuntime.start(),
+    hydratePreferences: hydratePlatformPreferences,
+    hydrateSecureSession,
+    refreshAuth,
+    refreshLeaderboard,
+    onError: reportRuntimeError,
+  });
 }
 
 function reportRuntimeError(error) {
@@ -311,15 +363,6 @@ function reportRuntimeError(error) {
 
 function observePlatformWrite(operation) {
   void Promise.resolve(operation).catch(reportRuntimeError);
-}
-
-function setSecureAuthToken(token) {
-  // The web adapter owns compatibility with the legacy "salvo.authToken" key.
-  observePlatformWrite(platform.secureSession.set(token));
-}
-
-function clearSecureAuthToken() {
-  observePlatformWrite(platform.secureSession.clear());
 }
 
 function translate(key, params) {
@@ -382,6 +425,7 @@ function render() {
   document.documentElement.dataset.visualStyle = state.visualStyle;
   root.innerHTML = `
     <main class="shell">
+      <div class="app-content" data-dialog-background>
       <header class="topbar">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true"></span>
@@ -409,9 +453,15 @@ function render() {
       </header>
       ${renderStatusBanners()}
       ${renderScreen()}
+      </div>
       ${state.leaveBattleDialog ? renderLeaveBattleDialog() : ""}
     </main>
   `;
+  if (state.leaveBattleDialog) {
+    leaveDialogFocus.activate(leaveDialogReturnFocus);
+  } else {
+    leaveDialogFocus.deactivate();
+  }
   mountTelegramLoginWidget();
   syncMenuMusic();
 }
@@ -2494,12 +2544,12 @@ function renderLog(log) {
   `;
 }
 
-root.addEventListener("change", (event) => {
+root.addEventListener("change", async (event) => {
   const action = event.target.dataset.action;
   if (action === "language") {
     state.language = event.target.value;
-    observePlatformWrite(platform.settings.set("language", state.language));
     render();
+    await preferenceCoordinator.write("language", state.language);
   }
   if (action === "agent-difficulty") {
     state.agentDifficulty = event.target.value;
@@ -2627,18 +2677,18 @@ root.addEventListener("click", async (event) => {
   if (action === "start-coaching-training") startTraining(trainingScenarioForDrill(button.dataset.drillId));
   if (action === "show-online") showOnline();
   if (action === "select-preset") selectPreset(button.dataset.presetId);
-  if (action === "audio-toggle") toggleAudio();
-  if (action === "haptics-toggle") toggleHaptics();
-  if (action === "theme-toggle") toggleTheme();
-  if (action === "visual-style-toggle") toggleVisualStyle();
+  if (action === "audio-toggle") await toggleAudio();
+  if (action === "haptics-toggle") await toggleHaptics();
+  if (action === "theme-toggle") await toggleTheme();
+  if (action === "visual-style-toggle") await toggleVisualStyle();
   if (action === "toggle-profile") await toggleProfilePopover();
   if (action === "close-profile") closeProfilePopover();
   if (action === "toggle-leaderboard") await toggleLeaderboardPopover();
   if (action === "close-leaderboard") closeLeaderboardPopover();
   if (action === "toggle-tactical-advisor") toggleTacticalAdvisor();
-  if (action === "menu") requestLeaveBattle();
+  if (action === "menu") await requestLeaveBattle();
   if (action === "cancel-leave-battle") cancelLeaveBattle();
-  if (action === "confirm-leave-battle") confirmLeaveBattle();
+  if (action === "confirm-leave-battle") await confirmLeaveBattle();
   if (action === "dismiss-restore-notice") dismissRestoreNotice();
   if (action === "new-game") startSetup(state.mode);
   if (action === "online-new-game") showOnline();
@@ -2779,7 +2829,7 @@ function startTraining(scenarioId = state.training.scenarioId) {
   render();
 }
 
-function handlePlatformBack() {
+async function handlePlatformBack() {
   if (state.settingsOpen) {
     state.settingsOpen = false;
     render();
@@ -2796,7 +2846,7 @@ function handlePlatformBack() {
     return true;
   }
   if (["archive", "replay"].includes(state.screen)) {
-    goToMenu();
+    await goToMenu();
     return true;
   }
   if (["setup", "playing", "pass", "training", "online"].includes(state.screen)) {
@@ -2805,16 +2855,17 @@ function handlePlatformBack() {
   return false;
 }
 
-function requestLeaveBattle() {
+async function requestLeaveBattle() {
   if (state.leaveBattleDialog) {
     cancelLeaveBattle();
     return true;
   }
   if (!hasUnfinishedBattle()) {
     const handled = state.screen !== "menu";
-    if (handled) goToMenu();
+    if (handled) await goToMenu();
     return handled;
   }
+  leaveDialogReturnFocus = leaveDialogFocus.captureReturnFocus();
   state.leaveBattleDialog = true;
   render();
   return true;
@@ -2829,13 +2880,17 @@ function hasUnfinishedBattle() {
 }
 
 function cancelLeaveBattle() {
+  const returnFocus = leaveDialogReturnFocus;
   state.leaveBattleDialog = false;
   render();
+  leaveDialogFocus.restoreFocus(returnFocus);
+  leaveDialogReturnFocus = null;
 }
 
-function confirmLeaveBattle() {
+async function confirmLeaveBattle() {
   state.leaveBattleDialog = false;
-  goToMenu();
+  leaveDialogReturnFocus = null;
+  await goToMenu();
 }
 
 function dismissRestoreNotice() {
@@ -2845,38 +2900,24 @@ function dismissRestoreNotice() {
 }
 
 async function handlePlatformDeepLink(rawUrl) {
+  const route = parseSalvoDeepLink(rawUrl);
+  if (!route) return false;
   try {
-    const url = new URL(rawUrl);
-    const route = [url.protocol === "salvo:" ? url.hostname : "", ...url.pathname.split("/")]
-      .filter(Boolean);
-    const openIndex = route.indexOf("open");
-    const kind = openIndex >= 0 ? route[openIndex + 1] : "";
-    const target = openIndex >= 0 ? route[openIndex + 2] : "";
-    if (kind === "room") {
-      const roomCode = sanitizeRoomCode(target);
-      if (!roomCode) return false;
+    if (route.type === "room") {
       showOnline();
-      state.online.roomCodeInput = roomCode;
+      state.online.roomCodeInput = route.roomCode;
       render();
       return true;
     }
-
-    const replayTarget = kind === "replay" ? target : url.searchParams.get("replay");
-    const replayId = replayIdFromSearch(`?replay=${encodeURIComponent(replayTarget || "")}`);
-    if (!replayId) return false;
-    await openArchivedReplay(replayId, { source: "direct" });
+    await openArchivedReplay(route.replayId, { source: "direct" });
     return true;
   } catch {
     return false;
   }
 }
 
-function sanitizeRoomCode(value) {
-  const code = String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return code.length >= 4 && code.length <= 12 ? code : "";
-}
-
-function goToMenu({ updateHistory = true } = {}) {
+async function goToMenu({ updateHistory = true } = {}) {
+  const discardLocalSnapshot = hasLocalBattleSnapshotContext();
   closeRemote();
   abortPrivateRequest("archive");
   abortPrivateRequest("replay");
@@ -2907,6 +2948,20 @@ function goToMenu({ updateHistory = true } = {}) {
     updateReplayHistory("", "push", "menu");
   }
   render();
+  if (discardLocalSnapshot) {
+    try {
+      await localBattleSnapshots.clear();
+    } catch (error) {
+      reportRuntimeError(error);
+    }
+  }
+}
+
+function hasLocalBattleSnapshotContext() {
+  return (
+    ["agent", "hotseat", "training"].includes(state.mode)
+    && ["setup", "playing", "pass", "training"].includes(state.screen)
+  );
 }
 
 async function openReplayArchive({ historyMode = "push" } = {}) {
@@ -3001,7 +3056,7 @@ async function handleReplayPopState(event) {
     await loadReplayArchive();
     return;
   }
-  goToMenu({ updateHistory: false });
+  await goToMenu({ updateHistory: false });
 }
 
 function selectArchivedReplayTab(tab) {
@@ -3098,33 +3153,33 @@ function closeLeaderboardPopover() {
   render();
 }
 
-function toggleTheme() {
+async function toggleTheme() {
   state.theme = state.theme === "dark" ? "light" : "dark";
-  observePlatformWrite(platform.settings.set("theme", state.theme));
   render();
+  await preferenceCoordinator.write("theme", state.theme);
 }
 
-function toggleVisualStyle() {
+async function toggleVisualStyle() {
   state.visualStyle = state.visualStyle === "classic" ? "render" : "classic";
-  observePlatformWrite(platform.settings.set("visualStyle", state.visualStyle));
   render();
+  await preferenceCoordinator.write("visualStyle", state.visualStyle);
 }
 
-function toggleAudio() {
+async function toggleAudio() {
   state.audioEnabled = !state.audioEnabled;
-  observePlatformWrite(platform.settings.set("audio", state.audioEnabled ? "on" : "off"));
   if (state.audioEnabled) {
     playSound("ui");
   } else {
     audio.stopMusic();
   }
   render();
+  await preferenceCoordinator.write("audio", state.audioEnabled ? "on" : "off");
 }
 
-function toggleHaptics() {
+async function toggleHaptics() {
   state.hapticsEnabled = !state.hapticsEnabled;
-  observePlatformWrite(platform.settings.set("haptics", state.hapticsEnabled ? "on" : "off"));
   render();
+  await preferenceCoordinator.write("haptics", state.hapticsEnabled ? "on" : "off");
 }
 
 function closeResultModal() {
@@ -3494,8 +3549,9 @@ function handleTrainingShot(coordinate) {
 
 function saveTrainingProgress(session) {
   state.training.progress = updateTrainingProgress(state.training.progress, session);
-  observePlatformWrite(
-    platform.settings.set(trainingProgressSettingKey, JSON.stringify(state.training.progress)),
+  void preferenceCoordinator.write(
+    trainingProgressSettingKey,
+    JSON.stringify(state.training.progress),
   );
 }
 
@@ -3517,20 +3573,31 @@ async function onlineCreate() {
   if (!requireOnline((message) => {
     state.online.error = message;
   })) return;
-  await withOnlineError(async () => {
-    if (!isOnlineAuthReady()) {
-      state.online.error = translate("online.authRequired");
-      render();
-      return;
-    }
-    if (!hasFullFleet(state.setupBoard)) {
-      throw new Error(translate("setup.needFleet"));
-    }
-    state.online.client = new RemoteClient(remoteHandlers());
-    state.online.session = await state.online.client.createRoom();
-    state.online.roomCodeInput = state.online.session.roomCode;
-    await state.online.client.send("placeFleet", { board: state.setupBoard, presetId: state.presetId });
+  if (!isOnlineAuthReady()) {
+    state.online.error = translate("online.authRequired");
     render();
+    return;
+  }
+  if (!hasFullFleet(state.setupBoard)) {
+    state.online.error = translate("setup.needFleet");
+    render();
+    return;
+  }
+  await onlineClientCoordinator.run({
+    handlers: remoteHandlers(),
+    onStart: prepareOnlineConnection,
+    async operation(client, isCurrent) {
+      const session = await client.createRoom();
+      if (!isCurrent()) return session;
+      await client.send("placeFleet", { board: state.setupBoard, presetId: state.presetId });
+      return session;
+    },
+    onSuccess(session) {
+      state.online.session = session;
+      state.online.roomCodeInput = session.roomCode;
+      render();
+    },
+    onError: handleOnlineConnectionError,
   });
 }
 
@@ -3538,25 +3605,55 @@ async function onlineJoin() {
   if (!requireOnline((message) => {
     state.online.error = message;
   })) return;
-  await withOnlineError(async () => {
-    if (!isOnlineAuthReady()) {
-      state.online.error = translate("online.authRequired");
-      render();
-      return;
-    }
-    if (!hasFullFleet(state.setupBoard)) {
-      throw new Error(translate("setup.needFleet"));
-    }
-    state.online.client = new RemoteClient(remoteHandlers());
-    state.online.session = await state.online.client.joinRoom(state.online.roomCodeInput);
-    if (state.online.session.presetId && state.online.session.presetId !== state.presetId) {
-      state.presetId = state.online.session.presetId;
-      state.setupBoard = randomlyPlaceSetup(currentPreset());
-      state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
-    }
-    await state.online.client.send("placeFleet", { board: state.setupBoard, presetId: state.presetId });
+  if (!isOnlineAuthReady()) {
+    state.online.error = translate("online.authRequired");
     render();
+    return;
+  }
+  if (!hasFullFleet(state.setupBoard)) {
+    state.online.error = translate("setup.needFleet");
+    render();
+    return;
+  }
+  const roomCode = state.online.roomCodeInput;
+  await onlineClientCoordinator.run({
+    handlers: remoteHandlers(),
+    onStart: prepareOnlineConnection,
+    async operation(client, isCurrent) {
+      const session = await client.joinRoom(roomCode);
+      if (!isCurrent()) return { session };
+      const preset = getGamePreset(session.presetId || state.presetId);
+      const board = preset.id === state.presetId
+        ? state.setupBoard
+        : randomlyPlaceSetup(preset);
+      await client.send("placeFleet", { board, presetId: preset.id });
+      return { session, preset, board };
+    },
+    onSuccess({ session, preset, board }) {
+      state.online.session = session;
+      state.presetId = preset.id;
+      state.setupBoard = board;
+      state.setupSelectedShipId = firstUnplacedShipId(board);
+      render();
+    },
+    onError: handleOnlineConnectionError,
   });
+}
+
+function prepareOnlineConnection() {
+  state.online.session = null;
+  state.online.snapshot = null;
+  state.online.status = "";
+  state.online.error = "";
+  render();
+}
+
+function handleOnlineConnectionError(error) {
+  state.online.session = null;
+  state.online.snapshot = null;
+  state.online.status = "";
+  state.online.error = error.message;
+  render();
 }
 
 async function onlineRematch() {
@@ -3880,7 +3977,7 @@ async function loadReplayArchive({ append = false } = {}) {
       return;
     }
     if (error.status === 401) {
-      expireReplayAuthentication(authRequest);
+      await expireReplayAuthentication(authRequest);
       return;
     }
     state.archive.retryAppend = appendRequest;
@@ -3967,7 +4064,7 @@ async function loadArchivedReplay(id) {
       return;
     }
     if (error.status === 401) {
-      expireReplayAuthentication(authRequest);
+      await expireReplayAuthentication(authRequest);
       return;
     }
     state.replayArchive.error = replayRequestErrorKey(error, "replayArchive");
@@ -4062,11 +4159,11 @@ function replayRequestErrorKey(error, scope) {
   return `${scope}.unavailable`;
 }
 
-function expireReplayAuthentication(request) {
+async function expireReplayAuthentication(request) {
   if (!authRequestIsCurrent(request, currentAuthRequest())) {
     return false;
   }
-  invalidateAuthSession({ preserveRequestedId: true });
+  await invalidateAuthSession({ preserveRequestedId: true });
   render();
   return true;
 }
@@ -4092,10 +4189,21 @@ function clearPrivateReplayData({ preserveRequestedId = false } = {}) {
   state.replayArchive.requestId += 1;
 }
 
-function establishAuthSession(token, user) {
+async function establishAuthSession(token, user) {
+  try {
+    return await secureSessionCoordinator.establish(token, () => {
+      applyAuthenticatedSession(token, user);
+    });
+  } catch {
+    throw new Error(translate("auth.secureStorageFailed"));
+  }
+}
+
+function applyAuthenticatedSession(token, user) {
   const identityChanged = authIdentity() !== authIdentity(user);
   authEpoch += 1;
   abortAllPrivateRequests();
+  resetOnlineConnectionState();
   if (identityChanged) {
     resetResultReplayPlayback();
     resetProfile();
@@ -4105,20 +4213,28 @@ function establishAuthSession(token, user) {
   state.auth.user = user;
   state.auth.error = "";
   state.auth.loading = false;
-  setSecureAuthToken(token);
 }
 
-function invalidateAuthSession({ error = "", preserveRequestedId = true } = {}) {
-  authEpoch += 1;
-  abortAllPrivateRequests();
-  state.auth.token = "";
-  state.auth.user = null;
-  state.auth.error = error;
-  state.auth.loading = false;
-  resetProfile();
-  clearPrivateReplayData({ preserveRequestedId });
-  resetResultReplayPlayback();
-  clearSecureAuthToken();
+async function invalidateAuthSession({ error = "", preserveRequestedId = true } = {}) {
+  try {
+    await secureSessionCoordinator.invalidate(() => {
+      authEpoch += 1;
+      abortAllPrivateRequests();
+      resetOnlineConnectionState();
+      state.auth.token = "";
+      state.auth.user = null;
+      state.auth.error = error;
+      state.auth.loading = false;
+      resetProfile();
+      clearPrivateReplayData({ preserveRequestedId });
+      resetResultReplayPlayback();
+    });
+    return true;
+  } catch (storageError) {
+    reportRuntimeError(storageError);
+    if (!state.auth.error) state.auth.error = translate("auth.secureStorageFailed");
+    return false;
+  }
 }
 
 function authOperationIsCurrent(request, controller) {
@@ -4128,11 +4244,11 @@ function authOperationIsCurrent(request, controller) {
   );
 }
 
-function handleAuthFailure(error, request, controller) {
+async function handleAuthFailure(error, request, controller) {
   if (isAbortError(error) || !authOperationIsCurrent(request, controller)) {
     return false;
   }
-  invalidateAuthSession({ error: error.message, preserveRequestedId: true });
+  await invalidateAuthSession({ error: error.message, preserveRequestedId: true });
   render();
   return true;
 }
@@ -4161,7 +4277,8 @@ async function handleTelegramAuth(payload) {
     if (!authPayload.token || !authPayload.user) {
       throw new Error("Telegram authentication response is incomplete");
     }
-    establishAuthSession(authPayload.token, authPayload.user);
+    const established = await establishAuthSession(authPayload.token, authPayload.user);
+    if (!established) return;
     render();
     const sessionRequest = captureAuthRequest();
     await refreshProfile();
@@ -4169,7 +4286,7 @@ async function handleTelegramAuth(payload) {
       await resumeRequestedReplay();
     }
   } catch (error) {
-    handleAuthFailure(error, request, controller);
+    await handleAuthFailure(error, request, controller);
   } finally {
     if (authOperationIsCurrent(request, controller)) {
       state.auth.loading = false;
@@ -4204,11 +4321,11 @@ async function refreshAuth() {
       return;
     }
     if (!payload.user) {
-      invalidateAuthSession({ preserveRequestedId: true });
+      await invalidateAuthSession({ preserveRequestedId: true });
       render();
       return;
     }
-    establishAuthSession(request.token, payload.user);
+    applyAuthenticatedSession(request.token, payload.user);
     render();
     const sessionRequest = captureAuthRequest();
     await refreshProfile();
@@ -4216,7 +4333,7 @@ async function refreshAuth() {
       await resumeRequestedReplay();
     }
   } catch (error) {
-    handleAuthFailure(error, request, controller);
+    await handleAuthFailure(error, request, controller);
   } finally {
     if (authOperationIsCurrent(request, controller)) {
       state.auth.loading = false;
@@ -4231,8 +4348,9 @@ async function refreshAuth() {
 async function logoutAuth() {
   const token = state.auth.token;
   const workerUrl = state.auth.workerUrl;
-  invalidateAuthSession({ preserveRequestedId: true });
+  const invalidation = invalidateAuthSession({ preserveRequestedId: true });
   render();
+  await invalidation;
   if (token && workerUrl && requireOnline((message) => {
     state.auth.error = message;
   })) {
@@ -4486,10 +4604,15 @@ async function withOnlineError(action) {
 }
 
 function closeRemote() {
-  state.online.client?.close();
-  state.online.client = null;
+  resetOnlineConnectionState();
+}
+
+function resetOnlineConnectionState() {
+  onlineClientCoordinator.close();
   state.online.session = null;
   state.online.snapshot = null;
+  state.online.status = "";
+  state.online.error = "";
 }
 
 function currentPreset() {
@@ -4952,4 +5075,4 @@ if (new URLSearchParams(window.location.search).has("replay") && !initialRequest
 }
 
 render();
-void startMobileApp().catch(reportRuntimeError);
+startMobileApp();

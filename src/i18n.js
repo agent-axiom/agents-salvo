@@ -45,6 +45,7 @@ const dictionaries = {
     "auth.notConfigured": "Telegram login is not configured",
     "auth.domainHint": "Telegram login is available on the published site.",
     "auth.mobileSecureLoginPending": "Secure Telegram login is not available in the installed app yet.",
+    "auth.secureStorageFailed": "Secure login could not be saved.",
     "profile.title": "Captain profile",
     "profile.subtitle": "Agent and online battles are saved for this account.",
     "profile.empty": "Play a battle against the agent or online to start your record.",
@@ -438,6 +439,7 @@ const dictionaries = {
     "auth.notConfigured": "Вход через Telegram не настроен",
     "auth.domainHint": "Вход через Telegram доступен на опубликованном сайте.",
     "auth.mobileSecureLoginPending": "Безопасный вход через Telegram пока недоступен в установленном приложении.",
+    "auth.secureStorageFailed": "Не удалось безопасно сохранить вход.",
     "profile.title": "Профиль капитана",
     "profile.subtitle": "Бои против агента и онлайн сохраняются для этого аккаунта.",
     "profile.empty": "Сыграйте бой против агента или онлайн, чтобы начать статистику.",
@@ -831,6 +833,7 @@ const dictionaries = {
     "auth.notConfigured": "Telegram 登录未配置",
     "auth.domainHint": "Telegram 登录可在已发布的网站上使用。",
     "auth.mobileSecureLoginPending": "安装版应用暂不支持安全的 Telegram 登录。",
+    "auth.secureStorageFailed": "无法安全保存登录信息。",
     "profile.title": "舰长档案",
     "profile.subtitle": "对战智能体和在线对局会保存到此账号。",
     "profile.empty": "完成一局智能体或在线对战即可开始记录。",
@@ -1193,11 +1196,6 @@ const coordinateColumns = {
 };
 
 export function getInitialLanguage() {
-  const saved = localStorage.getItem("salvo.language");
-  if (saved && dictionaries[saved]) {
-    return saved;
-  }
-
   const browserLanguage = navigator.language;
   if (browserLanguage.startsWith("ru")) {
     return "ru";

@@ -6,6 +6,7 @@ const app = readFileSync("src/app.js", "utf8");
 const css = readFileSync("src/styles.css", "utf8");
 const i18n = readFileSync("src/i18n.js", "utf8");
 const html = readFileSync("src/index.html", "utf8");
+const mobileSupport = readFileSync("src/mobile-app-support.js", "utf8");
 
 test("main menu is a focused game hub with agent play as the primary action", () => {
   assert.match(app, /class="game-hub"/);
@@ -402,7 +403,7 @@ test("training mode saves and displays local drill progress", () => {
   assert.match(app, /trainingProgressSettingKey/);
   assert.match(app, /updateTrainingProgress/);
   assert.match(app, /function renderTrainingProgress/);
-  assert.match(app, /platform\.settings\.set\(trainingProgressSettingKey, JSON\.stringify\(state\.training\.progress\)\)/);
+  assert.match(app, /preferenceCoordinator\.write\([\s\S]*?trainingProgressSettingKey,[\s\S]*?JSON\.stringify\(state\.training\.progress\)/);
   assert.match(css, /\.training-progress/);
   assert.match(i18n, /"training\.bestScore"/);
 });
@@ -617,29 +618,40 @@ test("mobile startup wires the platform, snapshot store, and runtime after first
     app,
     /import \{[\s\S]*createLocalBattleSnapshotStore,[\s\S]*UnsupportedLocalBattleSnapshotVersionError[\s\S]*\} from "\.\/core\/local-battle-snapshot\.js"/,
   );
-  assert.match(app, /createLocalBattleSnapshotStore\(platform\.settings\)/);
+  assert.match(app, /createOrderedSnapshotStore\(\s*createLocalBattleSnapshotStore\(platform\.settings\)/);
   assert.match(app, /createMobileRuntime\(\{[\s\S]*?platform,[\s\S]*?snapshots:[\s\S]*?getState:\s*\(\) => state/);
   assert.match(app, /applySnapshot:\s*applyLocalBattleSnapshot/);
   assert.match(app, /pauseAudio:\s*\(\) => audio\.pauseForLifecycle\(\)/);
   assert.match(app, /resumeAudio:\s*\(\) => audio\.resumeForLifecycle\(state\.audioEnabled, state\.screen === "menu"\)/);
-  assert.match(app, /render\(\);\s*void startMobileApp\(\)\.catch\(reportRuntimeError\)/);
+  assert.match(app, /startMobileAppServices\(\{[\s\S]*?startRuntime:\s*\(\) => mobileRuntime\.start\(\)/);
+  assert.match(app, /render\(\);\s*startMobileApp\(\)/);
+  assert.match(mobileSupport, /export function startMobileAppServices/);
 });
 
 test("preferences and secure auth hydrate asynchronously through the platform", () => {
-  const hydration = sourceBetween("async function hydratePlatformState", "function applyLocalBattleSnapshot");
+  const hydration = sourceBetween("function hydratePlatformPreferences", "function hydrateSecureSession");
   for (const key of ["language", "theme", "visualStyle", "audio", "haptics", "trainingProgress"]) {
-    assert.match(hydration, new RegExp(`platform\\.settings\\.get\\("${key}"\\)`));
+    assert.match(hydration, new RegExp(`preferenceCoordinator\\.hydrate\\("${key}"`));
   }
-  assert.match(hydration, /platform\.secureSession\.get\(\)/);
   assert.match(hydration, /Array\.isArray\(trainingProgress\)/);
-  assert.match(hydration, /render\(\)/);
-  assert.match(app, /platform\.settings\.set\("language", state\.language\)/);
-  assert.match(app, /platform\.settings\.set\("theme", state\.theme\)/);
-  assert.match(app, /platform\.settings\.set\("visualStyle", state\.visualStyle\)/);
-  assert.match(app, /platform\.settings\.set\("audio", state\.audioEnabled \? "on" : "off"\)/);
+  assert.match(app, /createPreferenceCoordinator\(\{[\s\S]*?settings:\s*platform\.settings/);
+  assert.match(app, /createSecureSessionCoordinator\(\{[\s\S]*?secureSession:\s*platform\.secureSession/);
+  assert.match(app, /preferenceCoordinator\.write\("language", state\.language\)/);
+  assert.match(app, /preferenceCoordinator\.write\("theme", state\.theme\)/);
+  assert.match(app, /preferenceCoordinator\.write\("visualStyle", state\.visualStyle\)/);
+  assert.match(app, /preferenceCoordinator\.write\("audio", state\.audioEnabled \? "on" : "off"\)/);
   assert.doesNotMatch(app, /localStorage\.(?:setItem|removeItem)\([^\n]*(?:authToken|salvo\.authToken)/);
-  assert.match(app, /platform\.secureSession\.set\(token\)/);
-  assert.match(app, /platform\.secureSession\.clear\(\)/);
+  const visualStyleInitializer = sourceBetween("function getInitialVisualStyle", "function getInitialAudioEnabled");
+  const languageStart = i18n.indexOf("export function getInitialLanguage");
+  const languageEnd = i18n.indexOf("export function t", languageStart);
+  assert.doesNotMatch(visualStyleInitializer.replaceAll(/\/\/.*$/gm, ""), /localStorage\.getItem/);
+  assert.doesNotMatch(i18n.slice(languageStart, languageEnd), /localStorage\.getItem/);
+  assert.match(mobileSupport, /secureSession\.get\(\)/);
+  assert.match(mobileSupport, /secureSession\.set\(token\)/);
+  assert.match(mobileSupport, /secureSession\.clear\(\)/);
+  assert.match(app, /await secureSessionCoordinator\.establish\(/);
+  assert.match(app, /await secureSessionCoordinator\.invalidate\(/);
+  assert.match(app, /auth\.secureStorageFailed/);
   assert.match(app, /platform\.isNative\(\)[\s\S]*auth\.mobileSecureLoginPending/);
 });
 
@@ -708,7 +720,7 @@ test("network state renders an offline banner and guards remote work", () => {
 });
 
 test("native back navigation uses ordered overlays and a destructive-leave dialog", () => {
-  const back = sourceBetween("function handlePlatformBack", "function requestLeaveBattle");
+  const back = sourceBetween("async function handlePlatformBack", "async function requestLeaveBattle");
   const settings = back.indexOf("state.settingsOpen");
   const profile = back.indexOf("state.profileOpen");
   const leaderboard = back.indexOf("state.leaderboardOpen");
@@ -725,16 +737,34 @@ test("native back navigation uses ordered overlays and a destructive-leave dialo
   assert.match(app, /data-action="confirm-leave-battle"/);
   assert.match(app, /translate\("nav\.leaveBattleTitle"\)/);
   assert.match(app, /translate\("nav\.leaveBattleBody"\)/);
+  assert.match(app, /createDialogFocusController\(\{/);
+  assert.match(app, /data-dialog-background/);
+  assert.match(app, /leaveDialogFocus\.captureReturnFocus\(\)/);
+  assert.match(app, /leaveDialogFocus\.restoreFocus\(/);
+  assert.match(app, /await localBattleSnapshots\.clear\(\)/);
 });
 
 test("deep links fail closed while routing sanitized room and replay targets", () => {
-  const deepLinks = sourceBetween("async function handlePlatformDeepLink", "function sanitizeRoomCode");
-  assert.match(deepLinks, /new URL\(rawUrl\)/);
+  const deepLinks = sourceBetween("async function handlePlatformDeepLink", "async function goToMenu");
+  assert.match(deepLinks, /parseSalvoDeepLink\(rawUrl\)/);
   assert.match(deepLinks, /showOnline\(\)/);
-  assert.match(deepLinks, /state\.online\.roomCodeInput = roomCode/);
-  assert.match(deepLinks, /await openArchivedReplay\(replayId/);
-  assert.match(deepLinks, /catch\s*\{\s*return false/);
-  assert.match(app, /replace\(\/\[\^A-Z0-9\]\/g, ""\)/);
+  assert.match(deepLinks, /state\.online\.roomCodeInput = route\.roomCode/);
+  assert.match(deepLinks, /await openArchivedReplay\(route\.replayId/);
+  assert.match(mobileSupport, /canonicalDeepLinkOrigin/);
+  assert.match(mobileSupport, /url\.protocol !== "https:"/);
+  assert.match(mobileSupport, /url\.username \|\| url\.password/);
+});
+
+test("online operations use latest-client generations and auth resets active rooms", () => {
+  assert.match(app, /createLatestClientCoordinator\(\{/);
+  assert.match(app, /onlineClientCoordinator\.run\(\{/);
+  assert.match(app, /onlineClientCoordinator\.close\(\)/);
+  assert.match(app, /function resetOnlineConnectionState/);
+  const establish = sourceBetween("async function establishAuthSession", "async function invalidateAuthSession");
+  const invalidate = sourceBetween("async function invalidateAuthSession", "function authOperationIsCurrent");
+  assert.match(establish, /resetOnlineConnectionState\(\)/);
+  assert.match(invalidate, /resetOnlineConnectionState\(\)/);
+  assert.match(mobileSupport, /guardHandlers/);
 });
 
 test("room and summary sharing await platform share with Telegram fallback", () => {
@@ -753,7 +783,7 @@ test("haptics are independently configured and mapped to gameplay outcomes", () 
   assert.match(app, /hapticsEnabled:\s*platform\.isNative\(\)/);
   assert.match(app, /data-action="haptics-toggle"/);
   assert.match(app, /function toggleHaptics/);
-  assert.match(app, /platform\.settings\.set\("haptics", state\.hapticsEnabled \? "on" : "off"\)/);
+  assert.match(app, /preferenceCoordinator\.write\("haptics", state\.hapticsEnabled \? "on" : "off"\)/);
   assert.match(app, /function playHaptic\(event\)/);
   assert.match(app, /platform\.haptic\(event\)/);
   for (const event of ["placement", "invalid", "hit", "sunk", "victory", "defeat"]) {

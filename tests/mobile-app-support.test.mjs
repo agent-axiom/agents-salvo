@@ -1,0 +1,513 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  createDialogFocusController,
+  createLatestClientCoordinator,
+  createOrderedSnapshotStore,
+  createPreferenceCoordinator,
+  createSecureSessionCoordinator,
+  parseSalvoDeepLink,
+  startMobileAppServices,
+} from "../src/mobile-app-support.js";
+
+test("startup begins runtime while preferences remain pending and gates network work", async () => {
+  const runtime = deferred();
+  const preferences = deferred();
+  const secureSession = deferred();
+  const calls = [];
+
+  const startup = startMobileAppServices({
+    startRuntime() {
+      calls.push("runtime");
+      return runtime.promise;
+    },
+    hydratePreferences() {
+      calls.push("preferences");
+      return preferences.promise;
+    },
+    hydrateSecureSession() {
+      calls.push("secure-session");
+      return secureSession.promise;
+    },
+    async refreshAuth() {
+      calls.push("auth");
+    },
+    async refreshLeaderboard() {
+      calls.push("leaderboard");
+    },
+    onError(error) {
+      assert.fail(error);
+    },
+  });
+
+  await flushMicrotasks();
+  assert.deepEqual(calls, ["runtime", "preferences", "secure-session"]);
+
+  runtime.resolve();
+  await startup.leaderboardReady;
+  assert.equal(calls.includes("leaderboard"), true);
+  assert.equal(calls.includes("auth"), false);
+
+  secureSession.resolve();
+  await startup.authReady;
+  assert.equal(calls.includes("auth"), true);
+
+  let preferencesFinished = false;
+  startup.preferencesReady.then(() => {
+    preferencesFinished = true;
+  });
+  await flushMicrotasks();
+  assert.equal(preferencesFinished, false);
+  preferences.resolve();
+  await startup.done;
+});
+
+test("late preference hydration cannot overwrite a newer user action", async () => {
+  const read = deferred();
+  const writes = [];
+  const preferences = createPreferenceCoordinator({
+    settings: {
+      get: () => read.promise,
+      set: async (key, value) => {
+        writes.push([key, value]);
+      },
+    },
+    onError(error) {
+      assert.fail(error);
+    },
+  });
+  let theme = "light";
+
+  const hydration = preferences.hydrate("theme", (value) => {
+    theme = value;
+  });
+  await preferences.write("theme", "dark");
+  theme = "dark";
+  read.resolve("light");
+
+  assert.equal(await hydration, false);
+  assert.equal(theme, "dark");
+  assert.deepEqual(writes, [["theme", "dark"]]);
+});
+
+test("preference writes stay ordered per key and continue after an observed failure", async () => {
+  const first = deferred();
+  const second = deferred();
+  const started = [];
+  const errors = [];
+  const preferences = createPreferenceCoordinator({
+    settings: {
+      async get() {
+        return null;
+      },
+      set(key, value) {
+        started.push([key, value]);
+        return started.length === 1 ? first.promise : second.promise;
+      },
+    },
+    onError(error) {
+      errors.push(error.message);
+    },
+  });
+
+  const firstWrite = preferences.write("theme", "dark");
+  const secondWrite = preferences.write("theme", "light");
+  await flushMicrotasks();
+  assert.deepEqual(started, [["theme", "dark"]]);
+
+  first.reject(new Error("blocked"));
+  assert.equal(await firstWrite, false);
+  await flushMicrotasks();
+  assert.deepEqual(started, [["theme", "dark"], ["theme", "light"]]);
+  second.resolve();
+  assert.equal(await secondWrite, true);
+  assert.deepEqual(errors, ["blocked"]);
+});
+
+test("secure hydration cannot overwrite a later persisted login", async () => {
+  const read = deferred();
+  const set = deferred();
+  const applied = [];
+  const sessions = createSecureSessionCoordinator({
+    secureSession: {
+      get: () => read.promise,
+      set: () => set.promise,
+      clear: async () => {},
+    },
+  });
+
+  const hydration = sessions.hydrate((token) => applied.push(["hydrate", token]));
+  const login = sessions.establish("new-token", () => applied.push(["login", "new-token"]));
+  read.resolve("old-token");
+  assert.equal(await hydration, false);
+  set.resolve();
+  assert.equal(await login, true);
+  assert.deepEqual(applied, [["login", "new-token"]]);
+});
+
+test("secure persistence fails closed and logout clear follows an earlier set", async () => {
+  const failedSet = deferred();
+  const failedCoordinator = createSecureSessionCoordinator({
+    secureSession: {
+      async get() {
+        return "";
+      },
+      set: () => failedSet.promise,
+      async clear() {},
+    },
+  });
+  let exposed = false;
+  const failedLogin = failedCoordinator.establish("token", () => {
+    exposed = true;
+  });
+  failedSet.reject(new Error("secure storage unavailable"));
+  await assert.rejects(failedLogin, /secure storage unavailable/);
+  assert.equal(exposed, false);
+
+  const set = deferred();
+  const clear = deferred();
+  const calls = [];
+  const sessions = createSecureSessionCoordinator({
+    secureSession: {
+      async get() {
+        return "";
+      },
+      set() {
+        calls.push("set");
+        return set.promise;
+      },
+      clear() {
+        calls.push("clear");
+        return clear.promise;
+      },
+    },
+  });
+  let authenticated = false;
+  const login = sessions.establish("token", () => {
+    authenticated = true;
+  });
+  const logout = sessions.invalidate(() => {
+    authenticated = false;
+  });
+  await flushMicrotasks();
+  assert.deepEqual(calls, ["set"]);
+  assert.equal(authenticated, false);
+
+  set.resolve();
+  assert.equal(await login, false);
+  await flushMicrotasks();
+  assert.deepEqual(calls, ["set", "clear"]);
+  clear.resolve();
+  assert.equal(await logout, true);
+  assert.equal(authenticated, false);
+});
+
+test("snapshot clear is ordered after a pending lifecycle save", async () => {
+  const pendingSave = deferred();
+  let stored = null;
+  let clearCalls = 0;
+  const snapshots = createOrderedSnapshotStore({
+    async load() {
+      return stored;
+    },
+    async save(value) {
+      await pendingSave.promise;
+      stored = value;
+    },
+    async clear() {
+      clearCalls += 1;
+      stored = null;
+    },
+  });
+
+  const save = snapshots.save({ screen: "playing" });
+  await flushMicrotasks();
+  const clear = snapshots.clear();
+  await flushMicrotasks();
+  assert.equal(clearCalls, 0);
+
+  pendingSave.resolve();
+  await save;
+  await clear;
+  assert.equal(clearCalls, 1);
+  assert.equal(await snapshots.load(), null);
+});
+
+test("latest online create closes and supersedes an earlier create", async () => {
+  const harness = createClientHarness();
+  const coordinator = createLatestClientCoordinator({ createClient: harness.createClient });
+  const committed = [];
+  const errors = [];
+
+  const first = coordinator.run({
+    handlers: { onMessage: () => committed.push("stale-message") },
+    operation: (client) => client.createRoom(),
+    onSuccess: (session) => committed.push(session.roomCode),
+    onError: (error) => errors.push(error.message),
+  });
+  const second = coordinator.run({
+    handlers: { onMessage: () => committed.push("current-message") },
+    operation: (client) => client.createRoom(),
+    onSuccess: (session) => committed.push(session.roomCode),
+    onError: (error) => errors.push(error.message),
+  });
+
+  assert.equal(harness.clients[0].closed, true);
+  harness.clients[1].create.resolve({ roomCode: "BBBB" });
+  assert.equal((await second).status, "active");
+  harness.clients[0].create.resolve({ roomCode: "AAAA" });
+  assert.equal((await first).status, "stale");
+  assert.deepEqual(committed, ["BBBB"]);
+  assert.deepEqual(errors, []);
+});
+
+test("latest online join supersedes create and stale handlers do nothing", async () => {
+  const harness = createClientHarness();
+  const coordinator = createLatestClientCoordinator({ createClient: harness.createClient });
+  const committed = [];
+
+  const create = coordinator.run({
+    handlers: { onMessage: (message) => committed.push(message.value) },
+    operation: (client) => client.createRoom(),
+    onSuccess: (session) => committed.push(session.roomCode),
+  });
+  const join = coordinator.run({
+    handlers: { onMessage: (message) => committed.push(message.value) },
+    operation: (client) => client.joinRoom("JOIN"),
+    onSuccess: (session) => committed.push(session.roomCode),
+  });
+
+  harness.clients[0].handlers.onMessage({ value: "stale-callback" });
+  harness.clients[1].handlers.onMessage({ value: "live-callback" });
+  harness.clients[1].join.resolve({ roomCode: "JOIN" });
+  assert.equal((await join).status, "active");
+  harness.clients[0].create.reject(new Error("stale failure"));
+  assert.equal((await create).status, "stale");
+  assert.deepEqual(committed, ["live-callback", "JOIN"]);
+});
+
+test("a superseded pending client cannot reconnect after it was closed", async () => {
+  const pendingRequest = deferred();
+  const clients = [];
+  const coordinator = createLatestClientCoordinator({
+    createClient() {
+      const client = {
+        closeCalls: 0,
+        connectCalls: 0,
+        close() {
+          this.closeCalls += 1;
+        },
+        connect() {
+          this.connectCalls += 1;
+        },
+        async createRoom() {
+          await pendingRequest.promise;
+          await this.connect();
+          return { roomCode: "LATE" };
+        },
+      };
+      clients.push(client);
+      return client;
+    },
+  });
+
+  const first = coordinator.run({
+    operation: (client) => client.createRoom(),
+  });
+  const second = coordinator.run({
+    operation: async () => ({ roomCode: "NEXT" }),
+  });
+  assert.equal((await second).status, "active");
+  pendingRequest.resolve();
+
+  assert.equal((await first).status, "stale");
+  assert.equal(clients[0].closeCalls > 0, true);
+  assert.equal(clients[0].connectCalls, 0);
+});
+
+test("deep-link parser accepts only Salvo and canonical HTTPS routes", () => {
+  assert.deepEqual(parseSalvoDeepLink("salvo://open/room/ab12"), {
+    type: "room",
+    roomCode: "AB12",
+  });
+  assert.deepEqual(parseSalvoDeepLink("salvo://open/replay/replay-1"), {
+    type: "replay",
+    replayId: "replay-1",
+  });
+  assert.deepEqual(
+    parseSalvoDeepLink("https://agent-axiom.github.io/agents-salvo/open/room/ROOM9"),
+    { type: "room", roomCode: "ROOM9" },
+  );
+  assert.deepEqual(
+    parseSalvoDeepLink("https://agent-axiom.github.io/agents-salvo/?replay=battle-7"),
+    { type: "replay", replayId: "battle-7" },
+  );
+  assert.deepEqual(
+    parseSalvoDeepLink("https://agent-axiom.github.io/agents-salvo/open/replay/battle-8"),
+    { type: "replay", replayId: "battle-8" },
+  );
+});
+
+test("deep-link parser rejects unsafe origins, schemes, credentials, ports, and paths", () => {
+  for (const value of [
+    "http://agent-axiom.github.io/agents-salvo/?replay=battle-1",
+    "javascript:alert(1)",
+    "https://example.com/agents-salvo/?replay=battle-1",
+    "https://agent-axiom.github.io.evil.test/agents-salvo/?replay=battle-1",
+    "https://user@agent-axiom.github.io/agents-salvo/?replay=battle-1",
+    "https://agent-axiom.github.io:444/agents-salvo/?replay=battle-1",
+    "https://agent-axiom.github.io:443/agents-salvo/?replay=battle-1",
+    "https://agent-axiom.github.io/outside/?replay=battle-1",
+    "salvo://open/room/AB!D",
+    "salvo://open/room/ABCD/extra",
+    "salvo://foreign/room/ABCD",
+    "not a url",
+  ]) {
+    assert.equal(parseSalvoDeepLink(value), null, value);
+  }
+});
+
+test("leave dialog controller makes background inert, traps focus, cancels, and restores", () => {
+  const harness = createDialogHarness();
+  let cancellations = 0;
+  const controller = createDialogFocusController({
+    root: harness.root,
+    document: harness.document,
+    onCancel() {
+      cancellations += 1;
+    },
+  });
+
+  harness.trigger.focus();
+  const returnFocus = controller.captureReturnFocus();
+  controller.activate(returnFocus);
+  assert.equal(harness.background.inert, true);
+  assert.equal(harness.background.attributes.get("aria-hidden"), "true");
+  assert.equal(harness.document.activeElement, harness.cancel);
+
+  harness.dispatchKey("Tab", { shiftKey: true });
+  assert.equal(harness.document.activeElement, harness.confirm);
+  harness.dispatchKey("Tab");
+  assert.equal(harness.document.activeElement, harness.cancel);
+  harness.dispatchKey("Escape");
+  assert.equal(cancellations, 1);
+
+  controller.deactivate();
+  assert.equal(harness.background.inert, false);
+  assert.equal(harness.background.attributes.has("aria-hidden"), false);
+  controller.restoreFocus(returnFocus);
+  assert.equal(harness.document.activeElement, harness.trigger);
+});
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushMicrotasks() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function createClientHarness() {
+  const clients = [];
+  return {
+    clients,
+    createClient(handlers) {
+      const client = {
+        handlers,
+        create: deferred(),
+        join: deferred(),
+        closed: false,
+        createRoom() {
+          return this.create.promise;
+        },
+        joinRoom() {
+          return this.join.promise;
+        },
+        close() {
+          this.closed = true;
+        },
+      };
+      clients.push(client);
+      return client;
+    },
+  };
+}
+
+function createDialogHarness() {
+  const listeners = new Map();
+  const document = {
+    activeElement: null,
+    addEventListener(type, listener) {
+      listeners.set(type, listener);
+    },
+    removeEventListener(type, listener) {
+      if (listeners.get(type) === listener) listeners.delete(type);
+    },
+  };
+  const makeElement = ({ id = "", action = "" } = {}) => ({
+    id,
+    dataset: action ? { action } : {},
+    attributes: new Map(),
+    inert: false,
+    isConnected: true,
+    focus() {
+      document.activeElement = this;
+    },
+    setAttribute(name, value) {
+      this.attributes.set(name, value);
+    },
+    removeAttribute(name) {
+      this.attributes.delete(name);
+    },
+  });
+  const trigger = makeElement({ action: "menu" });
+  const cancel = makeElement({ action: "cancel-leave-battle" });
+  const confirm = makeElement({ action: "confirm-leave-battle" });
+  const background = makeElement();
+  const dialog = {
+    contains(element) {
+      return element === cancel || element === confirm;
+    },
+    querySelectorAll() {
+      return [cancel, confirm];
+    },
+  };
+  const root = {
+    querySelector(selector) {
+      if (selector === "[data-dialog-background]") return background;
+      if (selector === '[role="dialog"]') return dialog;
+      return null;
+    },
+    querySelectorAll(selector) {
+      return selector === "[data-action]" ? [trigger, cancel, confirm] : [];
+    },
+  };
+
+  return {
+    background,
+    cancel,
+    confirm,
+    document,
+    root,
+    trigger,
+    dispatchKey(key, { shiftKey = false } = {}) {
+      let prevented = false;
+      listeners.get("keydown")?.({
+        key,
+        shiftKey,
+        preventDefault() {
+          prevented = true;
+        },
+      });
+      assert.equal(prevented, true);
+    },
+  };
+}

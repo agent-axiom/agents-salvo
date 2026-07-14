@@ -41,6 +41,7 @@ test("mobile platform notices and controls are localized in every language", () 
       "nav.mainMenu": "Main menu",
       "share.failed": "Could not share.",
       "auth.mobileSecureLoginPending": "Secure Telegram login is not available in the installed app yet.",
+      "auth.secureStorageFailed": "Secure login could not be saved.",
     },
     ru: {
       "settings.haptics": "Виброотклик",
@@ -55,6 +56,7 @@ test("mobile platform notices and controls are localized in every language", () 
       "nav.mainMenu": "Главное меню",
       "share.failed": "Не удалось поделиться.",
       "auth.mobileSecureLoginPending": "Безопасный вход через Telegram пока недоступен в установленном приложении.",
+      "auth.secureStorageFailed": "Не удалось безопасно сохранить вход.",
     },
     "zh-CN": {
       "settings.haptics": "触觉反馈",
@@ -69,6 +71,7 @@ test("mobile platform notices and controls are localized in every language", () 
       "nav.mainMenu": "主菜单",
       "share.failed": "分享失败。",
       "auth.mobileSecureLoginPending": "安装版应用暂不支持安全的 Telegram 登录。",
+      "auth.secureStorageFailed": "无法安全保存登录信息。",
     },
   };
 
@@ -419,17 +422,17 @@ test("Russian board columns use Cyrillic coordinate letters", () => {
   assert.equal(i18n.coordinateColumnLabel("zh-CN", 9), "J");
 });
 
-test("getInitialLanguage prefers saved language and falls back from browser locale", () => {
-  withLanguageGlobals({ saved: "ru", browser: "en-US" }, () => {
-    assert.equal(i18n.getInitialLanguage(), "ru");
+test("getInitialLanguage uses only browser locale before platform hydration", () => {
+  withLanguageGlobals({ browser: "en-US" }, () => {
+    assert.equal(i18n.getInitialLanguage(), "en");
   });
-  withLanguageGlobals({ saved: "unknown", browser: "zh-Hans-CN" }, () => {
+  withLanguageGlobals({ browser: "zh-Hans-CN" }, () => {
     assert.equal(i18n.getInitialLanguage(), "zh-CN");
   });
-  withLanguageGlobals({ saved: "", browser: "ru-RU" }, () => {
+  withLanguageGlobals({ browser: "ru-RU" }, () => {
     assert.equal(i18n.getInitialLanguage(), "ru");
   });
-  withLanguageGlobals({ saved: "", browser: "fr-FR" }, () => {
+  withLanguageGlobals({ browser: "fr-FR" }, () => {
     assert.equal(i18n.getInitialLanguage(), "en");
   });
 });
@@ -442,15 +445,15 @@ test("translations and coordinates fall back safely", () => {
   assert.equal(i18n.coordinateColumnLabel("en", 30), "31");
 });
 
-function withLanguageGlobals({ saved, browser }, callback) {
+function withLanguageGlobals({ browser }, callback) {
   const previousLocalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
 
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
     value: {
-      getItem(key) {
-        return key === "salvo.language" ? saved : null;
+      getItem() {
+        assert.fail("initial language must not read persisted storage");
       },
     },
   });
