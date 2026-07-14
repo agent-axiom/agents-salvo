@@ -96,13 +96,14 @@ jobs:
         run: npm run mobile:sync
 
       - name: Build iOS Simulator
+        id: ios_build
         shell: bash
         run: |
           set -o pipefail
           xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build 2>&1 | tee xcodebuild.log
 
       - name: Upload failed iOS build log
-        if: failure()
+        if: ${{ always() && steps.ios_build.outcome == 'failure' }}
         uses: actions/upload-artifact@v7
         with:
           name: ios-xcodebuild-log

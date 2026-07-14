@@ -33,6 +33,7 @@
     "@capacitor/cli": "8.4.1",
     "@capacitor/ios": "8.4.1",
     "esbuild": "0.28.1",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "yaml": "2.9.0"
   }
 }

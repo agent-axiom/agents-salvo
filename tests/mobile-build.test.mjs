@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 import capacitorCliConfig from "@capacitor/cli/dist/config.js";
 import plist from "plist";
+import { parse } from "yaml";
 
 const { loadConfig } = capacitorCliConfig;
 const { parse: parsePlist } = plist;
@@ -183,7 +184,54 @@ function listFiles(root) {
 
 function readWorkflow(path) {
   assert.equal(existsSync(path), true, `${path} is missing`);
-  return readFileSync(path, "utf8");
+  const source = readFileSync(path, "utf8");
+  parseWorkflowSource(source, path);
+  return source;
+}
+
+function parseWorkflowSource(source, path) {
+  try {
+    return parse(source, { strict: true, uniqueKeys: true, version: "1.2" });
+  } catch (error) {
+    throw new Error(`${path} contains invalid YAML`, { cause: error });
+  }
+}
+
+function assertWorkflowStructure(workflow, { triggers, jobs }) {
+  assert.equal(
+    workflow !== null && typeof workflow === "object" && !Array.isArray(workflow),
+    true,
+    "workflow must be a mapping",
+  );
+  assert.deepEqual(
+    Object.keys(workflow).sort(),
+    ["concurrency", "jobs", "name", "on", "permissions"],
+    "workflow top-level keys do not match expected structure",
+  );
+  assert.deepEqual(
+    Object.keys(workflow.on ?? {}).sort(),
+    [...triggers].sort(),
+    "workflow triggers do not match expected structure",
+  );
+  assert.deepEqual(
+    Object.keys(workflow.jobs ?? {}).sort(),
+    [...jobs].sort(),
+    "workflow jobs do not match expected structure",
+  );
+
+  for (const jobName of jobs) {
+    const job = workflow.jobs[jobName];
+    assert.equal(
+      typeof job["runs-on"],
+      "string",
+      `${jobName} job must select a runner`,
+    );
+    assert.equal(
+      Array.isArray(job.steps),
+      true,
+      `${jobName} job steps must be a sequence`,
+    );
+  }
 }
 
 function workflowJob(workflow, name) {
@@ -233,6 +281,7 @@ test("mobile toolchain is pinned and uses bundled local web assets", () => {
     "@capacitor/ios": "8.4.1",
     esbuild: "0.28.1",
     typescript: "5.9.3",
+    yaml: "2.9.0",
   });
   assert.equal("overrides" in packageJson, false);
   assert.equal(packageJson.dependencies["@capacitor/core"], "8.4.1");
@@ -627,8 +676,56 @@ test("native shells do not configure a GitHub Pages WebView start URL", () => {
   }
 });
 
+test("workflow parser rejects malformed YAML", () => {
+  assert.throws(
+    () => parseWorkflowSource("jobs: [", "invalid-workflow.yml"),
+    /invalid-workflow\.yml contains invalid YAML/,
+  );
+});
+
+test("workflow structure validation rejects renamed jobs", () => {
+  const workflow = parseWorkflowSource(
+    `name: Invalid Mobile Workflow
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: invalid
+  cancel-in-progress: true
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    steps: []
+  android:
+    runs-on: ubuntu-latest
+    steps: []
+  ios:
+    runs-on: macos-26
+    steps: []
+`,
+    "renamed-job.yml",
+  );
+
+  assert.throws(
+    () =>
+      assertWorkflowStructure(workflow, {
+        triggers: ["pull_request", "push", "workflow_dispatch"],
+        jobs: ["web", "android", "ios"],
+      }),
+    /workflow jobs do not match expected structure/,
+  );
+});
+
 test("Pages CI uses the pinned Node toolchain and preserves deployment", () => {
   const workflow = readWorkflow(".github/workflows/pages.yml");
+  assertWorkflowStructure(
+    parseWorkflowSource(workflow, ".github/workflows/pages.yml"),
+    { triggers: ["push", "workflow_dispatch"], jobs: ["build", "deploy"] },
+  );
   const build = workflowJob(workflow, "build");
   const deploy = workflowJob(workflow, "deploy");
 
@@ -655,6 +752,13 @@ test("Pages CI uses the pinned Node toolchain and preserves deployment", () => {
 
 test("mobile CI covers branch builds without signing credentials", () => {
   const workflow = readWorkflow(".github/workflows/mobile.yml");
+  assertWorkflowStructure(
+    parseWorkflowSource(workflow, ".github/workflows/mobile.yml"),
+    {
+      triggers: ["pull_request", "push", "workflow_dispatch"],
+      jobs: ["web", "android", "ios"],
+    },
+  );
 
   assert.match(workflow, /^on:\n/m);
   assert.match(workflow, /^  pull_request:\s*$/m);
@@ -750,10 +854,10 @@ test("mobile CI builds an unsigned iOS Simulator app and retains failures", () =
   ]);
   assert.match(
     ios,
-    /shell: bash\n\s+run: \|\n\s+set -o pipefail\n\s+xcodebuild -project ios\/App\/App\.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build 2>&1 \| tee xcodebuild\.log/,
+    /if: \$\{\{ always\(\) && steps\.ios_build\.outcome == 'failure' \}\}\n\s+uses: actions\/upload-artifact@v7\n\s+with:\n\s+name: ios-xcodebuild-log\n\s+path: xcodebuild\.log\n\s+if-no-files-found: error/,
   );
   assert.match(
     ios,
-    /if: failure\(\)\n\s+uses: actions\/upload-artifact@v7\n\s+with:\n\s+name: ios-xcodebuild-log\n\s+path: xcodebuild\.log\n\s+if-no-files-found: error/,
+    /id: ios_build\n\s+shell: bash\n\s+run: \|\n\s+set -o pipefail\n\s+xcodebuild -project ios\/App\/App\.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build 2>&1 \| tee xcodebuild\.log/,
   );
 });
