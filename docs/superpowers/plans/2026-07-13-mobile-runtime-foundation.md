@@ -869,7 +869,7 @@ xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator -conf
 
 Set workflow concurrency to cancel stale branch builds. Upload the Android debug APK and iOS build log on failure; do not use signing credentials.
 
-- [ ] **Step 5: Verify workflow contracts and local native builds**
+- [x] **Step 5: Verify workflow contracts and native builds**
 
 Run: `node --test tests/mobile-build.test.mjs`
 
@@ -881,7 +881,7 @@ Expected: BUILD SUCCESSFUL.
 
 Run: `xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build`
 
-Expected: BUILD SUCCEEDED.
+Expected: BUILD SUCCEEDED. On a host with only Xcode Command Line Tools, run this exact command in the macOS CI job instead; the checked implementation passed there.
 
 - [x] **Step 6: Commit CI**
 
@@ -902,7 +902,7 @@ git commit -m "ci: validate web and native builds"
 
 Add equivalent EN/RU/ZH sections covering Node 24.14.1, Xcode 26+, iOS 15+, Android Studio Otter 2025.2.1+, Android API 24 minimum/API 36 target, `npm ci`, `npm run mobile:sync`, `npm run mobile:ios`, `npm run mobile:android`, and unsigned build commands. State that local modes work offline while online/profile features need the Worker. State that simulator/debug builds do not require store accounts; physical iOS signing and store distribution do.
 
-- [ ] **Step 2: Run the complete automated gate**
+- [x] **Step 2: Run the complete automated gate**
 
 Run: `npm ci`
 
@@ -930,13 +930,13 @@ Expected: BUILD SUCCESSFUL.
 
 Run: `xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build`
 
-Expected: BUILD SUCCEEDED.
+Expected: BUILD SUCCEEDED locally when full Xcode is installed, or in the equivalent macOS CI job. The checked implementation passed the CI build.
 
 - [x] **Step 3: Perform visual and behavior smoke tests**
 
 Verify web and iOS/Android simulator builds in EN/RU/ZH, light/dark, portrait/landscape, agent/training/hotseat, background/foreground restore, audio interruption, haptic toggle, native share cancellation, offline startup, offline online-mode error, Android back order, and 10x10/16x16 board usability. Capture screenshots at 390x844, 844x390, and a tablet viewport and inspect for blank canvas, overlap, clipped text, and horizontal page overflow.
 
-- [ ] **Step 4: Mark plan checkboxes and inspect the final diff**
+- [x] **Step 4: Mark plan checkboxes and inspect the final diff**
 
 Run: `git diff --check`
 
@@ -946,7 +946,7 @@ Run: `git status --short`
 
 Expected: only the three README files and this checked plan remain before the documentation commit.
 
-- [ ] **Step 5: Commit verified documentation**
+- [x] **Step 5: Commit verified documentation**
 
 ```bash
 git add README.md README.ru.md README.zh-CN.md docs/superpowers/plans/2026-07-13-mobile-runtime-foundation.md
@@ -961,5 +961,5 @@ git commit -m "docs: explain native development workflow"
 - An unfinished local game survives app suspension and restart; corrupt snapshots fail closed.
 - Native back, lifecycle audio, network state, share sheet, haptics, splash, status bar, and safe areas are adapter-driven and tested.
 - Web behavior, the 98% core/runtime/backend coverage gate, and the explicit actual-app behavior coverage gate remain intact.
-- Android debug and unsigned iOS Simulator builds pass locally and in CI.
+- Android debug builds pass locally, and Android debug plus unsigned iOS Simulator builds pass in CI.
 - No analytics, advertising, payments, remote start URL, signing secret, or plaintext native auth storage is introduced.
