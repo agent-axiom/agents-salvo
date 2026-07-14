@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 
 const scenarioName = process.env.SALVO_APP_BEHAVIOR_SCENARIO;
-assert.equal(process.env.NODE_V8_COVERAGE, undefined);
+const childCoverageMode = process.env.SALVO_APP_CHILD_COVERAGE;
+assert.ok(["isolated", "inherit"].includes(childCoverageMode));
+assert.equal(Boolean(process.env.NODE_V8_COVERAGE), childCoverageMode === "inherit");
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "./remote.js" && context.parentURL?.endsWith("/src/app.js")) {

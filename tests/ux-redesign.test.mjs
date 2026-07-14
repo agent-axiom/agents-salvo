@@ -7,9 +7,24 @@ const css = readFileSync("src/styles.css", "utf8");
 const i18n = readFileSync("src/i18n.js", "utf8");
 const html = readFileSync("src/index.html", "utf8");
 const mobileSupport = readFileSync("src/mobile-app-support.js", "utf8");
+const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 
 test("app integration coverage does not mask the application source", () => {
   assert.doesNotMatch(app, /node:coverage disable/);
+});
+
+test("coverage uses separate truthful core and actual-app gates", () => {
+  const scripts = packageJson.scripts;
+  assert.match(scripts.coverage, /npm run coverage:core/);
+  assert.match(scripts.coverage, /npm run coverage:app/);
+  assert.match(scripts["coverage:core"], /SALVO_APP_CHILD_COVERAGE=isolated/);
+  assert.match(scripts["coverage:core"], /--test-coverage-lines=98/);
+  assert.doesNotMatch(scripts["coverage:core"], /--test-coverage-include=src\/app\.js/);
+  assert.match(scripts["coverage:core"], /tests\/\*\.test\.mjs/);
+  assert.match(scripts["coverage:app"], /SALVO_APP_CHILD_COVERAGE=inherit/);
+  assert.match(scripts["coverage:app"], /--test-coverage-include=src\/app\.js/);
+  assert.match(scripts["coverage:app"], /--test-coverage-lines=39/);
+  assert.match(scripts["coverage:app"], /tests\/app-behavior\.test\.mjs/);
 });
 
 test("main menu is a focused game hub with agent play as the primary action", () => {

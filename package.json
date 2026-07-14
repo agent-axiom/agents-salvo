@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "coverage": "node --experimental-test-coverage --test-coverage-lines=98 --test tests/*.test.mjs",
+    "coverage": "npm run coverage:core && npm run coverage:app",
+    "coverage:core": "SALVO_APP_CHILD_COVERAGE=isolated node --experimental-test-coverage --test-coverage-lines=98 --test tests/*.test.mjs",
+    "coverage:app": "SALVO_APP_CHILD_COVERAGE=inherit node --experimental-test-coverage --test-coverage-include=src/app.js --test-coverage-lines=39 --test tests/app-behavior.test.mjs",
     "build": "node scripts/build.mjs",
     "start": "python3 -m http.server 5173 -d dist",
     "mobile:sync": "npm run build && cap sync",

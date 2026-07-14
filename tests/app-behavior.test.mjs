@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const harnessPath = fileURLToPath(new URL("./app-behavior-harness.mjs", import.meta.url));
+const childCoverageMode = process.env.SALVO_APP_CHILD_COVERAGE ?? "isolated";
+assert.ok(["isolated", "inherit"].includes(childCoverageMode));
 
 test("actual app boot stays rendered and gates auth on deferred runtime state", async () => {
   await runScenarioInChild("startup");
@@ -14,9 +16,21 @@ test("actual app routes close online state and require destructive confirmation"
 });
 
 async function runScenarioInChild(name) {
-  const child = spawn("/usr/bin/env", ["-u", "NODE_V8_COVERAGE", process.execPath, harnessPath], {
+  const inheritCoverage = childCoverageMode === "inherit";
+  const childEnvironment = {
+    SALVO_APP_BEHAVIOR_SCENARIO: name,
+    SALVO_APP_CHILD_COVERAGE: childCoverageMode,
+  };
+  if (inheritCoverage && process.env.NODE_V8_COVERAGE) {
+    childEnvironment.NODE_V8_COVERAGE = process.env.NODE_V8_COVERAGE;
+  }
+  const command = inheritCoverage ? process.execPath : "/usr/bin/env";
+  const args = inheritCoverage
+    ? [harnessPath]
+    : ["-u", "NODE_V8_COVERAGE", process.execPath, harnessPath];
+  const child = spawn(command, args, {
     cwd: fileURLToPath(new URL("..", import.meta.url)),
-    env: { SALVO_APP_BEHAVIOR_SCENARIO: name },
+    env: childEnvironment,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";
