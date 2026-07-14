@@ -16,6 +16,7 @@ export function createMobileRuntime({
   let lastNetworkStatus = null;
   let lifecycleTail = Promise.resolve();
   let networkEventVersion = 0;
+  let networkTail = Promise.resolve();
   let started = false;
   let transitionTail = Promise.resolve();
 
@@ -24,7 +25,7 @@ export function createMobileRuntime({
     try {
       await onRuntimeError(error);
     } catch {
-      // Error observers must not make platform lifecycle callbacks reject.
+      // Error observers must not make platform callbacks reject.
     }
   };
 
@@ -59,23 +60,32 @@ export function createMobileRuntime({
   };
 
   const deliverNetwork = async (status) => {
-    if (
-      lastNetworkStatus
-      && lastNetworkStatus.connected === status?.connected
-      && lastNetworkStatus.connectionType === status?.connectionType
-    ) {
-      return;
-    }
-    lastNetworkStatus = {
+    const nextNetworkStatus = {
       connected: status?.connected,
       connectionType: status?.connectionType,
     };
+    if (
+      lastNetworkStatus
+      && lastNetworkStatus.connected === nextNetworkStatus.connected
+      && lastNetworkStatus.connectionType === nextNetworkStatus.connectionType
+    ) {
+      return;
+    }
     await onNetwork(status);
+    lastNetworkStatus = nextNetworkStatus;
+  };
+
+  const queueNetworkDelivery = (status, observeFailure) => {
+    const operation = networkTail.then(() => deliverNetwork(status));
+    networkTail = operation.catch((error) => (
+      observeFailure ? reportRuntimeError(error) : undefined
+    ));
+    return observeFailure ? networkTail : operation;
   };
 
   const handleNetworkChange = (status) => {
     networkEventVersion += 1;
-    return deliverNetwork(status);
+    return queueNetworkDelivery(status, true);
   };
 
   const removeSubscriptions = async (removers) => {
@@ -105,6 +115,7 @@ export function createMobileRuntime({
       return removers;
     } catch (error) {
       const cleanup = await removeSubscriptions(removers);
+      await Promise.all([networkTail, lifecycleTail]);
       if (cleanup.errors.length > 0) {
         activeRemovers = cleanup.failedRemovers;
         throw new AggregateError(
@@ -119,7 +130,7 @@ export function createMobileRuntime({
   const performStart = async () => {
     lastNetworkStatus = null;
     networkEventVersion = 0;
-    await deliverNetwork(await platform.getNetworkStatus());
+    await queueNetworkDelivery(await platform.getNetworkStatus(), false);
 
     try {
       const snapshot = await snapshots.load();
@@ -139,11 +150,11 @@ export function createMobileRuntime({
       const versionBeforeSample = networkEventVersion;
       const status = await platform.getNetworkStatus();
       if (networkEventVersion === versionBeforeSample) {
-        await deliverNetwork(status);
+        await queueNetworkDelivery(status, false);
       }
     } catch (error) {
       const cleanup = await removeSubscriptions(removers);
-      await lifecycleTail;
+      await Promise.all([networkTail, lifecycleTail]);
       if (cleanup.errors.length > 0) {
         activeRemovers = cleanup.failedRemovers;
         throw new AggregateError(
@@ -162,7 +173,7 @@ export function createMobileRuntime({
     const removers = activeRemovers;
     activeRemovers = [];
     const cleanup = await removeSubscriptions(removers);
-    await lifecycleTail;
+    await Promise.all([networkTail, lifecycleTail]);
     if (cleanup.errors.length > 0) {
       activeRemovers = cleanup.failedRemovers;
       throw new AggregateError(

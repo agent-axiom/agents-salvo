@@ -222,6 +222,161 @@ test("network event during registration is not duplicated by the post-sample", a
   await runtime.stop();
 });
 
+test("network deliveries finish in arrival order", async () => {
+  const harness = runtimeHarness();
+  const firstStatus = { connected: false, connectionType: "none" };
+  const secondStatus = { connected: true, connectionType: "cellular" };
+  const firstStarted = deferred();
+  const releaseFirst = deferred();
+  const deliveryOrder = [];
+  harness.options.onNetwork = async (status) => {
+    if (status === firstStatus) {
+      deliveryOrder.push("first:start");
+      firstStarted.resolve();
+      await releaseFirst.promise;
+      deliveryOrder.push("first:end");
+    } else if (status === secondStatus) {
+      deliveryOrder.push("second");
+    }
+  };
+  const runtime = createMobileRuntime(harness.options);
+  await runtime.start();
+
+  const firstDelivery = harness.emit("network", firstStatus);
+  await firstStarted.promise;
+  const secondDelivery = harness.emit("network", secondStatus);
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  const orderBeforeRelease = [...deliveryOrder];
+
+  releaseFirst.resolve();
+  await Promise.all([firstDelivery, secondDelivery]);
+
+  assert.deepEqual(orderBeforeRelease, ["first:start"]);
+  assert.deepEqual(deliveryOrder, ["first:start", "first:end", "second"]);
+  await runtime.stop();
+});
+
+test("failed network delivery is observed and an identical event retries", async () => {
+  const harness = runtimeHarness();
+  const changedStatus = { connected: false, connectionType: "none" };
+  const failure = new Error("network delivery failed");
+  const successfulDeliveries = [];
+  let attempts = 0;
+  harness.options.onNetwork = async (status) => {
+    if (status !== changedStatus) return;
+    attempts += 1;
+    if (attempts === 1) throw failure;
+    successfulDeliveries.push(status);
+  };
+  const runtime = createMobileRuntime(harness.options);
+  await runtime.start();
+
+  const firstResult = await Promise.allSettled([
+    harness.emit("network", changedStatus),
+  ]);
+  const secondResult = await Promise.allSettled([
+    harness.emit("network", changedStatus),
+  ]);
+  await harness.emit("network", changedStatus);
+
+  assert.equal(firstResult[0].status, "fulfilled");
+  assert.equal(secondResult[0].status, "fulfilled");
+  assert.equal(attempts, 2);
+  assert.deepEqual(successfulDeliveries, [changedStatus]);
+  assert.deepEqual(harness.deliveries.runtimeErrors, [failure]);
+  await runtime.stop();
+});
+
+test("stop removes listeners and waits for in-flight network delivery", async () => {
+  const harness = runtimeHarness();
+  const changedStatus = { connected: false, connectionType: "none" };
+  const deliveryStarted = deferred();
+  const releaseDelivery = deferred();
+  harness.options.onNetwork = async (status) => {
+    if (status !== changedStatus) return;
+    deliveryStarted.resolve();
+    await releaseDelivery.promise;
+  };
+  const runtime = createMobileRuntime(harness.options);
+  await runtime.start();
+
+  const delivery = harness.emit("network", changedStatus);
+  await deliveryStarted.promise;
+  let stopSettled = false;
+  const stopping = runtime.stop().then(() => {
+    stopSettled = true;
+  });
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  const activeWhileStopping = harness.activeListenerCount();
+  const settledBeforeRelease = stopSettled;
+
+  releaseDelivery.resolve();
+  await Promise.all([delivery, stopping]);
+
+  assert.equal(activeWhileStopping, 0);
+  assert.equal(settledBeforeRelease, false);
+});
+
+test("subscription rollback waits for in-flight network delivery", async () => {
+  const harness = runtimeHarness();
+  const registrationFailure = new Error("deep-link registration failed");
+  const changedStatus = { connected: false, connectionType: "none" };
+  const deliveryStarted = deferred();
+  const releaseDelivery = deferred();
+  harness.registrationFailures.set("deep-link", registrationFailure);
+  harness.options.onNetwork = async (status) => {
+    if (status !== changedStatus) return;
+    deliveryStarted.resolve();
+    await releaseDelivery.promise;
+  };
+  const registerNetwork = harness.platform.onNetworkChange;
+  let listenerDelivery;
+  harness.platform.onNetworkChange = async (listener) => {
+    const remove = await registerNetwork(listener);
+    listenerDelivery = listener(changedStatus);
+    return remove;
+  };
+  const runtime = createMobileRuntime(harness.options);
+
+  let startSettled = false;
+  let startError;
+  const starting = runtime.start().then(
+    () => {
+      startSettled = true;
+    },
+    (error) => {
+      startError = error;
+      startSettled = true;
+    },
+  );
+  await deliveryStarted.promise;
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  const activeDuringRollback = harness.activeListenerCount();
+  const settledBeforeRelease = startSettled;
+
+  releaseDelivery.resolve();
+  await Promise.all([starting, listenerDelivery]);
+
+  assert.equal(activeDuringRollback, 0);
+  assert.equal(settledBeforeRelease, false);
+  assert.equal(startError, registrationFailure);
+});
+
+test("initial network delivery failure rejects start without subscriptions", async () => {
+  const harness = runtimeHarness();
+  const failure = new Error("initial network delivery failed");
+  harness.options.onNetwork = async () => {
+    throw failure;
+  };
+  const runtime = createMobileRuntime(harness.options);
+
+  await assert.rejects(runtime.start(), (error) => error === failure);
+
+  assert.equal(harness.activeListenerCount(), 0);
+  assert.equal(harness.subscriptions.length, 0);
+  await runtime.stop();
+});
+
 test("post-subscription network sample failure cleans every listener", async () => {
   const harness = runtimeHarness();
   const failure = new Error("post-subscription network sample failed");
