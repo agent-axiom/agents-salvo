@@ -61,6 +61,10 @@ function hasOwnFields(value, fields) {
   return isObject(value) && fields.every((field) => Object.hasOwn(value, field));
 }
 
+function ownField(value, field) {
+  return isObject(value) && Object.hasOwn(value, field) ? value[field] : undefined;
+}
+
 function isSupportedModeScreen(value) {
   return hasOwnFields(value, ["mode", "screen"]) &&
     LOCAL_SCREENS_BY_MODE.get(value.mode)?.has(value.screen) === true;
@@ -284,25 +288,31 @@ function uniqueKnownValues(values, knownValues) {
 function normalizeTrainingProgress(progress) {
   const normalized = {};
   for (const scenario of trainingScenarios) {
-    const entry = progress?.[scenario.id];
+    const entry = ownField(progress, scenario.id);
     if (!isObject(entry)) continue;
+    const bestRatingId = ownField(entry, "bestRatingId");
+    const lastPlayedAt = ownField(entry, "lastPlayedAt");
     normalized[scenario.id] = {
-      completions: nonnegativeInteger(entry.completions),
-      bestScore: nonnegativeNumber(entry.bestScore),
-      bestAccuracy: Math.min(100, nonnegativeNumber(entry.bestAccuracy)),
-      bestRatingId: TRAINING_RATING_IDS.has(entry.bestRatingId) ? entry.bestRatingId : "needsWork",
-      lastPlayedAt: isValidSavedAt(entry.lastPlayedAt) ? entry.lastPlayedAt : "",
+      completions: nonnegativeInteger(ownField(entry, "completions")),
+      bestScore: nonnegativeNumber(ownField(entry, "bestScore")),
+      bestAccuracy: Math.min(100, nonnegativeNumber(ownField(entry, "bestAccuracy"))),
+      bestRatingId: TRAINING_RATING_IDS.has(bestRatingId) ? bestRatingId : "needsWork",
+      lastPlayedAt: isValidSavedAt(lastPlayedAt) ? lastPlayedAt : "",
     };
   }
-  if (isObject(progress?.daily)) {
+  const daily = ownField(progress, "daily");
+  if (isObject(daily)) {
     normalized.daily = {
-      date: validDateKey(progress.daily.date),
-      completions: nonnegativeInteger(progress.daily.completions),
-      completedScenarioIds: uniqueKnownValues(progress.daily.completedScenarioIds, TRAINING_SCENARIO_IDS),
-      goalCompletedDate: validDateKey(progress.daily.goalCompletedDate),
-      streak: nonnegativeInteger(progress.daily.streak),
-      bestStreak: nonnegativeInteger(progress.daily.bestStreak),
-      awards: uniqueKnownValues(progress.daily.awards, TRAINING_AWARD_IDS),
+      date: validDateKey(ownField(daily, "date")),
+      completions: nonnegativeInteger(ownField(daily, "completions")),
+      completedScenarioIds: uniqueKnownValues(
+        ownField(daily, "completedScenarioIds"),
+        TRAINING_SCENARIO_IDS,
+      ),
+      goalCompletedDate: validDateKey(ownField(daily, "goalCompletedDate")),
+      streak: nonnegativeInteger(ownField(daily, "streak")),
+      bestStreak: nonnegativeInteger(ownField(daily, "bestStreak")),
+      awards: uniqueKnownValues(ownField(daily, "awards"), TRAINING_AWARD_IDS),
     };
   }
   return normalized;
@@ -355,11 +365,12 @@ function normalizeSetupSnapshot(value, preset) {
 }
 
 function normalizePlayingSnapshot(value, preset) {
-  if (!hasOwnFields(value, ["boards", "game"])) return null;
+  if (!hasOwnFields(value, ["mode", "boards", "game"])) return null;
   const boards = rebuildCompleteBoards(value.boards, preset);
   if (!boards) return null;
   const game = replayGame(value.game, boards, preset);
-  return game ? { boards, game } : null;
+  if (!game || (value.mode === "agent" && game.currentPlayerId !== "p1")) return null;
+  return { boards, game };
 }
 
 function normalizePassSnapshot(value, preset) {

@@ -77,6 +77,15 @@ function firstWaterCoordinate(board) {
   throw new Error("Expected an unoccupied board coordinate");
 }
 
+function battleAfterHumanMiss() {
+  const battle = liveBattle("classic", { withShot: false });
+  const coordinate = firstWaterCoordinate(battle.game.players.p2.board);
+  return {
+    boards: battle.boards,
+    game: fireAt(battle.game, "p1", coordinate).game,
+  };
+}
+
 function firstUnshotCoordinate(game, playerId) {
   const targetPlayerId = playerId === "p1" ? "p2" : "p1";
   const board = game.players[targetPlayerId].board;
@@ -115,6 +124,7 @@ function localStateForOutcome(result) {
     throw new Error(`Expected ${result} outcome`);
   }
   return localState({
+    mode: "hotseat",
     presetId,
     boards: { p1: p1Board, p2: p2Board },
     game,
@@ -281,26 +291,37 @@ function validSnapshot(overrides = {}) {
   };
 }
 
-async function withObjectPrototypeField(field, value, callback) {
-  const previousDescriptor = Object.getOwnPropertyDescriptor(
-    Object.prototype,
-    field,
+async function withObjectPrototypeFields(fields, callback) {
+  const previousDescriptors = new Map(
+    fields.map(([field]) => [
+      field,
+      Object.getOwnPropertyDescriptor(Object.prototype, field),
+    ]),
   );
 
   try {
-    Object.defineProperty(Object.prototype, field, {
-      configurable: true,
-      writable: true,
-      value,
-    });
+    for (const [field, value] of fields) {
+      Object.defineProperty(Object.prototype, field, {
+        configurable: true,
+        writable: true,
+        value,
+      });
+    }
     return await callback();
   } finally {
-    if (previousDescriptor) {
-      Object.defineProperty(Object.prototype, field, previousDescriptor);
-    } else {
-      delete Object.prototype[field];
+    for (const [field] of [...fields].reverse()) {
+      const previousDescriptor = previousDescriptors.get(field);
+      if (previousDescriptor) {
+        Object.defineProperty(Object.prototype, field, previousDescriptor);
+      } else {
+        delete Object.prototype[field];
+      }
     }
   }
+}
+
+function withObjectPrototypeField(field, value, callback) {
+  return withObjectPrototypeFields([[field, value]], callback);
 }
 
 function inheritedRequiredFieldCases() {
@@ -597,6 +618,7 @@ test("marker battle shots retain only renderable marker outcome fields", () => {
   const game = fireAt(started, "p1", marker.cell).game;
   const snapshot = createLocalBattleSnapshot(
     localState({
+      mode: "hotseat",
       presetId: preset.id,
       boards: { p1: p1Board, p2: p2Board },
       game,
@@ -710,6 +732,49 @@ test("game replay repairs derived state and remains playable", () => {
       firstUnshotCoordinate(parsed.game, parsed.game.currentPlayerId),
     ),
   );
+});
+
+test("agent snapshots reject a replay waiting on the synchronous agent turn", () => {
+  const battle = battleAfterHumanMiss();
+  assert.equal(battle.game.log.at(-1).result, "miss");
+  assert.equal(battle.game.currentPlayerId, "p2");
+
+  assert.equal(
+    createLocalBattleSnapshot(localState({ ...battle }), () => NOW),
+    null,
+  );
+
+  const hotseat = createLocalBattleSnapshot(
+    localState({ ...battle, mode: "hotseat" }),
+    () => NOW,
+  );
+  assert.notEqual(hotseat, null);
+  assert.equal(hotseat.game.currentPlayerId, "p2");
+  assert.deepEqual(parseLocalBattleSnapshot(JSON.stringify(hotseat)), hotseat);
+});
+
+test("agent snapshots waiting on p2 are quarantined and cleared", async () => {
+  const battle = battleAfterHumanMiss();
+  const hotseat = createLocalBattleSnapshot(
+    localState({ ...battle, mode: "hotseat" }),
+    () => NOW,
+  );
+  assert.notEqual(hotseat, null);
+  assert.equal(hotseat.game.currentPlayerId, "p2");
+  const raw = JSON.stringify({ ...hotseat, mode: "agent" });
+
+  assert.throws(() => parseLocalBattleSnapshot(raw));
+
+  const settings = memorySettings({ localBattle: raw });
+  const snapshots = createLocalBattleSnapshotStore(settings);
+  assert.equal(await snapshots.load(), null);
+  assert.equal(settings.values.get("localBattleQuarantine"), raw);
+  assert.equal(settings.values.has("localBattle"), false);
+  assert.deepEqual(settings.calls, [
+    ["get", "localBattle"],
+    ["set", "localBattleQuarantine", raw],
+    ["set", "localBattle", null],
+  ]);
 });
 
 test("game replay rejects impossible claimed outcomes", () => {
@@ -918,6 +983,77 @@ test("training progress normalization bounds values and drops unknown lists", ()
       awards: [],
     },
   });
+});
+
+test("training progress ignores inherited containers and nested fields", async () => {
+  const emptyProgress = {
+    checkerboard: {
+      completions: 0,
+      bestScore: 0,
+      bestAccuracy: 0,
+      bestRatingId: "needsWork",
+      lastPlayedAt: "",
+    },
+    daily: {
+      date: "",
+      completions: 0,
+      completedScenarioIds: [],
+      goalCompletedDate: "",
+      streak: 0,
+      bestStreak: 0,
+      awards: [],
+    },
+  };
+  const cases = [
+    {
+      name: "progress containers",
+      progress: {},
+      inherited: [
+        ["checkerboard", trainingProgress().checkerboard],
+        ["daily", trainingProgress().daily],
+      ],
+      expected: {},
+    },
+    {
+      name: "nested progress fields",
+      progress: { checkerboard: {}, daily: {} },
+      inherited: [
+        ["completions", 9],
+        ["bestScore", 99],
+        ["bestAccuracy", 88],
+        ["bestRatingId", "excellent"],
+        ["lastPlayedAt", NOW],
+        ["date", "2026-07-13"],
+        ["completedScenarioIds", ["checkerboard"]],
+        ["goalCompletedDate", "2026-07-13"],
+        ["streak", 9],
+        ["bestStreak", 9],
+        ["awards", ["firstWatch"]],
+      ],
+      expected: emptyProgress,
+    },
+  ];
+
+  for (const invalidCase of cases) {
+    const state = trainingState();
+    state.training.progress = structuredClone(invalidCase.progress);
+    const rawSnapshot = createLocalBattleSnapshot(trainingState(), () => NOW);
+    rawSnapshot.training.progress = structuredClone(invalidCase.progress);
+    const raw = JSON.stringify(rawSnapshot);
+
+    await withObjectPrototypeFields(invalidCase.inherited, () => {
+      assert.deepEqual(
+        createLocalBattleSnapshot(state, () => NOW).training.progress,
+        invalidCase.expected,
+        invalidCase.name,
+      );
+      assert.deepEqual(
+        parseLocalBattleSnapshot(raw).training.progress,
+        invalidCase.expected,
+        invalidCase.name,
+      );
+    });
+  }
 });
 
 test("snapshot creation and parsing detach nested mutable state", () => {
@@ -1262,21 +1398,23 @@ test("store save persists and load restores a detached snapshot", async () => {
   ]);
 });
 
-test("store preserves the log battle tab", async () => {
-  const settings = memorySettings();
-  const snapshots = createLocalBattleSnapshotStore(settings, { now: () => NOW });
+for (const battleTab of ["target", "own", "log"]) {
+  test(`store preserves the ${battleTab} battle tab`, async () => {
+    const settings = memorySettings();
+    const snapshots = createLocalBattleSnapshotStore(settings, { now: () => NOW });
 
-  await snapshots.save(localState({ battleTab: "log" }));
-  const raw = settings.values.get("localBattle");
+    await snapshots.save(localState({ battleTab }));
+    const raw = settings.values.get("localBattle");
 
-  assert.equal(typeof raw, "string");
-  assert.equal(JSON.parse(raw).battleTab, "log");
-  assert.equal((await snapshots.load()).battleTab, "log");
-  assert.deepEqual(settings.calls, [
-    ["set", "localBattle", raw],
-    ["get", "localBattle"],
-  ]);
-});
+    assert.equal(typeof raw, "string");
+    assert.equal(JSON.parse(raw).battleTab, battleTab);
+    assert.equal((await snapshots.load()).battleTab, battleTab);
+    assert.deepEqual(settings.calls, [
+      ["set", "localBattle", raw],
+      ["get", "localBattle"],
+    ]);
+  });
+}
 
 test("inherited battle tabs normalize to target", () => {
   const previousDescriptor = Object.getOwnPropertyDescriptor(
