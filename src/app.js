@@ -50,9 +50,9 @@ import {
 import { coordinateColumnLabel, getInitialLanguage, languages, t } from "./i18n.js";
 import {
   createAppNavigationCoordinator,
+  createDiscardableSnapshotStore,
   createDialogFocusController,
   createLatestClientCoordinator,
-  createOrderedSnapshotStore,
   createPreferenceCoordinator,
   createSecureSessionCoordinator,
   createUnknownNetworkState,
@@ -65,7 +65,6 @@ import { createMobileRuntime } from "./mobile.js";
 import { platform } from "./platform/index.js";
 import { RemoteClient } from "./remote.js";
 
-/* node:coverage disable */
 export function bootSalvoApp({
   document: appDocument = globalThis.document,
   window: appWindow = globalThis.window,
@@ -200,7 +199,7 @@ const secureSessionCoordinator = createSecureSessionCoordinator({
   // The web adapter owns compatibility with the legacy "salvo.authToken" key.
   secureSession: platform.secureSession,
 });
-const localBattleSnapshots = createOrderedSnapshotStore(
+const localBattleSnapshots = createDiscardableSnapshotStore(
   createLocalBattleSnapshotStore(platform.settings),
 );
 const onlineClientCoordinator = createLatestClientCoordinator({
@@ -211,7 +210,7 @@ const onlineClientCoordinator = createLatestClientCoordinator({
 });
 const appNavigation = createAppNavigationCoordinator({
   shouldDiscardLocalBattle: hasLocalBattleSnapshotContext,
-  clearLocalBattle: () => localBattleSnapshots.clear(),
+  discardLocalBattle: (transition) => localBattleSnapshots.discard(transition),
   resetOnline: resetOnlineConnectionState,
   onError: reportRuntimeError,
 });
@@ -5110,7 +5109,6 @@ return {
   stop: () => mobileRuntime.stop(),
 };
 }
-/* node:coverage enable */
 
 if (typeof document !== "undefined") {
   bootSalvoApp();

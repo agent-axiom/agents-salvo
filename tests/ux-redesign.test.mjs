@@ -8,6 +8,10 @@ const i18n = readFileSync("src/i18n.js", "utf8");
 const html = readFileSync("src/index.html", "utf8");
 const mobileSupport = readFileSync("src/mobile-app-support.js", "utf8");
 
+test("app integration coverage does not mask the application source", () => {
+  assert.doesNotMatch(app, /node:coverage disable/);
+});
+
 test("main menu is a focused game hub with agent play as the primary action", () => {
   assert.match(app, /class="game-hub"/);
   assert.match(app, /class="hub-primary"/);
@@ -618,7 +622,7 @@ test("mobile startup wires the platform, snapshot store, and runtime after first
     app,
     /import \{[\s\S]*createLocalBattleSnapshotStore,[\s\S]*UnsupportedLocalBattleSnapshotVersionError[\s\S]*\} from "\.\/core\/local-battle-snapshot\.js"/,
   );
-  assert.match(app, /createOrderedSnapshotStore\(\s*createLocalBattleSnapshotStore\(platform\.settings\)/);
+  assert.match(app, /createDiscardableSnapshotStore\(\s*createLocalBattleSnapshotStore\(platform\.settings\)/);
   assert.match(app, /createMobileRuntime\(\{[\s\S]*?platform,[\s\S]*?snapshots:[\s\S]*?getState:\s*\(\) => state/);
   assert.match(app, /applySnapshot:\s*applyLocalBattleSnapshot/);
   assert.match(app, /pauseAudio:\s*\(\) => audio\.pauseForLifecycle\(\)/);
@@ -743,7 +747,7 @@ test("native back navigation uses ordered overlays and a destructive-leave dialo
   assert.match(app, /data-dialog-background/);
   assert.match(app, /leaveDialogFocus\.captureReturnFocus\(\)/);
   assert.match(app, /leaveDialogFocus\.restoreFocus\(/);
-  assert.match(app, /clearLocalBattle:\s*\(\) => localBattleSnapshots\.clear\(\)/);
+  assert.match(app, /discardLocalBattle:\s*\(transition\) => localBattleSnapshots\.discard\(transition\)/);
 });
 
 test("menu, archive, replay, and history routes use the guarded app transition", () => {

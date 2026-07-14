@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createAppNavigationCoordinator,
+  createDiscardableSnapshotStore,
   createDialogFocusController,
   createLatestClientCoordinator,
   createOrderedSnapshotStore,
@@ -355,15 +356,56 @@ test("snapshot clear is ordered after a pending lifecycle save", async () => {
   assert.equal(await snapshots.load(), null);
 });
 
+test("snapshot discard drops lifecycle saves until its route transition completes", async () => {
+  const clear = deferred();
+  const transition = deferred();
+  const writes = [];
+  const snapshots = createDiscardableSnapshotStore({
+    async load() {
+      return null;
+    },
+    async save(value) {
+      writes.push(["save", value.screen]);
+    },
+    async clear() {
+      writes.push(["clear"]);
+      await clear.promise;
+    },
+  });
+
+  const discard = snapshots.discard(async () => {
+    writes.push(["route-start"]);
+    await transition.promise;
+    writes.push(["route-complete"]);
+  });
+  await flushMicrotasks();
+  assert.deepEqual(writes, [["clear"]]);
+
+  const lifecycleSave = snapshots.save({ screen: "playing" });
+  assert.equal(await lifecycleSave, false);
+  clear.resolve();
+  await flushMicrotasks();
+  assert.deepEqual(writes, [["clear"], ["route-start"]]);
+
+  assert.equal(await snapshots.save({ screen: "playing" }), false);
+  transition.resolve();
+  assert.equal(await discard, true);
+  assert.deepEqual(writes, [["clear"], ["route-start"], ["route-complete"]]);
+
+  assert.equal(await snapshots.save({ screen: "menu" }), true);
+  assert.deepEqual(writes.at(-1), ["save", "menu"]);
+});
+
 test("app navigation clears a local snapshot before changing route and closing online state", async () => {
   const clear = deferred();
   const state = { mode: "agent", screen: "playing" };
   const calls = [];
   const navigation = createAppNavigationCoordinator({
     shouldDiscardLocalBattle: () => state.mode === "agent" && state.screen === "playing",
-    clearLocalBattle: () => {
+    discardLocalBattle: async (transition) => {
       calls.push("clear");
-      return clear.promise;
+      await clear.promise;
+      await transition();
     },
     resetOnline: () => calls.push("close-online"),
     onError(error) {
@@ -392,7 +434,7 @@ test("failed local snapshot disposal blocks route completion", async () => {
   let onlineClosed = false;
   const navigation = createAppNavigationCoordinator({
     shouldDiscardLocalBattle: () => true,
-    clearLocalBattle: async () => {
+    discardLocalBattle: async () => {
       throw failure;
     },
     resetOnline: () => {
@@ -417,7 +459,7 @@ test("archive and replay navigation close an active online client before routing
   const calls = [];
   const navigation = createAppNavigationCoordinator({
     shouldDiscardLocalBattle: () => false,
-    clearLocalBattle: async () => assert.fail("online routes must not clear local snapshots"),
+    discardLocalBattle: async () => assert.fail("online routes must not clear local snapshots"),
     resetOnline: () => calls.push("close-online"),
   });
 

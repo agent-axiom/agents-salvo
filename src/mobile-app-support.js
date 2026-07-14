@@ -23,7 +23,7 @@ export function hasConfirmedNetworkConnection(network) {
 
 export function createAppNavigationCoordinator({
   shouldDiscardLocalBattle,
-  clearLocalBattle,
+  discardLocalBattle,
   resetOnline,
   onError,
 }) {
@@ -31,11 +31,15 @@ export function createAppNavigationCoordinator({
     async run(navigate) {
       if (shouldDiscardLocalBattle()) {
         try {
-          await clearLocalBattle();
+          await discardLocalBattle(async () => {
+            await resetOnline();
+            await navigate();
+          });
         } catch (error) {
           await reportObservedError(onError, error);
           return false;
         }
+        return true;
       }
       await resetOnline();
       await navigate();
@@ -185,6 +189,30 @@ export function createOrderedSnapshotStore(store) {
     load: () => enqueue(() => store.load()),
     save: (state) => enqueue(() => store.save(state)),
     clear: () => enqueue(() => store.clear()),
+  };
+}
+
+export function createDiscardableSnapshotStore(store) {
+  const orderedStore = createOrderedSnapshotStore(store);
+  let activeDiscards = 0;
+
+  return {
+    load: () => orderedStore.load(),
+    save(state) {
+      if (activeDiscards > 0) return Promise.resolve(false);
+      return orderedStore.save(state).then(() => true);
+    },
+    clear: () => orderedStore.clear(),
+    async discard(transition) {
+      activeDiscards += 1;
+      try {
+        await orderedStore.clear();
+        await transition();
+        return true;
+      } finally {
+        activeDiscards -= 1;
+      }
+    },
   };
 }
 
