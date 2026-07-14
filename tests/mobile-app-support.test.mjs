@@ -217,7 +217,7 @@ test("secure persistence fails closed and logout clear follows an earlier set", 
       },
     },
   });
-  let authenticated = false;
+  let authenticated = true;
   const login = sessions.establish("token", () => {
     authenticated = true;
   });
@@ -226,15 +226,40 @@ test("secure persistence fails closed and logout clear follows an earlier set", 
   });
   await flushMicrotasks();
   assert.deepEqual(calls, ["set"]);
-  assert.equal(authenticated, false);
+  assert.equal(authenticated, true);
 
   set.resolve();
   assert.equal(await login, false);
   await flushMicrotasks();
   assert.deepEqual(calls, ["set", "clear"]);
+  assert.equal(authenticated, true);
   clear.resolve();
   assert.equal(await logout, true);
   assert.equal(authenticated, false);
+});
+
+test("failed secure-session clearing keeps the authenticated UI state", async () => {
+  const failure = new Error("secure clear failed");
+  const sessions = createSecureSessionCoordinator({
+    secureSession: {
+      async get() {
+        return "token";
+      },
+      async set() {},
+      async clear() {
+        throw failure;
+      },
+    },
+  });
+  let authenticated = true;
+
+  await assert.rejects(
+    sessions.invalidate(() => {
+      authenticated = false;
+    }),
+    (error) => error === failure,
+  );
+  assert.equal(authenticated, true);
 });
 
 test("secure persistence clears an auth result superseded by its request generation", async () => {

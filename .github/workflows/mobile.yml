@@ -67,6 +67,17 @@ jobs:
       - name: Test, lint, and assemble Android
         run: android/gradlew -p android test lint assembleDebug
 
+      - name: Run Android instrumentation smoke test
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: android/gradlew -p android connectedDebugAndroidTest
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v7
         with:

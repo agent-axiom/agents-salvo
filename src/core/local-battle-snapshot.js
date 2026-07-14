@@ -527,26 +527,40 @@ export function parseLocalBattleSnapshot(raw) {
 }
 
 export function createLocalBattleSnapshotStore(settings, { now } = {}) {
+  let preservesUnsupportedSnapshot = false;
+
   return {
     async save(state) {
       const snapshot = createLocalBattleSnapshot(state, now);
+      if (snapshot === null && preservesUnsupportedSnapshot) return;
       await settings.set(LOCAL_BATTLE_KEY, snapshot === null ? null : JSON.stringify(snapshot));
+      preservesUnsupportedSnapshot = false;
     },
     async load() {
       const raw = await settings.get(LOCAL_BATTLE_KEY);
-      if (raw === null || raw === undefined) return null;
+      if (raw === null || raw === undefined) {
+        preservesUnsupportedSnapshot = false;
+        return null;
+      }
       try {
-        return parseLocalBattleSnapshot(raw);
+        const snapshot = parseLocalBattleSnapshot(raw);
+        preservesUnsupportedSnapshot = false;
+        return snapshot;
       } catch (error) {
-        if (error instanceof UnsupportedLocalBattleSnapshotVersionError) throw error;
+        if (error instanceof UnsupportedLocalBattleSnapshotVersionError) {
+          preservesUnsupportedSnapshot = true;
+          throw error;
+        }
         if (!(error instanceof LocalBattleSnapshotValidationError)) throw error;
         await settings.set(LOCAL_BATTLE_QUARANTINE_KEY, raw);
         await settings.set(LOCAL_BATTLE_KEY, null);
+        preservesUnsupportedSnapshot = false;
         return null;
       }
     },
     async clear() {
       await settings.set(LOCAL_BATTLE_KEY, null);
+      preservesUnsupportedSnapshot = false;
     },
   };
 }

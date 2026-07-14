@@ -1683,6 +1683,25 @@ test("unsupported future versions are preserved and rethrown unchanged", async (
   assert.deepEqual(settings.calls, [["get", "localBattle"]]);
 });
 
+test("future snapshots survive non-persistable lifecycle saves until replaced", async () => {
+  const raw = JSON.stringify({ version: 2, futurePayload: true });
+  const settings = memorySettings({ localBattle: raw });
+  const snapshots = createLocalBattleSnapshotStore(settings, { now: () => NOW });
+
+  await assert.rejects(
+    snapshots.load(),
+    (error) => error instanceof UnsupportedLocalBattleSnapshotVersionError,
+  );
+  await snapshots.save({ screen: "menu", mode: "" });
+  assert.equal(settings.values.get("localBattle"), raw);
+
+  await snapshots.save(localState());
+  assert.equal(
+    parseLocalBattleSnapshot(settings.values.get("localBattle")).version,
+    LOCAL_BATTLE_SNAPSHOT_VERSION,
+  );
+});
+
 test("structured clone failures propagate without quarantining valid data", async () => {
   const raw = JSON.stringify(validSnapshot());
   const settings = memorySettings({ localBattle: raw });

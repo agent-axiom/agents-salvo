@@ -108,6 +108,8 @@ test("logout invalidates and renders private state before best-effort network lo
   assert.ok(renderAt > invalidateAt, "logout must render cleared state after invalidation");
   assert.ok(fetchAt > renderAt, "logout network request must happen after the synchronous render");
   assert.match(logout, /const token = state\.auth\.token/);
+  assert.match(logout, /const invalidated = await invalidateAuthSession/);
+  assert.match(logout, /render\(\);\s+if \(!invalidated\) return;/);
   assert.match(logout, /Authorization:\s*`Bearer \$\{token\}`/);
 });
 

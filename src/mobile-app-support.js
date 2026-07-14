@@ -169,9 +169,10 @@ export function createSecureSessionCoordinator({ secureSession }) {
     },
     async invalidate(commit) {
       const writeRevision = ++revision;
-      commit();
       await enqueueWrite(() => secureSession.clear());
-      return revision === writeRevision;
+      if (revision !== writeRevision) return false;
+      commit();
+      return true;
     },
   };
 }

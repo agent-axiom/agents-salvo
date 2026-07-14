@@ -4374,9 +4374,9 @@ async function refreshAuth() {
 async function logoutAuth() {
   const token = state.auth.token;
   const workerUrl = state.auth.workerUrl;
-  const invalidation = invalidateAuthSession({ preserveRequestedId: true });
+  const invalidated = await invalidateAuthSession({ preserveRequestedId: true });
   render();
-  await invalidation;
+  if (!invalidated) return;
   if (token && workerUrl && requireOnline((message) => {
     state.auth.error = message;
   })) {

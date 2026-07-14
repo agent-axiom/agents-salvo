@@ -650,6 +650,34 @@ test("iOS privacy manifest declares only the Preferences required-reason API", (
   assert.match(project, /PrivacyInfo\.xcprivacy in Resources/);
 });
 
+test("native shells register Salvo custom deep links", () => {
+  const manifest = readFileSync(
+    "android/app/src/main/AndroidManifest.xml",
+    "utf8",
+  );
+  assert.match(
+    manifest,
+    /<action android:name="android\.intent\.action\.VIEW"\s*\/>/,
+  );
+  assert.match(
+    manifest,
+    /<category android:name="android\.intent\.category\.BROWSABLE"\s*\/>/,
+  );
+  assert.match(
+    manifest,
+    /<data android:scheme="salvo" android:host="open"\s*\/>/,
+  );
+
+  const info = parsePlist(readFileSync("ios/App/App/Info.plist", "utf8"));
+  assert.deepEqual(info.CFBundleURLTypes, [
+    {
+      CFBundleTypeRole: "Editor",
+      CFBundleURLName: "io.github.agentaxiom.salvo",
+      CFBundleURLSchemes: ["salvo"],
+    },
+  ]);
+});
+
 test("native shells do not configure a GitHub Pages WebView start URL", () => {
   const nativeProjectFiles = [
     "android/app/build.gradle",
@@ -840,6 +868,14 @@ test("mobile CI tests, lints, and packages the Android debug app", () => {
     "npm run mobile:sync",
     "android/gradlew -p android test lint assembleDebug",
   ]);
+  assert.deepEqual(
+    actionVersions(android, "ReactiveCircus/android-emulator-runner"),
+    ["a421e43855164a8197daf9d8d40fe71c6996bb0d"],
+  );
+  assert.match(
+    android,
+    /uses: ReactiveCircus\/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2\n\s+with:\n\s+api-level: 35\n\s+target: google_apis\n\s+arch: x86_64[\s\S]*?script: android\/gradlew -p android connectedDebugAndroidTest/,
+  );
   assert.match(
     android,
     /uses: actions\/upload-artifact@v7\n\s+with:\n\s+name: android-debug-apk\n\s+path: android\/app\/build\/outputs\/apk\/debug\/app-debug\.apk\n\s+if-no-files-found: error/,
