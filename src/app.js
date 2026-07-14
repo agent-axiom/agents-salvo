@@ -1,6 +1,10 @@
 import { chooseAgentShot } from "./core/ai.js";
 import { createAudioController } from "./audio.js";
 import {
+  createLocalBattleSnapshotStore,
+  UnsupportedLocalBattleSnapshotVersionError,
+} from "./core/local-battle-snapshot.js";
+import {
   createBoard,
   createGameFromBoards,
   fireAt,
@@ -44,12 +48,13 @@ import {
   updateTrainingProgress,
 } from "./core/training.js";
 import { coordinateColumnLabel, getInitialLanguage, languages, t } from "./i18n.js";
+import { createMobileRuntime } from "./mobile.js";
+import { platform } from "./platform/index.js";
 import { RemoteClient } from "./remote.js";
 
 const root = document.querySelector("#app");
 const audio = createAudioController();
-const authTokenStorageKey = "salvo.authToken";
-const trainingProgressStorageKey = "salvo.trainingProgress";
+const trainingProgressSettingKey = "trainingProgress";
 const canonicalReplayBaseUrl = "https://agent-axiom.github.io/agents-salvo/";
 const resultReplayClock = createReplayClock({
   setInterval: (callback, delay) => window.setInterval(callback, delay),
@@ -71,10 +76,15 @@ const state = {
   theme: getInitialTheme(),
   visualStyle: getInitialVisualStyle(),
   audioEnabled: getInitialAudioEnabled(),
+  hapticsEnabled: platform.isNative(),
   audioUnlocked: false,
   settingsOpen: false,
   profileOpen: false,
   leaderboardOpen: false,
+  leaveBattleDialog: false,
+  restoredBattle: false,
+  restoreError: "",
+  network: { connected: true, connectionType: "unknown" },
   screen: initialRequestedReplayId ? "replay" : "menu",
   mode: null,
   presetId: "classic",
@@ -98,7 +108,7 @@ const state = {
   auth: {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     telegramBotUsername: window.SALVO_CONFIG?.telegramBotUsername || "",
-    token: getInitialAuthToken(),
+    token: "",
     user: null,
     error: "",
     loading: false,
@@ -147,41 +157,169 @@ const state = {
   training: {
     scenarioId: "checkerboard",
     session: null,
-    progress: getInitialTrainingProgress(),
+    progress: {},
   },
 };
 
+const localBattleSnapshots = createLocalBattleSnapshotStore(platform.settings);
+const mobileRuntime = createMobileRuntime({
+  platform,
+  snapshots: localBattleSnapshots,
+  getState: () => state,
+  applySnapshot: applyLocalBattleSnapshot,
+  onRestoreError: handleLocalBattleRestoreError,
+  onNetwork: handleNetwork,
+  onDeepLink: handlePlatformDeepLink,
+  onBack: handlePlatformBack,
+  pauseAudio: () => audio.pauseForLifecycle(),
+  resumeAudio: () => audio.resumeForLifecycle(state.audioEnabled, state.screen === "menu"),
+  onRuntimeError: reportRuntimeError,
+});
+
 function getInitialTheme() {
-  const saved = localStorage.getItem("salvo.theme");
-  if (saved === "light" || saved === "dark") {
-    return saved;
-  }
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function getInitialVisualStyle() {
   const saved = localStorage.getItem("salvo.visualStyle");
-  if (saved === "classic" || saved === "render") {
-    return saved;
-  }
+  if (saved === "classic" || saved === "render") return saved;
   return "render";
 }
 
 function getInitialAudioEnabled() {
-  return localStorage.getItem("salvo.audio") !== "off";
+  return true;
 }
 
-function getInitialAuthToken() {
-  return localStorage.getItem(authTokenStorageKey) || "";
-}
+async function hydratePlatformState() {
+  const [language, theme, visualStyle, audioSetting, haptics, progress, secureSession] =
+    await Promise.allSettled([
+      platform.settings.get("language"),
+      platform.settings.get("theme"),
+      platform.settings.get("visualStyle"),
+      platform.settings.get("audio"),
+      platform.settings.get("haptics"),
+      platform.settings.get("trainingProgress"),
+      platform.secureSession.get(),
+    ]);
 
-function getInitialTrainingProgress() {
-  try {
-    const savedProgress = JSON.parse(localStorage.getItem(trainingProgressStorageKey) || "{}");
-    return savedProgress && typeof savedProgress === "object" ? savedProgress : {};
-  } catch {
-    return {};
+  if (language.status === "fulfilled" && languages.some(({ code }) => code === language.value)) {
+    state.language = language.value;
   }
+  if (theme.status === "fulfilled" && ["light", "dark"].includes(theme.value)) {
+    state.theme = theme.value;
+  }
+  if (visualStyle.status === "fulfilled" && ["classic", "render"].includes(visualStyle.value)) {
+    state.visualStyle = visualStyle.value;
+  }
+  if (audioSetting.status === "fulfilled" && ["on", "off"].includes(audioSetting.value)) {
+    state.audioEnabled = audioSetting.value === "on";
+  }
+  if (haptics.status === "fulfilled" && ["on", "off"].includes(haptics.value)) {
+    state.hapticsEnabled = haptics.value === "on";
+  }
+
+  let trainingProgress = null;
+  try {
+    trainingProgress = progress.status === "fulfilled" && progress.value
+      ? JSON.parse(progress.value)
+      : null;
+  } catch {
+    trainingProgress = null;
+  }
+  if (trainingProgress && typeof trainingProgress === "object" && !Array.isArray(trainingProgress)) {
+    state.training.progress = trainingProgress;
+  }
+
+  state.auth.token = secureSession.status === "fulfilled" && typeof secureSession.value === "string"
+    ? secureSession.value
+    : "";
+  render();
+}
+
+function applyLocalBattleSnapshot(snapshot) {
+  closeRemote();
+  abortPrivateRequest("archive");
+  abortPrivateRequest("replay");
+  state.screen = snapshot.screen;
+  state.mode = snapshot.mode;
+  state.presetId = snapshot.presetId;
+  state.setupPlayerId = snapshot.setupPlayerId;
+  state.setupBoard = snapshot.setupBoard;
+  state.setupOrientation = snapshot.setupOrientation;
+  state.setupSelectedShipId = snapshot.setupSelectedShipId;
+  state.boards = snapshot.boards;
+  state.game = snapshot.game;
+  state.battleTab = snapshot.battleTab;
+  state.agentDifficulty = snapshot.agentDifficulty;
+  state.passPlayerId = snapshot.passPlayerId;
+  state.training = snapshot.training;
+  state.setupHover = null;
+  state.setupError = "";
+  state.settingsOpen = false;
+  state.profileOpen = false;
+  state.leaderboardOpen = false;
+  state.leaveBattleDialog = false;
+  state.online.roomCodeInput = "";
+  state.online.error = "";
+  state.online.status = "";
+  state.resultModalDismissed = null;
+  state.resultCopyStatus = "";
+  resetResultReplayPlayback();
+  clearPrivateReplayData();
+  state.restoreError = "";
+  state.restoredBattle = true;
+  render();
+}
+
+function handleLocalBattleRestoreError(error) {
+  state.restoredBattle = false;
+  state.restoreError = error instanceof UnsupportedLocalBattleSnapshotVersionError
+    ? "restore.unsupportedVersion"
+    : "restore.failed";
+  state.leaveBattleDialog = false;
+  render();
+}
+
+function handleNetwork(status) {
+  state.network = {
+    connected: Boolean(status?.connected),
+    connectionType: typeof status?.connectionType === "string"
+      ? status.connectionType
+      : "unknown",
+  };
+  render();
+}
+
+function requireOnline(onOffline) {
+  if (state.network.connected) return true;
+  const message = `${translate("network.offline")} ${translate("network.retry")}`;
+  onOffline?.(message);
+  render();
+  return false;
+}
+
+async function startMobileApp() {
+  await hydratePlatformState();
+  await mobileRuntime.start();
+  await refreshAuth();
+  await refreshLeaderboard();
+}
+
+function reportRuntimeError(error) {
+  console.error("Salvo mobile runtime error", error);
+}
+
+function observePlatformWrite(operation) {
+  void Promise.resolve(operation).catch(reportRuntimeError);
+}
+
+function setSecureAuthToken(token) {
+  // The web adapter owns compatibility with the legacy "salvo.authToken" key.
+  observePlatformWrite(platform.secureSession.set(token));
+}
+
+function clearSecureAuthToken() {
+  observePlatformWrite(platform.secureSession.clear());
 }
 
 function translate(key, params) {
@@ -269,11 +407,39 @@ function render() {
         ${state.leaderboardOpen ? renderLeaderboardPopover() : ""}
         ${renderSettingsPanel()}
       </header>
+      ${renderStatusBanners()}
       ${renderScreen()}
+      ${state.leaveBattleDialog ? renderLeaveBattleDialog() : ""}
     </main>
   `;
   mountTelegramLoginWidget();
   syncMenuMusic();
+}
+
+function renderStatusBanners() {
+  return `
+    ${
+      !state.network.connected
+        ? `<div class="offline-banner" role="status">${translate("network.offline")} ${translate("network.retry")}</div>`
+        : ""
+    }
+    ${
+      state.restoredBattle
+        ? `<div class="restore-banner" role="status">
+            <span>${translate("restore.resumed")}</span>
+            <button class="icon-button" data-action="dismiss-restore-notice" aria-label="${translate("settings.close")}">×</button>
+          </div>`
+        : ""
+    }
+    ${
+      state.restoreError
+        ? `<div class="restore-banner is-error" role="status">
+            <span>${translate(state.restoreError)}</span>
+            <button class="icon-button" data-action="dismiss-restore-notice" aria-label="${translate("settings.close")}">×</button>
+          </div>`
+        : ""
+    }
+  `;
 }
 
 function renderTopbarProfile() {
@@ -371,6 +537,21 @@ function renderSettingsPanel() {
       </div>
       <div class="settings-row">
         <div>
+          <strong>${translate("settings.haptics")}</strong>
+          <span>${translate(state.hapticsEnabled ? "settings.on" : "settings.off")}</span>
+        </div>
+        <button
+          class="haptics-toggle ${state.hapticsEnabled ? "is-on" : ""}"
+          data-action="haptics-toggle"
+          aria-pressed="${state.hapticsEnabled}"
+          aria-label="${translate("settings.haptics")}: ${translate(state.hapticsEnabled ? "settings.on" : "settings.off")}"
+        >
+          <span aria-hidden="true">≋</span>
+          <strong>${translate(state.hapticsEnabled ? "settings.on" : "settings.off")}</strong>
+        </button>
+      </div>
+      <div class="settings-row">
+        <div>
           <strong>${translate("theme.label")}</strong>
           <span>${translate(state.theme === "dark" ? "theme.dark" : "theme.light")}</span>
         </div>
@@ -436,12 +617,41 @@ function renderAuthControl() {
     `;
   }
 
+  if (platform.isNative()) {
+    return `
+      <div class="auth-control">
+        <span>${translate("auth.label")}</span>
+        <p class="status-line">${translate("auth.mobileSecureLoginPending")}</p>
+      </div>
+    `;
+  }
+
   return `
     <div class="auth-control">
       <span>${translate("auth.label")}</span>
       <div id="telegram-login-slot" class="telegram-login-slot" aria-label="${translate("auth.telegram")}"></div>
       ${state.auth.loading ? `<small>${translate("auth.loading")}</small>` : ""}
       ${state.auth.error ? `<small class="auth-error">${translate("auth.error", { message: state.auth.error })}</small>` : ""}
+    </div>
+  `;
+}
+
+function renderLeaveBattleDialog() {
+  return `
+    <div
+      class="modal-backdrop leave-battle-backdrop"
+      role="dialog" aria-modal="true"
+      aria-labelledby="leave-battle-title"
+      aria-describedby="leave-battle-body"
+    >
+      <section class="leave-battle-dialog">
+        <h2 id="leave-battle-title">${translate("nav.leaveBattleTitle")}</h2>
+        <p id="leave-battle-body">${translate("nav.leaveBattleBody")}</p>
+        <div class="leave-battle-actions button-row">
+          <button data-action="cancel-leave-battle">${translate("nav.cancel")}</button>
+          <button class="primary-button" data-action="confirm-leave-battle">${translate("nav.mainMenu")}</button>
+        </div>
+      </section>
     </div>
   `;
 }
@@ -1861,7 +2071,13 @@ function renderResultModal({ winnerId, playerId = winnerId, log, newGameAction, 
         <p class="replay-live-status visually-hidden" aria-live="polite" aria-atomic="true"></p>
         ${renderBattleReplay(log, report.moments)}
         ${renderOnlineRatingChange(ratingChange)}
-        ${state.resultCopyStatus === "copied" ? `<p class="result-share-status status-line" role="status">${translate("result.copySuccess")}</p>` : ""}
+        ${
+          state.resultCopyStatus
+            ? `<p class="result-share-status status-line" role="status">${translate(
+                state.resultCopyStatus === "copied" ? "result.copySuccess" : "share.failed",
+              )}</p>`
+            : ""
+        }
         <div class="result-actions button-row">
           <button data-action="close-result">${translate("result.inspect")}</button>
           <button data-action="copy-battle-summary">${translate("result.copySummary")}</button>
@@ -2208,7 +2424,8 @@ function renderBoard(board, { kind, title, disabled = false, priorityTargets = [
       <div class="board-title">
         <h3>${title}</h3>
       </div>
-      <div class="coordinate-board">
+      <div class="board-scroll">
+      <div class="coordinate-board" style="--board-size: ${board.size}">
         <span class="grid-corner" aria-hidden="true"></span>
         <div class="column-headers" style="--board-size: ${board.size}" aria-hidden="true">
           ${columnLabels.map((label) => `<span>${label}</span>`).join("")}
@@ -2246,6 +2463,7 @@ function renderBoard(board, { kind, title, disabled = false, priorityTargets = [
           }).join("")}
         </div>
       </div>
+      </div>
     </section>
   `;
 }
@@ -2280,7 +2498,7 @@ root.addEventListener("change", (event) => {
   const action = event.target.dataset.action;
   if (action === "language") {
     state.language = event.target.value;
-    localStorage.setItem("salvo.language", state.language);
+    observePlatformWrite(platform.settings.set("language", state.language));
     render();
   }
   if (action === "agent-difficulty") {
@@ -2410,6 +2628,7 @@ root.addEventListener("click", async (event) => {
   if (action === "show-online") showOnline();
   if (action === "select-preset") selectPreset(button.dataset.presetId);
   if (action === "audio-toggle") toggleAudio();
+  if (action === "haptics-toggle") toggleHaptics();
   if (action === "theme-toggle") toggleTheme();
   if (action === "visual-style-toggle") toggleVisualStyle();
   if (action === "toggle-profile") await toggleProfilePopover();
@@ -2417,7 +2636,10 @@ root.addEventListener("click", async (event) => {
   if (action === "toggle-leaderboard") await toggleLeaderboardPopover();
   if (action === "close-leaderboard") closeLeaderboardPopover();
   if (action === "toggle-tactical-advisor") toggleTacticalAdvisor();
-  if (action === "menu") goToMenu();
+  if (action === "menu") requestLeaveBattle();
+  if (action === "cancel-leave-battle") cancelLeaveBattle();
+  if (action === "confirm-leave-battle") confirmLeaveBattle();
+  if (action === "dismiss-restore-notice") dismissRestoreNotice();
   if (action === "new-game") startSetup(state.mode);
   if (action === "online-new-game") showOnline();
   if (action === "close-result") closeResultModal();
@@ -2458,8 +2680,8 @@ root.addEventListener("click", async (event) => {
   if (action === "online-rematch") await onlineRematch();
   if (action === "copy-room-code") await copyRoomCode();
   if (action === "copy-battle-summary") await copyBattleSummary();
-  if (action === "share-battle-summary") shareBattleSummaryInTelegram();
-  if (action === "share-telegram") shareRoomInTelegram();
+  if (action === "share-battle-summary") await shareBattleSummary();
+  if (action === "share-telegram") await shareRoom();
   if (action === "battle-tab") selectBattleTab(button.dataset.tab);
   if (action === "auth-logout") await logoutAuth();
   if (action === "refresh-profile") await refreshProfile();
@@ -2557,6 +2779,103 @@ function startTraining(scenarioId = state.training.scenarioId) {
   render();
 }
 
+function handlePlatformBack() {
+  if (state.settingsOpen) {
+    state.settingsOpen = false;
+    render();
+    return true;
+  }
+  if (state.profileOpen) {
+    state.profileOpen = false;
+    render();
+    return true;
+  }
+  if (state.leaderboardOpen) {
+    state.leaderboardOpen = false;
+    render();
+    return true;
+  }
+  if (["archive", "replay"].includes(state.screen)) {
+    goToMenu();
+    return true;
+  }
+  if (["setup", "playing", "pass", "training", "online"].includes(state.screen)) {
+    return requestLeaveBattle();
+  }
+  return false;
+}
+
+function requestLeaveBattle() {
+  if (state.leaveBattleDialog) {
+    cancelLeaveBattle();
+    return true;
+  }
+  if (!hasUnfinishedBattle()) {
+    const handled = state.screen !== "menu";
+    if (handled) goToMenu();
+    return handled;
+  }
+  state.leaveBattleDialog = true;
+  render();
+  return true;
+}
+
+function hasUnfinishedBattle() {
+  if (state.screen === "setup" || state.screen === "pass") return true;
+  if (state.screen === "playing") return state.game?.phase !== "finished";
+  if (state.screen === "training") return state.training.session?.phase !== "finished";
+  if (state.screen === "online") return state.online.snapshot?.phase !== "finished";
+  return false;
+}
+
+function cancelLeaveBattle() {
+  state.leaveBattleDialog = false;
+  render();
+}
+
+function confirmLeaveBattle() {
+  state.leaveBattleDialog = false;
+  goToMenu();
+}
+
+function dismissRestoreNotice() {
+  state.restoredBattle = false;
+  state.restoreError = "";
+  render();
+}
+
+async function handlePlatformDeepLink(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    const route = [url.protocol === "salvo:" ? url.hostname : "", ...url.pathname.split("/")]
+      .filter(Boolean);
+    const openIndex = route.indexOf("open");
+    const kind = openIndex >= 0 ? route[openIndex + 1] : "";
+    const target = openIndex >= 0 ? route[openIndex + 2] : "";
+    if (kind === "room") {
+      const roomCode = sanitizeRoomCode(target);
+      if (!roomCode) return false;
+      showOnline();
+      state.online.roomCodeInput = roomCode;
+      render();
+      return true;
+    }
+
+    const replayTarget = kind === "replay" ? target : url.searchParams.get("replay");
+    const replayId = replayIdFromSearch(`?replay=${encodeURIComponent(replayTarget || "")}`);
+    if (!replayId) return false;
+    await openArchivedReplay(replayId, { source: "direct" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeRoomCode(value) {
+  const code = String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return code.length >= 4 && code.length <= 12 ? code : "";
+}
+
 function goToMenu({ updateHistory = true } = {}) {
   closeRemote();
   abortPrivateRequest("archive");
@@ -2564,6 +2883,8 @@ function goToMenu({ updateHistory = true } = {}) {
   state.settingsOpen = false;
   state.profileOpen = false;
   state.leaderboardOpen = false;
+  state.leaveBattleDialog = false;
+  state.restoredBattle = false;
   state.screen = "menu";
   state.mode = null;
   state.game = null;
@@ -2779,24 +3100,30 @@ function closeLeaderboardPopover() {
 
 function toggleTheme() {
   state.theme = state.theme === "dark" ? "light" : "dark";
-  localStorage.setItem("salvo.theme", state.theme);
+  observePlatformWrite(platform.settings.set("theme", state.theme));
   render();
 }
 
 function toggleVisualStyle() {
   state.visualStyle = state.visualStyle === "classic" ? "render" : "classic";
-  localStorage.setItem("salvo.visualStyle", state.visualStyle);
+  observePlatformWrite(platform.settings.set("visualStyle", state.visualStyle));
   render();
 }
 
 function toggleAudio() {
   state.audioEnabled = !state.audioEnabled;
-  localStorage.setItem("salvo.audio", state.audioEnabled ? "on" : "off");
+  observePlatformWrite(platform.settings.set("audio", state.audioEnabled ? "on" : "off"));
   if (state.audioEnabled) {
     playSound("ui");
   } else {
     audio.stopMusic();
   }
+  render();
+}
+
+function toggleHaptics() {
+  state.hapticsEnabled = !state.hapticsEnabled;
+  observePlatformWrite(platform.settings.set("haptics", state.hapticsEnabled ? "on" : "off"));
   render();
 }
 
@@ -3084,8 +3411,10 @@ function handleSetupCell(coordinate) {
     state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
     state.setupHover = null;
     state.setupError = "";
+    playHaptic("placement");
   } catch {
     state.setupError = "setup.invalidPlacement";
+    playHaptic("invalid");
   }
   render();
 }
@@ -3155,6 +3484,7 @@ function handleTrainingShot(coordinate) {
     if (state.training.session.phase === "finished") {
       saveTrainingProgress(state.training.session);
       playSound("victory");
+      playHaptic("victory");
     }
   } catch {
     return;
@@ -3164,11 +3494,9 @@ function handleTrainingShot(coordinate) {
 
 function saveTrainingProgress(session) {
   state.training.progress = updateTrainingProgress(state.training.progress, session);
-  try {
-    localStorage.setItem(trainingProgressStorageKey, JSON.stringify(state.training.progress));
-  } catch {
-    // Training should continue even when local storage is blocked.
-  }
+  observePlatformWrite(
+    platform.settings.set(trainingProgressSettingKey, JSON.stringify(state.training.progress)),
+  );
 }
 
 function runAgentTurns(game) {
@@ -3186,6 +3514,9 @@ function runAgentTurns(game) {
 }
 
 async function onlineCreate() {
+  if (!requireOnline((message) => {
+    state.online.error = message;
+  })) return;
   await withOnlineError(async () => {
     if (!isOnlineAuthReady()) {
       state.online.error = translate("online.authRequired");
@@ -3204,6 +3535,9 @@ async function onlineCreate() {
 }
 
 async function onlineJoin() {
+  if (!requireOnline((message) => {
+    state.online.error = message;
+  })) return;
   await withOnlineError(async () => {
     if (!isOnlineAuthReady()) {
       state.online.error = translate("online.authRequired");
@@ -3226,6 +3560,9 @@ async function onlineJoin() {
 }
 
 async function onlineRematch() {
+  if (!requireOnline((message) => {
+    state.online.error = message;
+  })) return;
   await withOnlineError(async () => {
     const snapshot = state.online.snapshot;
     if (!state.online.client || !snapshot || snapshot.phase !== "finished") {
@@ -3244,6 +3581,9 @@ async function onlineRematch() {
 }
 
 function handleOnlineShot(coordinate) {
+  if (!requireOnline((message) => {
+    state.online.error = message;
+  })) return;
   playSound("shot");
   withOnlineError(async () => {
     await state.online.client.send("fire", { coordinate });
@@ -3286,33 +3626,51 @@ function buildBattleSummaryText(report, context) {
     hits: report.player.hits,
     shots: report.player.shots,
     accuracy: report.player.accuracy,
-    url: window.location.href,
+    url: canonicalReplayBaseUrl,
   });
 }
 
-function shareBattleSummaryInTelegram() {
+async function shareBattleSummary() {
   const context = currentBattleResultContext();
   if (!context) {
     return;
   }
   const report = buildBattleReport(context.log, context.winnerId, context.playerId);
   const summaryText = buildBattleSummaryText(report, context);
-  const url = new URL("https://t.me/share/url");
-  url.searchParams.set("url", window.location.href);
-  url.searchParams.set("text", summaryText);
-  window.open(url.toString(), "_blank", "noopener,noreferrer");
+  const shared = await shareWithTelegramFallback(summaryText, canonicalReplayBaseUrl);
+  state.resultCopyStatus = shared ? "" : "share-failed";
+  render();
 }
 
-function shareRoomInTelegram() {
+async function shareRoom() {
   const roomCode = state.online.session?.roomCode ?? state.online.snapshot?.roomCode ?? "";
   if (!roomCode) {
     return;
   }
+  const showingResult = Boolean(currentBattleResultContext());
   const text = translate("online.shareText", { code: roomCode });
-  const url = new URL("https://t.me/share/url");
-  url.searchParams.set("url", window.location.href);
-  url.searchParams.set("text", text);
-  window.open(url.toString(), "_blank", "noopener,noreferrer");
+  const shared = await shareWithTelegramFallback(text, canonicalReplayBaseUrl);
+  state.online.error = shared ? "" : translate("share.failed");
+  if (showingResult) state.resultCopyStatus = shared ? "" : "share-failed";
+  render();
+}
+
+async function shareWithTelegramFallback(text, url) {
+  try {
+    const result = await platform.share({
+      title: translate("app.title"),
+      text: text,
+      url: url,
+    });
+    if (result.shared) return true;
+    const telegramUrl = new URL("https://t.me/share/url");
+    telegramUrl.searchParams.set("url", url);
+    telegramUrl.searchParams.set("text", text);
+    await platform.openExternalUrl(telegramUrl.toString());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function selectBattleTab(tab) {
@@ -3355,6 +3713,10 @@ function remoteHandlers() {
 function mountTelegramLoginWidget() {
   const slot = document.querySelector("#telegram-login-slot");
   if (!slot || state.auth.user || state.auth.loading) {
+    return;
+  }
+  if (!state.network.connected || navigator.onLine === false) {
+    slot.textContent = `${translate("network.offline")} ${translate("network.retry")}`;
     return;
   }
   if (!state.auth.telegramBotUsername) {
@@ -3459,6 +3821,10 @@ async function loadReplayArchive({ append = false } = {}) {
     render();
     return;
   }
+  if (!requireOnline(() => {
+    state.archive.loading = false;
+    state.archive.error = "network.offline";
+  })) return;
   const retry = state.archive.retrying
     ? archiveRetryOptions({ append: state.archive.retryAppend, cursor: state.archive.retryCursor })
     : null;
@@ -3563,6 +3929,11 @@ async function loadArchivedReplay(id) {
     render();
     return;
   }
+  if (!requireOnline(() => {
+    state.replayArchive.loading = false;
+    state.replayArchive.data = null;
+    state.replayArchive.error = "network.offline";
+  })) return;
 
   resetResultReplayPlayback();
   state.replayArchive.loading = true;
@@ -3734,7 +4105,7 @@ function establishAuthSession(token, user) {
   state.auth.user = user;
   state.auth.error = "";
   state.auth.loading = false;
-  localStorage.setItem(authTokenStorageKey, token);
+  setSecureAuthToken(token);
 }
 
 function invalidateAuthSession({ error = "", preserveRequestedId = true } = {}) {
@@ -3747,7 +4118,7 @@ function invalidateAuthSession({ error = "", preserveRequestedId = true } = {}) 
   resetProfile();
   clearPrivateReplayData({ preserveRequestedId });
   resetResultReplayPlayback();
-  localStorage.removeItem(authTokenStorageKey);
+  clearSecureAuthToken();
 }
 
 function authOperationIsCurrent(request, controller) {
@@ -3767,6 +4138,9 @@ function handleAuthFailure(error, request, controller) {
 }
 
 async function handleTelegramAuth(payload) {
+  if (!requireOnline((message) => {
+    state.auth.error = message;
+  })) return;
   const request = captureAuthRequest();
   const controller = beginPrivateRequest("auth");
   const workerUrl = state.auth.workerUrl;
@@ -3811,6 +4185,9 @@ async function refreshAuth() {
   if (!state.auth.token || !state.auth.workerUrl) {
     return;
   }
+  if (!requireOnline((message) => {
+    state.auth.error = message;
+  })) return;
   const request = captureAuthRequest();
   const controller = beginPrivateRequest("auth");
   const workerUrl = state.auth.workerUrl;
@@ -3856,7 +4233,9 @@ async function logoutAuth() {
   const workerUrl = state.auth.workerUrl;
   invalidateAuthSession({ preserveRequestedId: true });
   render();
-  if (token && workerUrl) {
+  if (token && workerUrl && requireOnline((message) => {
+    state.auth.error = message;
+  })) {
     await fetch(`${workerUrl}/auth/logout`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
@@ -3869,6 +4248,10 @@ async function refreshProfile({ renderWhenDone = true } = {}) {
     resetProfile();
     return;
   }
+  if (!requireOnline((message) => {
+    state.profile.loading = false;
+    state.profile.error = message;
+  })) return;
   const request = captureAuthRequest();
   const controller = beginPrivateRequest("profile");
   const workerUrl = state.auth.workerUrl;
@@ -3922,6 +4305,9 @@ async function recordCompletedBattle(match) {
   if (state.profile.savedMatchKeys.has(match.id)) {
     return;
   }
+  if (!requireOnline((message) => {
+    state.profile.error = message;
+  })) return;
   state.profile.savedMatchKeys.add(match.id);
   state.profile.saveMessage = "";
   const request = captureAuthRequest();
@@ -3974,6 +4360,10 @@ async function refreshLeaderboard({ renderWhenDone = true } = {}) {
   if (!workerUrl) {
     return;
   }
+  if (!requireOnline((message) => {
+    state.leaderboard.loading = false;
+    state.leaderboard.error = message;
+  })) return;
   state.leaderboard.loading = true;
   state.leaderboard.error = "";
   if (renderWhenDone) {
@@ -4022,24 +4412,37 @@ function playSound(name) {
   void audio.play(name, state.audioEnabled && state.audioUnlocked);
 }
 
+function playHaptic(event) {
+  if (!state.hapticsEnabled) return;
+  observePlatformWrite(platform.haptic(event));
+}
+
 function playShotOutcome(result) {
   if (result === "miss" || result === "mine" || result === "sweeper") {
     playSound("miss");
   }
   if (result === "hit") {
     playSound("hit");
+    playHaptic("hit");
   }
   if (result === "sunk") {
     playSound("sunk");
+    playHaptic("sunk");
   }
 }
 
 function playFinalSound(winnerId, lastShooterId) {
   if (state.mode === "agent") {
-    playSound(winnerId === "p1" ? "victory" : "defeat");
+    const result = winnerId === "p1" ? "victory" : "defeat";
+    playSound(result);
+    if (result === "victory") playHaptic("victory");
+    if (result === "defeat") playHaptic("defeat");
     return;
   }
-  playSound(winnerId === lastShooterId ? "victory" : "defeat");
+  const result = winnerId === lastShooterId ? "victory" : "defeat";
+  playSound(result);
+  if (result === "victory") playHaptic("victory");
+  if (result === "defeat") playHaptic("defeat");
 }
 
 function playOnlineSnapshotSounds(previousSnapshot, nextSnapshot) {
@@ -4057,7 +4460,10 @@ function playOnlineSnapshotSounds(previousSnapshot, nextSnapshot) {
     }
   }
   if (previousSnapshot?.phase !== "finished" && nextSnapshot?.phase === "finished") {
-    playSound(nextSnapshot.winnerId === nextSnapshot.playerId ? "victory" : "defeat");
+    const result = nextSnapshot.winnerId === nextSnapshot.playerId ? "victory" : "defeat";
+    playSound(result);
+    if (result === "victory") playHaptic("victory");
+    if (result === "defeat") playHaptic("defeat");
   }
 }
 
@@ -4546,5 +4952,4 @@ if (new URLSearchParams(window.location.search).has("replay") && !initialRequest
 }
 
 render();
-void refreshAuth();
-void refreshLeaderboard();
+void startMobileApp().catch(reportRuntimeError);

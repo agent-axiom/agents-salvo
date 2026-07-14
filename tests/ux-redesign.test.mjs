@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 const app = readFileSync("src/app.js", "utf8");
 const css = readFileSync("src/styles.css", "utf8");
 const i18n = readFileSync("src/i18n.js", "utf8");
+const html = readFileSync("src/index.html", "utf8");
 
 test("main menu is a focused game hub with agent play as the primary action", () => {
   assert.match(app, /class="game-hub"/);
@@ -311,17 +312,19 @@ test("result modal includes timeline and step-through battle replay controls", (
   assert.match(i18n, /"replay\.announcement"/);
 });
 
-test("result modal can copy a shareable battle summary", () => {
+test("result modal can copy and share a battle summary through the platform", () => {
   assert.match(app, /data-action="copy-battle-summary"/);
   assert.match(app, /data-action="share-battle-summary"/);
   assert.match(app, /function copyBattleSummary/);
-  assert.match(app, /function shareBattleSummaryInTelegram/);
+  assert.match(app, /async function shareBattleSummary/);
   assert.match(app, /function buildBattleSummaryText/);
   assert.match(app, /currentBattleResultContext/);
   assert.match(app, /navigator\.clipboard\?\.writeText\(summaryText\)/);
-  assert.match(app, /url\.searchParams\.set\("text", summaryText\)/);
+  assert.match(app, /platform\.share\(\{[\s\S]*?title:\s*translate\("app\.title"\)[\s\S]*?text:[\s\S]*?url:/);
+  assert.match(app, /platform\.openExternalUrl\(telegramUrl\.toString\(\)\)/);
   assert.match(app, /resultCopyStatus:\s*""/);
   assert.match(app, /state\.resultCopyStatus = "copied"/);
+  assert.match(app, /state\.resultCopyStatus = shared \? "" : "share-failed"/);
   assert.match(app, /class="result-share-status status-line"/);
   assert.match(i18n, /"result\.copySummary"/);
   assert.match(i18n, /"result\.copySuccess"/);
@@ -396,10 +399,10 @@ test("training mode exposes focused drills from the main game hub", () => {
 });
 
 test("training mode saves and displays local drill progress", () => {
-  assert.match(app, /trainingProgressStorageKey/);
+  assert.match(app, /trainingProgressSettingKey/);
   assert.match(app, /updateTrainingProgress/);
   assert.match(app, /function renderTrainingProgress/);
-  assert.match(app, /localStorage\.setItem\(trainingProgressStorageKey/);
+  assert.match(app, /platform\.settings\.set\(trainingProgressSettingKey, JSON\.stringify\(state\.training\.progress\)\)/);
   assert.match(css, /\.training-progress/);
   assert.match(i18n, /"training\.bestScore"/);
 });
@@ -607,6 +610,193 @@ test("16x16 archived boards scroll inside the replay at 320px while 10x10 stays 
   assert.match(cssRule(".archived-replay-screen"), /overflow-x:\s*clip/);
 });
 
+test("mobile startup wires the platform, snapshot store, and runtime after first paint", () => {
+  assert.match(app, /import \{ platform \} from "\.\/platform\/index\.js"/);
+  assert.match(app, /import \{ createMobileRuntime \} from "\.\/mobile\.js"/);
+  assert.match(
+    app,
+    /import \{[\s\S]*createLocalBattleSnapshotStore,[\s\S]*UnsupportedLocalBattleSnapshotVersionError[\s\S]*\} from "\.\/core\/local-battle-snapshot\.js"/,
+  );
+  assert.match(app, /createLocalBattleSnapshotStore\(platform\.settings\)/);
+  assert.match(app, /createMobileRuntime\(\{[\s\S]*?platform,[\s\S]*?snapshots:[\s\S]*?getState:\s*\(\) => state/);
+  assert.match(app, /applySnapshot:\s*applyLocalBattleSnapshot/);
+  assert.match(app, /pauseAudio:\s*\(\) => audio\.pauseForLifecycle\(\)/);
+  assert.match(app, /resumeAudio:\s*\(\) => audio\.resumeForLifecycle\(state\.audioEnabled, state\.screen === "menu"\)/);
+  assert.match(app, /render\(\);\s*void startMobileApp\(\)\.catch\(reportRuntimeError\)/);
+});
+
+test("preferences and secure auth hydrate asynchronously through the platform", () => {
+  const hydration = sourceBetween("async function hydratePlatformState", "function applyLocalBattleSnapshot");
+  for (const key of ["language", "theme", "visualStyle", "audio", "haptics", "trainingProgress"]) {
+    assert.match(hydration, new RegExp(`platform\\.settings\\.get\\("${key}"\\)`));
+  }
+  assert.match(hydration, /platform\.secureSession\.get\(\)/);
+  assert.match(hydration, /Array\.isArray\(trainingProgress\)/);
+  assert.match(hydration, /render\(\)/);
+  assert.match(app, /platform\.settings\.set\("language", state\.language\)/);
+  assert.match(app, /platform\.settings\.set\("theme", state\.theme\)/);
+  assert.match(app, /platform\.settings\.set\("visualStyle", state\.visualStyle\)/);
+  assert.match(app, /platform\.settings\.set\("audio", state\.audioEnabled \? "on" : "off"\)/);
+  assert.doesNotMatch(app, /localStorage\.(?:setItem|removeItem)\([^\n]*(?:authToken|salvo\.authToken)/);
+  assert.match(app, /platform\.secureSession\.set\(token\)/);
+  assert.match(app, /platform\.secureSession\.clear\(\)/);
+  assert.match(app, /platform\.isNative\(\)[\s\S]*auth\.mobileSecureLoginPending/);
+});
+
+test("restores only normalized local battle fields and reports recoverable restore errors", () => {
+  const restore = sourceBetween("function applyLocalBattleSnapshot", "function handleLocalBattleRestoreError");
+  for (const field of [
+    "screen",
+    "mode",
+    "presetId",
+    "setupPlayerId",
+    "setupBoard",
+    "setupOrientation",
+    "setupSelectedShipId",
+    "boards",
+    "game",
+    "battleTab",
+    "agentDifficulty",
+    "passPlayerId",
+    "training",
+  ]) {
+    assert.match(restore, new RegExp(`state\\.${field} = snapshot\\.${field}`));
+  }
+  assert.doesNotMatch(restore, /Object\.assign|\.\.\.snapshot/);
+  assert.match(restore, /state\.setupHover = null/);
+  assert.match(restore, /state\.setupError = ""/);
+  assert.match(restore, /state\.restoredBattle = true/);
+  assert.match(restore, /state\.leaveBattleDialog = false/);
+  assert.match(app, /error instanceof UnsupportedLocalBattleSnapshotVersionError/);
+  assert.match(app, /"restore\.unsupportedVersion"/);
+  assert.match(app, /"restore\.failed"/);
+  assert.match(app, /class="restore-banner/);
+  assert.match(app, /data-action="dismiss-restore-notice"/);
+});
+
+test("network state renders an offline banner and guards remote work", () => {
+  assert.match(app, /network:\s*\{\s*connected:\s*true,\s*connectionType:\s*"unknown"\s*\}/);
+  assert.match(app, /function handleNetwork\(status\)/);
+  assert.match(app, /state\.network = \{[\s\S]*?connected:[\s\S]*?connectionType:/);
+  assert.match(app, /class="offline-banner" role="status"/);
+  assert.match(app, /translate\("network\.offline"\)/);
+  assert.match(app, /function requireOnline/);
+  for (const functionName of [
+    "onlineCreate",
+    "onlineJoin",
+    "onlineRematch",
+    "handleOnlineShot",
+    "handleTelegramAuth",
+    "refreshAuth",
+    "logoutAuth",
+    "loadReplayArchive",
+    "loadArchivedReplay",
+    "refreshProfile",
+    "recordCompletedBattle",
+    "refreshLeaderboard",
+  ]) {
+    const start = app.indexOf(`function ${functionName}`) >= 0
+      ? `function ${functionName}`
+      : `async function ${functionName}`;
+    const section = sourceFunction(start);
+    assert.match(section, /requireOnline\(/, `${functionName} must guard network work`);
+  }
+  const telegramWidget = sourceBetween("function mountTelegramLoginWidget", "function isTelegramLoginOriginAllowed");
+  const offlineGuard = telegramWidget.indexOf("navigator.onLine === false");
+  const scriptRequest = telegramWidget.indexOf('document.createElement("script")');
+  assert.ok(offlineGuard >= 0 && offlineGuard < scriptRequest, "Telegram widget must stop before its offline script request");
+});
+
+test("native back navigation uses ordered overlays and a destructive-leave dialog", () => {
+  const back = sourceBetween("function handlePlatformBack", "function requestLeaveBattle");
+  const settings = back.indexOf("state.settingsOpen");
+  const profile = back.indexOf("state.profileOpen");
+  const leaderboard = back.indexOf("state.leaderboardOpen");
+  const detail = back.indexOf('["archive", "replay"]');
+  const battle = back.indexOf('["setup", "playing", "pass", "training", "online"]');
+  assert.ok(settings >= 0 && settings < profile && profile < leaderboard && leaderboard < detail && detail < battle);
+  assert.match(back, /return false/);
+  assert.match(app, /leaveBattleDialog:\s*false/);
+  assert.match(app, /function renderLeaveBattleDialog/);
+  assert.match(app, /role="dialog" aria-modal="true"/);
+  assert.match(app, /aria-labelledby="leave-battle-title"/);
+  assert.match(app, /aria-describedby="leave-battle-body"/);
+  assert.match(app, /data-action="cancel-leave-battle"/);
+  assert.match(app, /data-action="confirm-leave-battle"/);
+  assert.match(app, /translate\("nav\.leaveBattleTitle"\)/);
+  assert.match(app, /translate\("nav\.leaveBattleBody"\)/);
+});
+
+test("deep links fail closed while routing sanitized room and replay targets", () => {
+  const deepLinks = sourceBetween("async function handlePlatformDeepLink", "function sanitizeRoomCode");
+  assert.match(deepLinks, /new URL\(rawUrl\)/);
+  assert.match(deepLinks, /showOnline\(\)/);
+  assert.match(deepLinks, /state\.online\.roomCodeInput = roomCode/);
+  assert.match(deepLinks, /await openArchivedReplay\(replayId/);
+  assert.match(deepLinks, /catch\s*\{\s*return false/);
+  assert.match(app, /replace\(\/\[\^A-Z0-9\]\/g, ""\)/);
+});
+
+test("room and summary sharing await platform share with Telegram fallback", () => {
+  assert.match(app, /async function shareRoom/);
+  assert.match(app, /async function shareBattleSummary/);
+  assert.match(app, /const result = await platform\.share\(\{/);
+  assert.match(app, /if \(result\.shared\) return true/);
+  assert.match(app, /await platform\.openExternalUrl\(telegramUrl\.toString\(\)\)/);
+  assert.match(app, /translate\("share\.failed"\)/);
+  assert.match(app, /state\.online\.error = shared \? "" : translate\("share\.failed"\)/);
+  assert.match(app, /if \(action === "share-battle-summary"\) await shareBattleSummary\(\)/);
+  assert.match(app, /if \(action === "share-telegram"\) await shareRoom\(\)/);
+});
+
+test("haptics are independently configured and mapped to gameplay outcomes", () => {
+  assert.match(app, /hapticsEnabled:\s*platform\.isNative\(\)/);
+  assert.match(app, /data-action="haptics-toggle"/);
+  assert.match(app, /function toggleHaptics/);
+  assert.match(app, /platform\.settings\.set\("haptics", state\.hapticsEnabled \? "on" : "off"\)/);
+  assert.match(app, /function playHaptic\(event\)/);
+  assert.match(app, /platform\.haptic\(event\)/);
+  for (const event of ["placement", "invalid", "hit", "sunk", "victory", "defeat"]) {
+    assert.match(app, new RegExp(`playHaptic\\("${event}"\\)`));
+  }
+  const outcomes = sourceBetween("function playShotOutcome", "function playFinalSound");
+  assert.doesNotMatch(outcomes, /playHaptic\("miss"\)/);
+});
+
+test("mobile layout applies safe areas, compact banners, and 44px targets", () => {
+  assert.match(html, /<meta\s+name="viewport"\s+content="width=device-width, initial-scale=1\.0, viewport-fit=cover"\s*\/>/);
+  for (const side of ["top", "right", "bottom", "left"]) {
+    assert.match(css, new RegExp(`--safe-${side}:\\s*var\\(--safe-area-inset-${side},\\s*env\\(safe-area-inset-${side},\\s*0px\\)\\)`));
+  }
+  assert.match(cssRule(".shell"), /var\(--safe-top\)/);
+  assert.match(cssRule(".shell"), /var\(--safe-right\)/);
+  assert.match(cssRule(".shell"), /var\(--safe-left\)/);
+  assert.match(css, /\.offline-banner/);
+  assert.match(css, /\.restore-banner/);
+  assert.match(css, /:root\[data-theme="dark"\] \.offline-banner/);
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?button,[\s\S]*?select,[\s\S]*?input,[\s\S]*?\{[\s\S]*?min-height:\s*44px/);
+  for (const selector of [
+    ".ghost-button",
+    ".orientation-button",
+    ".ship-choice",
+    ".tactical-advisor-toggle",
+    ".tactical-advisor-compact-toggle",
+    ".tactical-quick-fire",
+    ".priority-target-chip",
+    ".battle-coaching .training-link",
+    ".battle-tabs button",
+  ]) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(css, new RegExp(`@media \\(max-width: 720px\\)[\\s\\S]*?${escapedSelector}[\\s\\S]*?min-height:\\s*44px`));
+  }
+  assert.match(app, /class="board-scroll"/);
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.board-scroll\s*\{[\s\S]*?overflow-x:\s*auto/);
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.cell\s*\{[\s\S]*?min-width:\s*44px;[\s\S]*?min-height:\s*44px/);
+  assert.match(css, /\.setup-primary-actions[\s\S]*?var\(--safe-bottom\)/);
+  assert.match(cssRule(".result-actions"), /var\(--safe-bottom\)/);
+  assert.match(cssRule(".modal-backdrop"), /var\(--safe-bottom\)/);
+});
+
 function combinedCssRule(...selectors) {
   const escapedSelectors = selectors.map((selector) =>
     selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
@@ -629,5 +819,15 @@ function sourceBetween(start, end) {
   const endIndex = app.indexOf(end, startIndex + start.length);
   assert.ok(startIndex >= 0, `Missing source start: ${start}`);
   assert.ok(endIndex > startIndex, `Missing source end: ${end}`);
+  return app.slice(startIndex, endIndex);
+}
+
+function sourceFunction(start) {
+  const startIndex = app.indexOf(start);
+  assert.ok(startIndex >= 0, `Missing function source: ${start}`);
+  const nextFunction = app.indexOf("\nfunction ", startIndex + start.length);
+  const nextAsyncFunction = app.indexOf("\nasync function ", startIndex + start.length);
+  const candidates = [nextFunction, nextAsyncFunction].filter((index) => index > startIndex);
+  const endIndex = candidates.length ? Math.min(...candidates) : app.length;
   return app.slice(startIndex, endIndex);
 }

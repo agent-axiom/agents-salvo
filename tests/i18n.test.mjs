@@ -26,6 +26,59 @@ test("i18n labels menu exit actions as main menu", () => {
   assert.equal(t("zh-CN", "nav.mainMenu"), "主菜单");
 });
 
+test("mobile platform notices and controls are localized in every language", () => {
+  const expected = {
+    en: {
+      "settings.haptics": "Haptics",
+      "network.offline": "You are offline.",
+      "network.retry": "Try again when connected.",
+      "restore.resumed": "Battle resumed.",
+      "restore.unsupportedVersion": "This saved battle was created by a newer app version.",
+      "restore.failed": "Could not restore the saved battle.",
+      "nav.leaveBattleTitle": "Leave this battle?",
+      "nav.leaveBattleBody": "Your unfinished battle will be lost.",
+      "nav.cancel": "Cancel",
+      "nav.mainMenu": "Main menu",
+      "share.failed": "Could not share.",
+      "auth.mobileSecureLoginPending": "Secure Telegram login is not available in the installed app yet.",
+    },
+    ru: {
+      "settings.haptics": "Виброотклик",
+      "network.offline": "Нет подключения к сети.",
+      "network.retry": "Повторите попытку после подключения.",
+      "restore.resumed": "Бой восстановлен.",
+      "restore.unsupportedVersion": "Этот сохранённый бой создан в более новой версии приложения.",
+      "restore.failed": "Не удалось восстановить сохранённый бой.",
+      "nav.leaveBattleTitle": "Покинуть бой?",
+      "nav.leaveBattleBody": "Незавершённый бой будет потерян.",
+      "nav.cancel": "Отмена",
+      "nav.mainMenu": "Главное меню",
+      "share.failed": "Не удалось поделиться.",
+      "auth.mobileSecureLoginPending": "Безопасный вход через Telegram пока недоступен в установленном приложении.",
+    },
+    "zh-CN": {
+      "settings.haptics": "触觉反馈",
+      "network.offline": "当前离线。",
+      "network.retry": "联网后请重试。",
+      "restore.resumed": "已恢复战斗。",
+      "restore.unsupportedVersion": "此保存的战斗来自更新版本的应用。",
+      "restore.failed": "无法恢复保存的战斗。",
+      "nav.leaveBattleTitle": "离开这场战斗？",
+      "nav.leaveBattleBody": "未完成的战斗将会丢失。",
+      "nav.cancel": "取消",
+      "nav.mainMenu": "主菜单",
+      "share.failed": "分享失败。",
+      "auth.mobileSecureLoginPending": "安装版应用暂不支持安全的 Telegram 登录。",
+    },
+  };
+
+  for (const [language, translations] of Object.entries(expected)) {
+    for (const [key, value] of Object.entries(translations)) {
+      assert.equal(t(language, key), value, `${language} must define ${key}`);
+    }
+  }
+});
+
 test("i18n labels the setup ready action as a battle CTA", () => {
   assert.equal(t("en", "setup.ready"), "To battle!");
   assert.equal(t("ru", "setup.ready"), "В бой!");
