@@ -2,6 +2,7 @@ const canonicalDeepLinkOrigin = "https://agent-axiom.github.io";
 const canonicalDeepLinkBasePath = "/agents-salvo";
 const replayIdPattern = /^[A-Za-z0-9-]{1,128}$/;
 const roomCodePattern = /^[A-Za-z0-9]{4,12}$/;
+const telegramTicketPattern = /^[A-Za-z0-9_-]{32,256}$/;
 
 export function createUnknownNetworkState() {
   return { connected: false, connectionType: "unknown", confirmed: false };
@@ -306,14 +307,15 @@ export function parseSalvoDeepLink(rawUrl) {
   if (typeof rawUrl !== "string" || rawUrl.trim() !== rawUrl) return null;
   try {
     const url = new URL(rawUrl);
-    if (url.username || url.password || url.port) return null;
+    if (url.username || url.password || url.port || hasUrlCredentials(rawUrl)) return null;
 
     if (url.protocol === "salvo:") {
-      if (url.search || url.hash) return null;
+      if (url.search || url.hash || rawUrl.includes("?") || rawUrl.includes("#")) return null;
       const path = decodedPathSegments(url.pathname);
       const segments = url.hostname === "open" ? ["open", ...path] : path;
       if (url.hostname && url.hostname !== "open") return null;
-      return parseDeepLinkRoute(segments);
+      if (segments[1] === "auth" && url.pathname.includes("%")) return null;
+      return parseDeepLinkRoute(segments, { allowAuth: url.hostname === "open" });
     }
 
     if (
@@ -340,7 +342,51 @@ export function parseSalvoDeepLink(rawUrl) {
   }
 }
 
-function parseDeepLinkRoute(segments) {
+export function captureTelegramAuthBootstrap({ rawUrl, history } = {}) {
+  const none = { type: "none" };
+  if (typeof rawUrl !== "string" || rawUrl.trim() !== rawUrl) return none;
+
+  try {
+    const url = new URL(rawUrl);
+    if (
+      url.protocol !== "https:"
+      || url.origin !== canonicalDeepLinkOrigin
+      || url.username
+      || url.password
+      || url.port
+      || hasUrlCredentials(rawUrl)
+      || hasExplicitPort(rawUrl)
+      || !isCanonicalBootstrapPath(url.pathname)
+    ) {
+      return none;
+    }
+
+    const tickets = url.searchParams.getAll("auth_ticket");
+    const errors = url.searchParams.getAll("auth_error");
+    if (tickets.length === 0 && errors.length === 0) return none;
+    if (typeof history?.replaceState !== "function") return none;
+
+    let result = none;
+    if (tickets.length === 1 && telegramTicketPattern.test(tickets[0])) {
+      result = { type: "ticket", ticket: tickets[0] };
+    } else if (tickets.length === 0 && errors.length === 1 && errors[0] === "telegram") {
+      result = { type: "authError", code: "telegram" };
+    }
+
+    url.searchParams.delete("auth_ticket");
+    url.searchParams.delete("auth_error");
+    try {
+      history.replaceState(history.state ?? null, "", url.toString());
+    } catch {
+      return none;
+    }
+    return result;
+  } catch {
+    return none;
+  }
+}
+
+function parseDeepLinkRoute(segments, { allowAuth = false } = {}) {
   if (segments.length !== 3 || segments[0] !== "open") return null;
   const [, type, target] = segments;
   if (type === "room" && roomCodePattern.test(target)) {
@@ -348,6 +394,12 @@ function parseDeepLinkRoute(segments) {
   }
   if (type === "replay" && replayIdPattern.test(target)) {
     return { type: "replay", replayId: target };
+  }
+  if (allowAuth && type === "auth" && target === "error") {
+    return { type: "authError", code: "telegram" };
+  }
+  if (allowAuth && type === "auth" && telegramTicketPattern.test(target)) {
+    return { type: "auth", ticket: target };
   }
   return null;
 }
@@ -362,10 +414,20 @@ function isCanonicalDeepLinkPath(pathname) {
     || pathname.startsWith(`${canonicalDeepLinkBasePath}/`);
 }
 
+function isCanonicalBootstrapPath(pathname) {
+  return pathname === canonicalDeepLinkBasePath
+    || pathname === `${canonicalDeepLinkBasePath}/`;
+}
+
 function hasExplicitPort(rawUrl) {
   const authority = rawUrl.match(/^https:\/\/([^/?#]+)/i)?.[1] ?? "";
   const host = authority.split("@").at(-1);
   return /:\d+$/.test(host);
+}
+
+function hasUrlCredentials(rawUrl) {
+  const authority = rawUrl.match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i)?.[1] ?? "";
+  return authority.includes("@");
 }
 
 export function createDialogFocusController({

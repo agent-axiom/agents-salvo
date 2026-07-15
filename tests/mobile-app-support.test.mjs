@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  captureTelegramAuthBootstrap,
   createAppNavigationCoordinator,
   createDiscardableSnapshotStore,
   createDialogFocusController,
@@ -609,6 +610,126 @@ test("deep-link parser accepts only Salvo and canonical HTTPS routes", () => {
   );
 });
 
+test("deep-link parser accepts strict auth success and fixed failure routes", () => {
+  const ticket = "Ab3_-".repeat(7);
+  assert.deepEqual(parseSalvoDeepLink(`salvo://open/auth/${ticket}`), {
+    type: "auth",
+    ticket,
+  });
+  assert.deepEqual(parseSalvoDeepLink("salvo://open/auth/error"), {
+    type: "authError",
+    code: "telegram",
+  });
+});
+
+test("deep-link parser rejects unsafe auth route variants", () => {
+  const ticket = "a".repeat(32);
+  for (const value of [
+    `salvo://foreign/auth/${ticket}`,
+    `salvo:///open/auth/${ticket}`,
+    `salvo:/open/auth/${ticket}`,
+    `salvo://user@open/auth/${ticket}`,
+    `salvo://@open/auth/${ticket}`,
+    `salvo://open:444/auth/${ticket}`,
+    `salvo://open/auth/${ticket}?next=room`,
+    `salvo://open/auth/${ticket}?`,
+    `salvo://open/auth/${ticket}#secret`,
+    `salvo://open/auth/${ticket}#`,
+    `salvo://open/auth/${ticket}/extra`,
+    `salvo://open/open/auth/${ticket}`,
+    `salvo://open/auth%2F${ticket}`,
+    `salvo://open/auth/${ticket}%2Fextra`,
+    `salvo://open/auth/${ticket}%5Cextra`,
+    `salvo://open/auth/${"a".repeat(31)}`,
+    `salvo://open/auth/${"a".repeat(257)}`,
+    `salvo://open/auth/${"a".repeat(31)}!`,
+    `https://agent-axiom.github.io/agents-salvo/open/auth/${ticket}`,
+    "salvo://open/auth/Error",
+    "salvo://open/auth/error/extra",
+    "salvo://open/auth/error?code=telegram",
+    "salvo://open/auth/telegram",
+    "salvo://open/auth-error",
+  ]) {
+    assert.equal(parseSalvoDeepLink(value), null, value);
+  }
+});
+
+test("web bootstrap captures a valid ticket and cleans auth parameters", () => {
+  const ticket = "xY9_-".repeat(7);
+  const history = historyHarness();
+  const result = captureTelegramAuthBootstrap({
+    rawUrl: `https://agent-axiom.github.io/agents-salvo/?view=fleet&auth_ticket=${ticket}&auth_error=telegram#scores`,
+    history,
+  });
+
+  assert.deepEqual(result, { type: "ticket", ticket });
+  assert.deepEqual(history.calls, [[
+    "replaceState",
+    null,
+    "",
+    "https://agent-axiom.github.io/agents-salvo/?view=fleet#scores",
+  ]]);
+});
+
+test("web bootstrap returns only the fixed Telegram auth error and cleans it", () => {
+  const history = historyHarness();
+  const result = captureTelegramAuthBootstrap({
+    rawUrl: "https://agent-axiom.github.io/agents-salvo/?auth_error=telegram&view=profile#account",
+    history,
+  });
+
+  assert.deepEqual(result, { type: "authError", code: "telegram" });
+  assert.deepEqual(history.calls[0], [
+    "replaceState",
+    null,
+    "",
+    "https://agent-axiom.github.io/agents-salvo/?view=profile#account",
+  ]);
+});
+
+test("web bootstrap removes malformed or repeated auth values without returning them", () => {
+  const malformedValues = [
+    `auth_ticket=${"a".repeat(31)}`,
+    `auth_ticket=${"a".repeat(32)}!`,
+    `auth_ticket=${"a".repeat(32)}&auth_ticket=${"b".repeat(32)}`,
+    "auth_error=denied-by-provider",
+    "auth_error=telegram&auth_error=telegram",
+  ];
+
+  for (const query of malformedValues) {
+    const history = historyHarness();
+    const result = captureTelegramAuthBootstrap({
+      rawUrl: `https://agent-axiom.github.io/agents-salvo/?keep=1&${query}#safe-hash`,
+      history,
+    });
+    assert.deepEqual(result, { type: "none" }, query);
+    assert.deepEqual(history.calls, [[
+      "replaceState",
+      null,
+      "",
+      "https://agent-axiom.github.io/agents-salvo/?keep=1#safe-hash",
+    ]], query);
+  }
+});
+
+test("web bootstrap ignores noncanonical URLs and never navigates or reloads", () => {
+  const ticket = "z".repeat(32);
+  for (const rawUrl of [
+    `http://agent-axiom.github.io/agents-salvo/?auth_ticket=${ticket}`,
+    `https://example.com/agents-salvo/?auth_ticket=${ticket}`,
+    `https://user@agent-axiom.github.io/agents-salvo/?auth_ticket=${ticket}`,
+    `https://@agent-axiom.github.io/agents-salvo/?auth_ticket=${ticket}`,
+    `https://agent-axiom.github.io:443/agents-salvo/?auth_ticket=${ticket}`,
+    `https://agent-axiom.github.io/agents-salvo/open/room/ABCD?auth_ticket=${ticket}`,
+    `https://agent-axiom.github.io/agents-salvo/extra?auth_ticket=${ticket}`,
+    "not a url",
+  ]) {
+    const history = historyHarness();
+    assert.deepEqual(captureTelegramAuthBootstrap({ rawUrl, history }), { type: "none" }, rawUrl);
+    assert.deepEqual(history.calls, [], rawUrl);
+  }
+});
+
 test("deep-link parser rejects unsafe origins, schemes, credentials, ports, and paths", () => {
   for (const value of [
     "http://agent-axiom.github.io/agents-salvo/?replay=battle-1",
@@ -670,6 +791,19 @@ function deferred() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function historyHarness() {
+  const calls = [];
+  return {
+    calls,
+    replaceState(...args) {
+      calls.push(["replaceState", ...args]);
+    },
+    reload() {
+      assert.fail("bootstrap helper must not reload");
+    },
+  };
 }
 
 async function flushMicrotasks() {
