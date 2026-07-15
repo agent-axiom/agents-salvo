@@ -800,6 +800,110 @@ test("leave dialog controller targets the destructive dialog when another dialog
   assert.equal(harness.document.activeElement, harness.trigger);
 });
 
+test("preference hydration observes read and observer failures without escaping", async () => {
+  const preferences = createPreferenceCoordinator({
+    settings: {
+      async get() {
+        throw new Error("settings unavailable");
+      },
+      async set() {},
+    },
+    async onError() {
+      throw new Error("observer unavailable");
+    },
+  });
+
+  assert.equal(await preferences.hydrate("theme", () => assert.fail("must not apply")), false);
+});
+
+test("secure session treats read and current-request failures as unauthenticated", async () => {
+  const clears = [];
+  const sessions = createSecureSessionCoordinator({
+    secureSession: {
+      async get() {
+        throw new Error("secure read failed");
+      },
+      async set() {},
+      async clear() {
+        clears.push("clear");
+      },
+    },
+  });
+  const hydrated = [];
+
+  assert.equal(await sessions.hydrate((token) => hydrated.push(token)), false);
+  assert.deepEqual(hydrated, [""]);
+  assert.equal(await sessions.establish("token", () => assert.fail("must not commit"), {
+    isCurrent() {
+      throw new Error("request check failed");
+    },
+  }), false);
+  assert.deepEqual(clears, ["clear"]);
+});
+
+test("latest client coordinator contains close and operation failures", async () => {
+  const errors = [];
+  const coordinator = createLatestClientCoordinator({
+    createClient() {
+      return {
+        close() {
+          throw new Error("close failed");
+        },
+      };
+    },
+  });
+
+  const result = await coordinator.run({
+    async operation() {
+      throw new Error("request failed");
+    },
+    onError(error) {
+      errors.push(error.message);
+    },
+  });
+  assert.equal(result.status, "error");
+  assert.deepEqual(errors, ["request failed"]);
+  coordinator.close();
+});
+
+test("web auth bootstrap fails closed when URL cleanup is blocked", () => {
+  const ticket = "a".repeat(32);
+  const result = captureTelegramAuthBootstrap({
+    rawUrl: `https://agent-axiom.github.io/agents-salvo/?auth_ticket=${ticket}`,
+    history: {
+      replaceState() {
+        throw new Error("history blocked");
+      },
+    },
+  });
+  assert.deepEqual(result, { type: "none" });
+});
+
+test("dialog focus controller contains focus when no controls are available", () => {
+  let keydown;
+  let prevented = false;
+  const document = {
+    activeElement: null,
+    addEventListener(_type, listener) {
+      keydown = listener;
+    },
+    removeEventListener() {},
+  };
+  const dialog = { contains: () => false, querySelectorAll: () => [] };
+  const root = {
+    querySelector: (selector) => selector === '[role="dialog"]' ? dialog : null,
+    querySelectorAll: () => [],
+  };
+  const controller = createDialogFocusController({ root, document, onCancel() {} });
+
+  assert.equal(controller.captureReturnFocus(), null);
+  controller.activate();
+  keydown({ key: "Tab", preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  controller.restoreFocus(null);
+  controller.deactivate();
+});
+
 function deferred() {
   let resolve;
   let reject;

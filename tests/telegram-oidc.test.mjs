@@ -5,6 +5,7 @@ import { webcrypto } from "node:crypto";
 import {
   createTelegramAuthorization,
   exchangeTelegramCode,
+  loadTelegramJwks,
   normalizeTelegramOidcUser,
   oidcConfigured,
   verifyTelegramIdToken,
@@ -149,6 +150,40 @@ test("createTelegramAuthorization rejects short injected randomness", async () =
       }),
     /random/i,
   );
+});
+
+test("createTelegramAuthorization rejects missing configuration and invalid randomness", async () => {
+  await assert.rejects(
+    () => createTelegramAuthorization({ clientId: "", redirectUri, platform: "web" }),
+    /configuration/i,
+  );
+  await assert.rejects(
+    () => createTelegramAuthorization({ clientId, redirectUri, platform: "web", randomBytes: 42 }),
+    /randomness/i,
+  );
+});
+
+test("loadTelegramJwks rejects unavailable and malformed providers", async () => {
+  await assertTelegramFailure(() => loadTelegramJwks({ fetcher: 42 }));
+  await assertTelegramFailure(() => loadTelegramJwks({
+    fetcher: async () => new Response("denied", { status: 503 }),
+  }));
+  await assertTelegramFailure(() => loadTelegramJwks({
+    fetcher: async () => new Response(JSON.stringify({ keys: "invalid" }), { status: 200 }),
+  }));
+});
+
+test("exchangeTelegramCode rejects incomplete input and invalid deadlines", async () => {
+  await assertTelegramFailure(() => exchangeTelegramCode({ fetcher: async () => assert.fail() }));
+  await assertTelegramFailure(() => exchangeTelegramCode({
+    code: "code",
+    redirectUri,
+    clientId,
+    clientSecret,
+    codeVerifier: "verifier",
+    timeoutMilliseconds: 0,
+    fetcher: async () => assert.fail(),
+  }));
 });
 
 test("exchangeTelegramCode sends the exact form request through the injected fetcher", async () => {
