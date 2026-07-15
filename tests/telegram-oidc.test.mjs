@@ -328,6 +328,27 @@ test("verifyTelegramIdToken rejects malformed JWT segment counts", async () => {
   assert.equal(jwksLoads, 0);
 });
 
+test("verifyTelegramIdToken rejects oversized tokens before loading keys", async () => {
+  const oversizedToken = await signJwt({
+    claims: validClaims({ padding: "x".repeat(16 * 1024) }),
+  });
+  let jwksLoads = 0;
+
+  assert.ok(oversizedToken.length > 16 * 1024);
+  await assertTelegramFailure(
+    () =>
+      verifyTelegramIdToken(
+        oversizedToken,
+        verificationOptions(async () => {
+          jwksLoads += 1;
+          return { keys: [publicJwk] };
+        }),
+      ),
+    [oversizedToken],
+  );
+  assert.equal(jwksLoads, 0);
+});
+
 test("verifyTelegramIdToken rejects malformed or padded base64url before loading keys", async () => {
   let jwksLoads = 0;
   const header = encodeJson({ alg: "RS256", kid: keyId });

@@ -5,6 +5,7 @@ const tokenEndpoint = "https://oauth.telegram.org/token";
 const telegramIssuer = "https://oauth.telegram.org";
 const allowedPlatforms = new Set(["web", "android", "ios"]);
 const randomByteLength = 32;
+const maxIdTokenLength = 16 * 1024;
 const maxTokenResponseBytes = 64 * 1024;
 const base64UrlPattern = /^[A-Za-z0-9_-]+$/;
 const textEncoder = new TextEncoder();
@@ -102,7 +103,7 @@ export async function exchangeTelegramCode(options = {}) {
 
 export async function verifyTelegramIdToken(idToken, options = {}) {
   try {
-    if (typeof idToken !== "string") {
+    if (typeof idToken !== "string" || idToken.length > maxIdTokenLength) {
       throw telegramAuthenticationError();
     }
     const segments = idToken.split(".");
