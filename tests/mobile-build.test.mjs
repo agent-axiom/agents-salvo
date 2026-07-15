@@ -267,6 +267,7 @@ test("mobile toolchain is pinned and uses bundled local web assets", () => {
   assert.equal(readFileSync(".nvmrc", "utf8").trim(), "24.14.1");
   assert.equal(packageJson.engines.node, ">=24.14.1 <25");
   assert.deepEqual(packageJson.dependencies, {
+    "@aparajita/capacitor-secure-storage": "8.0.0",
     "@capacitor/app": "8.1.0",
     "@capacitor/browser": "8.0.3",
     "@capacitor/core": "8.4.1",
@@ -550,6 +551,34 @@ test("Android shell uses the Salvo identity, SDK baseline, and names", () => {
     assert.equal(readAndroidString(localized, "app_name"), name);
     assert.equal(readAndroidString(localized, "title_activity_main"), name);
   }
+});
+
+test("native shells register protected session storage", () => {
+  const androidSettings = readFileSync(
+    "android/capacitor.settings.gradle",
+    "utf8",
+  );
+  const androidDependencies = readFileSync(
+    "android/app/capacitor.build.gradle",
+    "utf8",
+  );
+  const iosPackage = readFileSync(
+    "ios/App/CapApp-SPM/Package.swift",
+    "utf8",
+  );
+
+  assert.match(
+    androidSettings,
+    /include ':aparajita-capacitor-secure-storage'/,
+  );
+  assert.match(
+    androidDependencies,
+    /implementation project\(':aparajita-capacitor-secure-storage'\)/,
+  );
+  assert.match(
+    iosPackage,
+    /\.product\(name: "AparajitaCapacitorSecureStorage"/,
+  );
 });
 
 test("Android ignores signing keys", () => {

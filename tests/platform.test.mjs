@@ -740,6 +740,48 @@ test("native secure sessions fail closed without touching Preferences", async ()
   assert.deepEqual(preferenceCalls, []);
 });
 
+test("native secure sessions persist only through protected device storage", async () => {
+  const preferenceCalls = [];
+  const secureCalls = [];
+  const secureValues = new Map();
+  const adapter = createNativePlatform(nativePlugins({
+    Preferences: {
+      get: async (...args) => preferenceCalls.push(["get", ...args]),
+      set: async (...args) => preferenceCalls.push(["set", ...args]),
+      remove: async (...args) => preferenceCalls.push(["remove", ...args]),
+    },
+    SecureStorage: {
+      async getItem(key) {
+        secureCalls.push(["get", key]);
+        return secureValues.get(key) ?? null;
+      },
+      async setItem(key, value) {
+        secureCalls.push(["set", key, value]);
+        secureValues.set(key, value);
+      },
+      async removeItem(key) {
+        secureCalls.push(["remove", key]);
+        secureValues.delete(key);
+      },
+    },
+  }));
+
+  assert.equal(await adapter.secureSession.get(), "");
+  await adapter.secureSession.set("native-token");
+  assert.equal(await adapter.secureSession.get(), "native-token");
+  await adapter.secureSession.clear();
+  assert.equal(await adapter.secureSession.get(), "");
+
+  assert.deepEqual(secureCalls, [
+    ["get", "salvo.authToken"],
+    ["set", "salvo.authToken", "native-token"],
+    ["get", "salvo.authToken"],
+    ["remove", "salvo.authToken"],
+    ["get", "salvo.authToken"],
+  ]);
+  assert.deepEqual(preferenceCalls, []);
+});
+
 test("platform selection is explicit and safe during Node import", () => {
   const web = selectPlatform(false);
   const native = selectPlatform(true);
