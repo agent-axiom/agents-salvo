@@ -12,7 +12,24 @@ test("RuStore release workflow is manual and least privilege", () => {
 
   assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch"]);
   assert.deepEqual(workflow.permissions, { contents: "read" });
+  assert.deepEqual(workflow.concurrency, {
+    group: "rustore-release",
+    "cancel-in-progress": false,
+  });
+  assert.equal(workflow.jobs.release.if, "github.ref == 'refs/heads/main'");
+  assert.equal(workflow.jobs.release.environment, "rustore-production");
   assert.doesNotMatch(source, /^\s*(push|pull_request):/m);
+});
+
+test("RuStore release workflow requires the published privacy notice before signing", () => {
+  const source = readFileSync(workflowPath, "utf8");
+  const privacyUrl = "https://agent-axiom.github.io/agents-salvo/privacy.html";
+  const privacyCheck = source.indexOf(privacyUrl);
+  const signing = source.indexOf("Decode release keystore");
+
+  assert.ok(privacyCheck >= 0, "published privacy URL must be checked");
+  assert.ok(signing > privacyCheck, "privacy check must complete before the keystore is decoded");
+  assert.match(source, /curl[^\n]*--fail[^\n]*--location[^\n]*--retry/);
 });
 
 test("RuStore release workflow validates, signs, verifies, and uploads both formats", () => {

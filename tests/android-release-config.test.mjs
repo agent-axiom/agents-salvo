@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   ANDROID_RELEASE_CERTIFICATE_SHA256,
+  ANDROID_RELEASE_PERMISSIONS,
   verifyAndroidRelease,
 } from "../scripts/verify-android-release.mjs";
 
@@ -61,6 +62,13 @@ test("Android release manifest exposes only required network access", () => {
 function validCommandRunner(overrides = {}) {
   return (command, args) => {
     const invocation = `${command} ${args.join(" ")}`;
+    if (invocation.includes("manifest permissions")) {
+      return {
+        status: 0,
+        stdout: `${(overrides.permissions ?? ANDROID_RELEASE_PERMISSIONS).join("\n")}\n`,
+        stderr: "",
+      };
+    }
     if (invocation.includes("application-id")) {
       return { status: 0, stdout: `${overrides.packageId ?? "io.github.agentaxiom.salvo"}\n`, stderr: "" };
     }
@@ -104,12 +112,14 @@ test("release verifier rejects missing and debug APKs", () => {
 test("release verifier reports inspection failures without leaking assumptions", () => {
   assert.throws(
     () => verifyAndroidRelease({ artifactPath: releaseFixture(), runCommand: () => null }),
-    /application ID inspection failed: command returned no diagnostics/i,
+    /permission inspection failed: command returned no diagnostics/i,
   );
   assert.throws(
     () => verifyAndroidRelease({
       artifactPath: releaseFixture(),
-      runCommand: () => ({ status: 1, stdout: "manifest unavailable", stderr: "" }),
+      runCommand: (command, args) => args.includes("permissions")
+        ? validCommandRunner()(command, args)
+        : { status: 1, stdout: "manifest unavailable", stderr: "" },
     }),
     /application ID inspection failed: manifest unavailable/i,
   );
@@ -141,6 +151,29 @@ test("release verifier rejects unexpected identity and failed signatures", () =>
   );
 });
 
+test("release verifier rejects missing or unexpected merged APK permissions", () => {
+  assert.throws(
+    () => verifyAndroidRelease({
+      artifactPath: releaseFixture(),
+      runCommand: validCommandRunner({
+        permissions: ANDROID_RELEASE_PERMISSIONS.filter(
+          (permission) => permission !== "android.permission.VIBRATE",
+        ),
+      }),
+    }),
+    /unexpected Android permissions.*VIBRATE/i,
+  );
+  assert.throws(
+    () => verifyAndroidRelease({
+      artifactPath: releaseFixture(),
+      runCommand: validCommandRunner({
+        permissions: [...ANDROID_RELEASE_PERMISSIONS, "android.permission.CAMERA"],
+      }),
+    }),
+    /unexpected Android permissions.*CAMERA/i,
+  );
+});
+
 test("release verifier writes a reproducible SHA-256 sidecar", () => {
   const artifactPath = releaseFixture();
   const result = verifyAndroidRelease({ artifactPath, runCommand: validCommandRunner() });
@@ -161,7 +194,15 @@ test("release verifier CLI reports success and failure with stable exit codes", 
   const apkSigner = join(toolsDirectory, "apksigner");
   writeFileSync(
     apkAnalyzer,
-    "#!/bin/sh\nif [ \"$2\" = application-id ]; then echo io.github.agentaxiom.salvo; else echo 1.0.0; fi\n",
+    `#!/bin/sh
+if [ "$2" = permissions ]; then
+  printf '%s\\n' ${ANDROID_RELEASE_PERMISSIONS.map((permission) => `'${permission}'`).join(" ")}
+elif [ "$2" = application-id ]; then
+  echo io.github.agentaxiom.salvo
+else
+  echo 1.0.0
+fi
+`,
   );
   writeFileSync(
     apkSigner,
@@ -185,4 +226,50 @@ test("release verifier CLI reports success and failure with stable exit codes", 
   const failure = spawnSync(process.execPath, [resolve("scripts/verify-android-release.mjs")], { encoding: "utf8" });
   assert.equal(failure.status, 1);
   assert.match(failure.stderr, /artifact path is required/i);
+});
+
+test("release verifier CLI resolves tools directly from the Android SDK", () => {
+  const androidHome = mkdtempSync(join(tmpdir(), "salvo-android-sdk-"));
+  const analyzerDirectory = join(androidHome, "cmdline-tools", "latest", "bin");
+  const buildToolsDirectory = join(androidHome, "build-tools", "35.0.0");
+  mkdirSync(analyzerDirectory, { recursive: true });
+  mkdirSync(buildToolsDirectory, { recursive: true });
+
+  const apkAnalyzer = join(analyzerDirectory, "apkanalyzer");
+  const apkSigner = join(buildToolsDirectory, "apksigner");
+  writeFileSync(
+    apkAnalyzer,
+    `#!/bin/sh
+if [ "$2" = permissions ]; then
+  printf '%s\\n' ${ANDROID_RELEASE_PERMISSIONS.map((permission) => `'${permission}'`).join(" ")}
+elif [ "$2" = application-id ]; then
+  echo io.github.agentaxiom.salvo
+else
+  echo 1.0.0
+fi
+`,
+  );
+  writeFileSync(
+    apkSigner,
+    `#!/bin/sh\necho 'Signer #1 certificate SHA-256 digest: ${ANDROID_RELEASE_CERTIFICATE_SHA256}'\n`,
+  );
+  chmodSync(apkAnalyzer, 0o700);
+  chmodSync(apkSigner, 0o700);
+
+  const result = spawnSync(
+    process.execPath,
+    [resolve("scripts/verify-android-release.mjs"), releaseFixture()],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ANDROID_HOME: androidHome,
+        ANDROID_SDK_ROOT: "",
+        PATH: "/usr/bin:/bin",
+      },
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Verified app-release\.apk/);
 });

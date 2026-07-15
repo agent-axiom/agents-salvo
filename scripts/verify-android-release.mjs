@@ -1,17 +1,47 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, extname, resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { basename, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 export const ANDROID_RELEASE_APPLICATION_ID = "io.github.agentaxiom.salvo";
 export const ANDROID_RELEASE_VERSION_NAME = "1.0.0";
 export const ANDROID_RELEASE_CERTIFICATE_SHA256 = "ec4972020b0b437f83bd29315c5260e2c75c834ed5c4e3650121cd878cd71436";
+export const ANDROID_RELEASE_PERMISSIONS = Object.freeze([
+  "android.permission.ACCESS_NETWORK_STATE",
+  "android.permission.INTERNET",
+  "android.permission.VIBRATE",
+  "io.github.agentaxiom.salvo.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+]);
+
+function resolveAndroidCommand(command) {
+  const androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
+  if (!androidHome) return command;
+
+  const executable = process.platform === "win32" ? `${command}.bat` : command;
+  if (command === "apkanalyzer") {
+    const analyzer = join(androidHome, "cmdline-tools", "latest", "bin", executable);
+    return existsSync(analyzer) ? analyzer : command;
+  }
+  if (command === "apksigner") {
+    const buildToolsRoot = join(androidHome, "build-tools");
+    if (!existsSync(buildToolsRoot)) return command;
+    const versions = readdirSync(buildToolsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
+    const signer = versions
+      .map((version) => join(buildToolsRoot, version, executable))
+      .find((candidate) => existsSync(candidate));
+    return signer || command;
+  }
+  return command;
+}
 
 function defaultCommandRunner(command, args) {
-  return spawnSync(command, args, { encoding: "utf8" });
+  return spawnSync(resolveAndroidCommand(command), args, { encoding: "utf8" });
 }
 
 function runChecked(runCommand, command, args, description) {
@@ -28,6 +58,7 @@ export function verifyAndroidRelease({
   expectedApplicationId = ANDROID_RELEASE_APPLICATION_ID,
   expectedVersionName = ANDROID_RELEASE_VERSION_NAME,
   expectedCertificateSha256 = ANDROID_RELEASE_CERTIFICATE_SHA256,
+  expectedPermissions = ANDROID_RELEASE_PERMISSIONS,
   runCommand = defaultCommandRunner,
 } = {}) {
   if (!artifactPath) {
@@ -43,6 +74,28 @@ export function verifyAndroidRelease({
   }
   if (/debug/i.test(basename(absolutePath))) {
     throw new Error(`Debug APKs cannot be published: ${absolutePath}`);
+  }
+
+  const permissions = runChecked(
+    runCommand,
+    "apkanalyzer",
+    ["manifest", "permissions", absolutePath],
+    "Android permission inspection",
+  )
+    .split(/\r?\n/)
+    .map((permission) => permission.trim())
+    .filter(Boolean)
+    .sort();
+  const expectedPermissionSet = [...expectedPermissions].sort();
+  if (
+    permissions.length !== expectedPermissionSet.length
+    || permissions.some((permission, index) => permission !== expectedPermissionSet[index])
+  ) {
+    const missing = expectedPermissionSet.filter((permission) => !permissions.includes(permission));
+    const unexpected = permissions.filter((permission) => !expectedPermissionSet.includes(permission));
+    throw new Error(
+      `Unexpected Android permissions: missing [${missing.join(", ")}], unexpected [${unexpected.join(", ")}]`,
+    );
   }
 
   const applicationId = runChecked(
@@ -93,6 +146,7 @@ export function verifyAndroidRelease({
     applicationId,
     versionName,
     certificateSha256,
+    permissions,
     sha256,
     signatureReport,
   };

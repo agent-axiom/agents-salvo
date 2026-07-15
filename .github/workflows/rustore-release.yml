@@ -7,12 +7,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: rustore-release-${{ github.run_id }}
+  group: rustore-release
   cancel-in-progress: false
 
 jobs:
   release:
     name: Test and build signed Android release
+    if: github.ref == 'refs/heads/main'
+    environment: rustore-production
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -67,6 +69,9 @@ jobs:
           test -x "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
           printf '%s\n' "$latest_build_tools" >> "$GITHUB_PATH"
           printf '%s\n' "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+      - name: Verify published privacy notice
+        run: curl --fail --silent --show-error --location --retry 5 --retry-delay 5 --retry-all-errors https://agent-axiom.github.io/agents-salvo/privacy.html
 
       - name: Decode release keystore
         shell: bash

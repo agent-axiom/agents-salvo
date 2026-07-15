@@ -104,7 +104,7 @@ export async function getLeaderboard(db, { now = new Date(), limit = 20 } = {}) 
   assertProfileDb(db);
   const rows = await db
     .prepare(
-      `SELECT u.user_key, u.name, u.username, u.photo_url, m.result, m.played_at
+      `SELECT u.user_key, u.name, m.result, m.played_at
       FROM matches m
       JOIN users u ON u.user_key = m.user_key
       WHERE m.mode = 'online'
@@ -116,9 +116,7 @@ export async function getLeaderboard(db, { now = new Date(), limit = 20 } = {}) 
     if (!players.has(row.user_key)) {
       players.set(row.user_key, {
         userKey: row.user_key,
-        name: row.name || row.username || "online",
-        username: row.username || "",
-        photoUrl: row.photo_url || "",
+        name: row.name || "online",
         matches: [],
       });
     }
@@ -134,8 +132,6 @@ export async function getLeaderboard(db, { now = new Date(), limit = 20 } = {}) 
       const season = summarizeSeason(player.matches, now);
       return {
         name: player.name,
-        username: player.username,
-        photoUrl: player.photoUrl,
         rating: rating.mmr,
         label: rating.label,
         onlineMatches: rating.onlineMatches,

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
@@ -380,6 +380,24 @@ test("mobile build emits bundled local web artifacts", () => {
     bundledApp,
     /(?:from\s*|import\s*(?:\(\s*)?)["']\.\.?\//,
   );
+});
+
+test("build output override rejects non-temporary directories before deleting files", () => {
+  const unsafeOutput = mkdtempSync(join(process.cwd(), ".salvo-unsafe-build-"));
+  const sentinel = join(unsafeOutput, "keep.txt");
+  writeFileSync(sentinel, "do not delete", "utf8");
+  try {
+    const result = spawnSync(process.execPath, ["scripts/build.mjs"], {
+      encoding: "utf8",
+      env: { ...process.env, SALVO_BUILD_DIR: unsafeOutput },
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /temporary directory/i);
+    assert.equal(readFileSync(sentinel, "utf8"), "do not delete");
+  } finally {
+    rmSync(unsafeOutput, { recursive: true, force: true });
+  }
 });
 
 test("mobile source artwork has deterministic opaque dimensions", () => {

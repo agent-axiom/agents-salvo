@@ -70,7 +70,7 @@ xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator \
 
 ### Релиз для RuStore
 
-Ручной workflow `Build RuStore Release` прогоняет тесты, собирает подписанные APK и AAB, проверяет их подписи и идентификаторы и загружает файлы как GitHub Actions artifact. Для него нужны секреты репозитория:
+Ручной workflow `Build RuStore Release` запускается только с `main`, прогоняет тесты, проверяет опубликованное уведомление о конфиденциальности, собирает подписанные APK и AAB, проверяет их подписи, разрешения и идентификаторы и загружает файлы как GitHub Actions artifact. Следующие секреты должны храниться в защищённом GitHub Environment `rustore-production`:
 
 - `RUSTORE_KEYSTORE_BASE64`
 - `RUSTORE_STORE_PASSWORD`

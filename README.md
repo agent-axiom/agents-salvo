@@ -70,7 +70,7 @@ The Android debug APK and iOS Simulator build require no Google Play or Apple De
 
 ### RuStore release
 
-The manual `Build RuStore Release` workflow tests the project, builds signed APK and AAB files, verifies their signatures and identities, and uploads them as a GitHub Actions artifact. It requires these repository secrets:
+The manual `Build RuStore Release` workflow runs only from `main`, tests the project, verifies the published privacy notice, builds signed APK and AAB files, verifies their signatures, permissions, and identities, and uploads them as a GitHub Actions artifact. Store the following secrets in the protected `rustore-production` GitHub Environment:
 
 - `RUSTORE_KEYSTORE_BASE64`
 - `RUSTORE_STORE_PASSWORD`

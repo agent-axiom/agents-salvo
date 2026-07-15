@@ -35,6 +35,14 @@ test("privacy notice describes account and gameplay processing in all locales", 
   assert.match(privacy, /15 July 2026/);
   assert.match(privacy, /until you request deletion/i);
   assert.match(privacy, /do not include.*token|never include.*token/i);
+  assert.match(privacy, /Agent Axiom/);
+  assert.match(privacy, /оператор персональных данных/i);
+  assert.match(privacy, /data controller/i);
+  assert.match(privacy, /个人信息处理者/);
+  assert.match(privacy, /согласие.*до входа|consent.*before signing in|登录前.*同意/is);
+  assert.match(privacy, /leaderboard[^<]*(display name|отображаемое имя|显示名称)[^<]*(rating|рейтинг|评级)/i);
+  assert.match(privacy, /username[^<]*(not public|не публику|不会公开)/i);
+  assert.match(privacy, /profile photo[^<]*(not public|не публику|不会公开)/i);
 });
 
 test("privacy notice is built and linked from Telegram authentication", () => {

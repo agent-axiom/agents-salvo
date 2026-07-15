@@ -49,6 +49,8 @@ test("mobile platform notices and controls are localized in every language", () 
       "auth.valueNotice": "Save your profile and online progress. Local play remains available.",
       "auth.privacyNotice": "Read how account data is handled in the",
       "auth.privacyLink": "Privacy notice",
+      "auth.consent": "I consent to the processing of my Telegram account data and gameplay statistics as described in the Privacy notice.",
+      "auth.consentRequired": "Accept the Privacy notice before signing in.",
       "auth.secureStorageFailed": "Secure login could not be saved.",
     },
     ru: {
@@ -72,6 +74,8 @@ test("mobile platform notices and controls are localized in every language", () 
       "auth.valueNotice": "Сохраняйте профиль и прогресс онлайн. Локальная игра остаётся доступной.",
       "auth.privacyNotice": "О работе с данными аккаунта читайте в",
       "auth.privacyLink": "Уведомлении о конфиденциальности",
+      "auth.consent": "Я соглашаюсь на обработку данных моего Telegram-аккаунта и игровой статистики согласно Уведомлению о конфиденциальности.",
+      "auth.consentRequired": "Примите Уведомление о конфиденциальности перед входом.",
       "auth.secureStorageFailed": "Не удалось безопасно сохранить вход.",
     },
     "zh-CN": {
@@ -95,6 +99,8 @@ test("mobile platform notices and controls are localized in every language", () 
       "auth.valueNotice": "保存个人档案和在线进度；本地游戏仍可使用。",
       "auth.privacyNotice": "账号数据处理方式请参阅",
       "auth.privacyLink": "隐私声明",
+      "auth.consent": "我同意按照隐私声明处理我的 Telegram 账号数据和游戏统计信息。",
+      "auth.consentRequired": "登录前请接受隐私声明。",
       "auth.secureStorageFailed": "无法安全保存登录信息。",
     },
   };
@@ -166,6 +172,8 @@ test("i18n translates result modal, theme, and history labels in every language"
     "auth.valueNotice",
     "auth.privacyNotice",
     "auth.privacyLink",
+    "auth.consent",
+    "auth.consentRequired",
     "auth.secureStorageFailed",
     "profile.title",
     "profile.subtitle",

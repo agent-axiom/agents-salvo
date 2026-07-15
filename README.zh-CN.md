@@ -70,7 +70,7 @@ Android debug APK 和 iOS Simulator 构建不需要 Google Play 或 Apple Develo
 
 ### RuStore 发布
 
-手动 workflow `Build RuStore Release` 会运行测试、构建已签名的 APK 和 AAB、验证签名与应用标识，并将文件上传为 GitHub Actions artifact。仓库必须配置以下 secrets：
+手动 workflow `Build RuStore Release` 只能从 `main` 运行；它会执行测试、检查已发布的隐私声明、构建已签名的 APK 和 AAB、验证签名、权限与应用标识，并将文件上传为 GitHub Actions artifact。以下 secrets 必须保存在受保护的 GitHub Environment `rustore-production` 中：
 
 - `RUSTORE_KEYSTORE_BASE64`
 - `RUSTORE_STORE_PASSWORD`

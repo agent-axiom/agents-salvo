@@ -36,6 +36,8 @@ test("RuStore package documents data safety and moderator access", () => {
   for (const value of [
     "io.github.agentaxiom.salvo",
     "INTERNET",
+    "ACCESS_NETWORK_STATE",
+    "VIBRATE",
     "https://agent-axiom.github.io/agents-salvo/privacy.html",
     "https://github.com/agent-axiom/agents-salvo/issues",
     "https://agents-salvo-room.if-ab6.workers.dev",
@@ -49,4 +51,7 @@ test("RuStore package documents data safety and moderator access", () => {
   assert.match(checklist, /оператор[а-я\s-]*персональн/i);
   assert.match(checklist, /владелец|owner action/i);
   assert.match(checklist, /собственн[а-я\s]+Telegram/i);
+  assert.match(checklist, /8×8[^\n]*10×10[^\n]*ширин/i);
+  assert.match(checklist, /16×16[^\n]*(панорам|прокрутк|масштаб)/i);
+  assert.doesNotMatch(checklist, /Декларировано только разрешение `INTERNET`/);
 });
