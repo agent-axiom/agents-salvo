@@ -1,11 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createSessionToken } from "../worker/auth.js";
 import worker from "../worker/index.js";
 import { getPlayerProfile, recordCompletedMatch } from "../worker/profile.js";
+import { createSession } from "../worker/session.js";
 
-const sessionSecret = "profile-session-secret";
 const profileUser = {
   provider: "telegram",
   id: "42",
@@ -22,8 +21,8 @@ const rivalUser = {
 };
 
 test("profile endpoints save completed matches and return player statistics", async () => {
-  const env = { SESSION_SECRET: sessionSecret, DB: new MemoryD1() };
-  const token = await createSessionToken(profileUser, sessionSecret);
+  const env = { DB: new MemoryD1() };
+  const token = await sessionToken(env.DB, profileUser);
   const match = {
     id: "match-1",
     mode: "agent",
@@ -133,9 +132,8 @@ test("player profiles derive achievement totals from saved match statistics", as
   ]);
 });
 
-test("profile endpoints require a signed session token", async () => {
+test("profile endpoints require an opaque session token", async () => {
   const response = await worker.fetch(new Request("https://worker.test/profile/me"), {
-    SESSION_SECRET: sessionSecret,
     DB: new MemoryD1(),
   });
 
@@ -149,7 +147,6 @@ test("profile endpoints reject invalid session tokens as unauthorized", async ()
       headers: { Authorization: "Bearer invalid.token" },
     }),
     {
-      SESSION_SECRET: sessionSecret,
       DB: new MemoryD1(),
     },
   );
@@ -158,8 +155,8 @@ test("profile endpoints reject invalid session tokens as unauthorized", async ()
 });
 
 test("profile match recording validates result payloads", async () => {
-  const env = { SESSION_SECRET: sessionSecret, DB: new MemoryD1() };
-  const token = await createSessionToken(profileUser, sessionSecret);
+  const env = { DB: new MemoryD1() };
+  const token = await sessionToken(env.DB, profileUser);
 
   const response = await worker.fetch(
     new Request("https://worker.test/profile/matches", {
@@ -178,8 +175,8 @@ test("profile match recording validates result payloads", async () => {
 });
 
 test("profile match endpoint rejects client-submitted online results", async () => {
-  const env = { SESSION_SECRET: sessionSecret, DB: new MemoryD1() };
-  const token = await createSessionToken(profileUser, sessionSecret);
+  const env = { DB: new MemoryD1() };
+  const token = await sessionToken(env.DB, profileUser);
 
   const response = await worker.fetch(
     new Request("https://worker.test/profile/matches", {
@@ -212,17 +209,19 @@ test("profile match endpoint rejects client-submitted online results", async () 
   assert.deepEqual(await response.json(), { error: "Online results are recorded by the game server" });
 });
 
-test("profile storage is required before reading or writing matches", async () => {
-  const token = await createSessionToken(profileUser, sessionSecret);
+test("profile endpoints fail generically when auth storage is unavailable", async () => {
+  const token = await sessionToken(new MemoryD1(), profileUser);
 
   const profileResponse = await worker.fetch(
     new Request("https://worker.test/profile/me", {
       headers: { Authorization: `Bearer ${token}` },
     }),
-    { SESSION_SECRET: sessionSecret },
+    {},
   );
-  assert.equal(profileResponse.status, 400);
-  assert.deepEqual(await profileResponse.json(), { error: "Profile storage is not configured" });
+  const body = await profileResponse.text();
+  assert.equal(profileResponse.status, 401);
+  assert.deepEqual(JSON.parse(body), { error: "Authentication failed" });
+  assert.doesNotMatch(body, new RegExp(`${token}|session|user`, "i"));
 
   await assert.rejects(
     () => recordCompletedMatch(null, profileUser, completedMatchPayload()),
@@ -584,9 +583,14 @@ function completedMatchPayload() {
   };
 }
 
+async function sessionToken(db, user) {
+  return (await createSession(db, user)).token;
+}
+
 class MemoryD1 {
   constructor() {
     this.users = new Map();
+    this.sessions = new Map();
     this.matches = [];
   }
 
@@ -622,6 +626,32 @@ class MemoryStatement {
         created_at: existing?.created_at ?? now,
         updated_at: now,
       });
+      return { success: true };
+    }
+
+    if (this.sql.startsWith("INSERT INTO auth_sessions")) {
+      const [tokenHash, userKey, createdAt, expiresAt, lastUsedAt] = this.params;
+      this.db.sessions.set(tokenHash, {
+        token_hash: tokenHash,
+        user_key: userKey,
+        created_at: createdAt,
+        expires_at: expiresAt,
+        last_used_at: lastUsedAt,
+      });
+      return { success: true };
+    }
+
+    if (this.sql.startsWith("UPDATE auth_sessions SET last_used_at")) {
+      const [lastUsedAt, tokenHash] = this.params;
+      const session = this.db.sessions.get(tokenHash);
+      if (session) {
+        session.last_used_at = lastUsedAt;
+      }
+      return { success: true };
+    }
+
+    if (this.sql.startsWith("DELETE FROM auth_sessions WHERE token_hash = ?")) {
+      this.db.sessions.delete(this.params[0]);
       return { success: true };
     }
 
@@ -671,6 +701,20 @@ class MemoryStatement {
   }
 
   async first() {
+    if (this.sql.startsWith("SELECT s.expires_at")) {
+      const session = this.db.sessions.get(this.params[0]);
+      const user = session && this.db.users.get(session.user_key);
+      return session && user
+        ? {
+            expires_at: session.expires_at,
+            provider: user.provider,
+            provider_id: user.provider_id,
+            name: user.name,
+            username: user.username,
+            photo_url: user.photo_url,
+          }
+        : null;
+    }
     const rows = await this.rows();
     return rows[0] ?? null;
   }

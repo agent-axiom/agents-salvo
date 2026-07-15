@@ -14,7 +14,6 @@ const canonicalWebTarget = "https://agent-axiom.github.io/agents-salvo/";
 const jwksUri = "https://oauth.telegram.org/.well-known/jwks.json";
 const clientId = "telegram-client-id";
 const clientSecret = "telegram-client-secret";
-const sessionSecret = "salvo-session-secret";
 const keyId = "telegram-worker-test-key";
 
 const signingKeys = await cryptoApi.subtle.generateKey(
@@ -254,7 +253,7 @@ test("Telegram OIDC callback rejects expired, missing, and malformed flow inputs
   assert.equal(db.queryOne("SELECT COUNT(*) AS count FROM telegram_login_tickets").count, 0);
 });
 
-test("Telegram OIDC redeem returns the legacy signed session and consumes the ticket once", async (t) => {
+test("Telegram OIDC redeem returns a hashed opaque session and consumes the ticket once", async (t) => {
   const db = memoryD1(t);
   const ticket = await successfulCallbackTicket(db, "web");
   const ctx = waitUntilContext();
@@ -265,8 +264,18 @@ test("Telegram OIDC redeem returns the legacy signed session and consumes the ti
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.deepEqual(payload.user, telegramUser());
-  assert.match(payload.token, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  assert.match(payload.token, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(payload.token.includes(ticket), false);
+  const storedSession = db.queryOne("SELECT * FROM auth_sessions WHERE token_hash = ?", await sha256Base64Url(payload.token));
+  assert.equal(storedSession.user_key, "telegram:42");
+  assert.equal(db.serializedRows().includes(payload.token), false);
+
+  const me = await worker.fetch(
+    new Request("https://worker.test/auth/me", { headers: { Authorization: `Bearer ${payload.token}` } }),
+    oidcEnv(db),
+  );
+  assert.equal(me.status, 200);
+  assert.deepEqual(await me.json(), { user: telegramUser() });
   assert.notEqual(
     db.queryOne("SELECT consumed_at FROM telegram_login_tickets WHERE ticket_hash = ?", await sha256Base64Url(ticket))
       .consumed_at,
@@ -356,6 +365,7 @@ class MemoryD1 {
     return JSON.stringify({
       flows: this.database.prepare("SELECT * FROM telegram_oidc_flows ORDER BY state_hash").all(),
       tickets: this.database.prepare("SELECT * FROM telegram_login_tickets ORDER BY ticket_hash").all(),
+      sessions: this.database.prepare("SELECT * FROM auth_sessions ORDER BY token_hash").all(),
     });
   }
 
@@ -395,7 +405,6 @@ function oidcEnv(db, overrides = {}) {
     DB: db,
     TELEGRAM_CLIENT_ID: clientId,
     TELEGRAM_CLIENT_SECRET: clientSecret,
-    SESSION_SECRET: sessionSecret,
     ...overrides,
   };
 }

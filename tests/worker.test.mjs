@@ -7,6 +7,7 @@ import { gamePresets } from "../src/core/presets.js";
 import { createSessionToken } from "../worker/auth.js";
 import worker, { BattleRoom, createPlayerSnapshot } from "../worker/index.js";
 import { createOnlineReplayRecord } from "../worker/replay.js";
+import { createSession } from "../worker/session.js";
 
 const cryptoApi = globalThis.crypto ?? webcrypto;
 const textEncoder = new TextEncoder();
@@ -114,7 +115,7 @@ test("createPlayerSnapshot uses room preset before game start", () => {
 test("worker authenticates Telegram login payloads and returns the current user", async () => {
   const env = {
     TELEGRAM_BOT_TOKEN: "123456:secret-token",
-    SESSION_SECRET: "session-secret",
+    DB: new RecordingD1(),
   };
   const payload = {
     id: "42",
@@ -136,7 +137,10 @@ test("worker authenticates Telegram login payloads and returns the current user"
   const loginPayload = await loginResponse.json();
   assert.equal(loginPayload.user.id, "42");
   assert.equal(loginPayload.user.name, "Ivan");
-  assert.ok(loginPayload.token);
+  assert.match(loginPayload.token, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(env.DB.sessions.length, 1);
+  assert.equal(env.DB.sessions[0].token_hash, await sha256Base64Url(loginPayload.token));
+  assert.equal(JSON.stringify(env.DB.sessions).includes(loginPayload.token), false);
 
   const meResponse = await worker.fetch(
     new Request("https://worker.test/auth/me", {
@@ -149,15 +153,83 @@ test("worker authenticates Telegram login payloads and returns the current user"
 });
 
 test("worker returns anonymous auth state without a session token", async () => {
-  const response = await worker.fetch(new Request("https://worker.test/auth/me"), {
-    SESSION_SECRET: "session-secret",
-  });
+  const response = await worker.fetch(new Request("https://worker.test/auth/me"), {});
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { user: null });
 });
 
-test("worker handles CORS, not found, logout, and room routing", async () => {
+test("worker logout revokes only the current opaque session", async () => {
+  const env = { DB: new RecordingD1() };
+  const user = { provider: "telegram", id: "42", name: "Ivan", username: "ivan", photoUrl: "" };
+  const first = await createSession(env.DB, user);
+  const second = await createSession(env.DB, user);
+
+  const anonymous = await worker.fetch(new Request("https://worker.test/auth/logout", { method: "POST" }), env);
+  assert.equal(anonymous.status, 401);
+  assert.deepEqual(await anonymous.json(), { error: "Authentication required" });
+
+  const logout = await worker.fetch(
+    new Request("https://worker.test/auth/logout", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${first.token}` },
+    }),
+    env,
+  );
+  assert.equal(logout.status, 200);
+  assert.deepEqual(await logout.json(), { ok: true });
+  assert.equal(env.DB.sessions.length, 1);
+
+  for (const path of ["/auth/me", "/auth/logout"]) {
+    const response = await worker.fetch(
+      new Request(`https://worker.test${path}`, {
+        method: path.endsWith("logout") ? "POST" : "GET",
+        headers: { Authorization: `Bearer ${first.token}` },
+      }),
+      env,
+    );
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { error: "Authentication failed" });
+  }
+
+  const secondMe = await worker.fetch(
+    new Request("https://worker.test/auth/me", { headers: { Authorization: `Bearer ${second.token}` } }),
+    env,
+  );
+  assert.equal(secondMe.status, 200);
+  assert.deepEqual(await secondMe.json(), { user });
+});
+
+test("worker rejects legacy signed tokens and redacts auth storage failures", async () => {
+  const user = { provider: "telegram", id: "42", name: "Ivan", username: "ivan", photoUrl: "" };
+  const signedToken = await createSessionToken(user, "obsolete-session-secret");
+  const signedResponse = await worker.fetch(
+    new Request("https://worker.test/auth/me", { headers: { Authorization: `Bearer ${signedToken}` } }),
+    { DB: new RecordingD1(), SESSION_SECRET: "obsolete-session-secret" },
+  );
+  assert.equal(signedResponse.status, 401);
+  assert.deepEqual(await signedResponse.json(), { error: "Authentication failed" });
+
+  const malformedResponse = await worker.fetch(
+    new Request("https://worker.test/auth/me", { headers: { Authorization: "Bearer" } }),
+    { DB: new RecordingD1() },
+  );
+  assert.equal(malformedResponse.status, 401);
+  assert.deepEqual(await malformedResponse.json(), { error: "Authentication failed" });
+
+  const opaqueToken = "sensitive_auth_token_value_".padEnd(43, "x");
+  assert.equal(opaqueToken.length, 43);
+  const missingDb = await worker.fetch(
+    new Request("https://worker.test/auth/me", { headers: { Authorization: `Bearer ${opaqueToken}` } }),
+    {},
+  );
+  const body = await missingDb.text();
+  assert.equal(missingDb.status, 401);
+  assert.deepEqual(JSON.parse(body), { error: "Authentication failed" });
+  assert.doesNotMatch(body, /sensitive|auth_token|session|user/i);
+});
+
+test("worker handles CORS, not found, and room routing", async () => {
   const optionsResponse = await worker.fetch(new Request("https://worker.test/rooms", { method: "OPTIONS" }), {});
   assert.equal(optionsResponse.status, 200);
   assert.equal(optionsResponse.headers.get("Access-Control-Allow-Origin"), "*");
@@ -165,10 +237,6 @@ test("worker handles CORS, not found, logout, and room routing", async () => {
   const notFoundResponse = await worker.fetch(new Request("https://worker.test/nope"), {});
   assert.equal(notFoundResponse.status, 404);
   assert.deepEqual(await notFoundResponse.json(), { error: "Not found" });
-
-  const logoutResponse = await worker.fetch(new Request("https://worker.test/auth/logout", { method: "POST" }), {});
-  assert.equal(logoutResponse.status, 200);
-  assert.deepEqual(await logoutResponse.json(), { ok: true });
 
   const namespace = new FakeBattleRoomNamespace();
   const joinResponse = await worker.fetch(
@@ -204,7 +272,7 @@ test("worker replay routes require auth and enforce replay statuses", async () =
     player_hits: 1,
     accuracy: 100,
   });
-  const env = { DB: db, SESSION_SECRET: "session-secret" };
+  const env = { DB: db };
   const participantHeaders = await authHeaders(
     { provider: "telegram", id: "1", name: "One", username: "one", photoUrl: "" },
     env,
@@ -246,10 +314,10 @@ test("worker replay routes require auth and enforce replay statuses", async () =
   assert.equal(
     (
       await worker.fetch(new Request("https://worker.test/profile/replays", { headers: participantHeaders }), {
-        SESSION_SECRET: env.SESSION_SECRET,
+        DB: null,
       })
     ).status,
-    503,
+    401,
   );
 
   db.replays[0].data_json = "corrupt";
@@ -267,10 +335,10 @@ test("worker replay routes require auth and enforce replay statuses", async () =
   assert.equal(
     (
       await worker.fetch(new Request("https://worker.test/replays/replay-route", { headers: participantHeaders }), {
-        SESSION_SECRET: env.SESSION_SECRET,
+        DB: null,
       })
     ).status,
-    503,
+    401,
   );
 });
 
@@ -299,7 +367,7 @@ test("worker returns auth errors for invalid Telegram login payloads", async () 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: "42" }),
     }),
-    { TELEGRAM_BOT_TOKEN: "bot-token", SESSION_SECRET: "session-secret" },
+    { TELEGRAM_BOT_TOKEN: "bot-token" },
   );
 
   assert.equal(response.status, 401);
@@ -307,7 +375,7 @@ test("worker returns auth errors for invalid Telegram login payloads", async () 
 });
 
 test("BattleRoom rejects invalid room auth tokens as unauthorized responses", async () => {
-  const room = new BattleRoom({ storage: new MemoryStorage() }, { SESSION_SECRET: "session-secret" });
+  const room = new BattleRoom({ storage: new MemoryStorage() }, { DB: new RecordingD1() });
   const response = await room.fetch(
     new Request("https://worker.test/rooms?code=BADTOK", {
       method: "POST",
@@ -316,11 +384,11 @@ test("BattleRoom rejects invalid room auth tokens as unauthorized responses", as
   );
 
   assert.equal(response.status, 401);
-  assert.deepEqual(await response.json(), { error: "Session token is invalid" });
+  assert.deepEqual(await response.json(), { error: "Authentication failed" });
 });
 
 test("BattleRoom requires Telegram sessions to create and join rooms", async () => {
-  const env = { SESSION_SECRET: "session-secret" };
+  const env = { DB: new RecordingD1() };
   const room = new BattleRoom({ storage: new MemoryStorage() }, env);
 
   const anonymousCreate = await room.fetch(new Request("https://worker.test/rooms?code=ROOM01", { method: "POST" }));
@@ -356,7 +424,7 @@ test("BattleRoom requires Telegram sessions to create and join rooms", async () 
 
 test("BattleRoom creates, joins, and rejects duplicate or full rooms", async () => {
   const storage = new MemoryStorage();
-  const env = { SESSION_SECRET: "session-secret" };
+  const env = { DB: new RecordingD1() };
   const room = new BattleRoom({ storage }, env);
   const p1Headers = await authHeaders(
     { provider: "telegram", id: "1", name: "One", username: "one", photoUrl: "" },
@@ -1297,7 +1365,13 @@ async function signTelegramPayload(payload, botToken) {
 }
 
 async function authHeaders(user, env) {
-  return { Authorization: `Bearer ${await createSessionToken(user, env.SESSION_SECRET)}` };
+  const { token } = await createSession(env.DB, user);
+  return { Authorization: `Bearer ${token}` };
+}
+
+async function sha256Base64Url(value) {
+  const digest = await cryptoApi.subtle.digest("SHA-256", textEncoder.encode(value));
+  return Buffer.from(digest).toString("base64url");
 }
 
 async function fireArchiveAlarm(room, storage) {
@@ -1532,6 +1606,7 @@ class FakeUpgradeResponse {
 class RecordingD1 {
   constructor() {
     this.users = [];
+    this.sessions = [];
     this.matches = [];
     this.replays = [];
     this.preparedSql = [];
@@ -1545,6 +1620,7 @@ class RecordingD1 {
   async batch(statements) {
     const snapshot = {
       users: structuredClone(this.users),
+      sessions: structuredClone(this.sessions),
       matches: structuredClone(this.matches),
       replays: structuredClone(this.replays),
     };
@@ -1561,6 +1637,7 @@ class RecordingD1 {
       return results;
     } catch (error) {
       this.users = snapshot.users;
+      this.sessions = snapshot.sessions;
       this.matches = snapshot.matches;
       this.replays = snapshot.replays;
       throw error;
@@ -1633,8 +1710,47 @@ class RecordingStatement {
 
   async run() {
     if (this.sql.startsWith("INSERT INTO users")) {
-      const [userKey, provider, providerId, name, username, photoUrl] = this.params;
-      this.db.users.push({ user_key: userKey, provider, provider_id: providerId, name, username, photo_url: photoUrl });
+      const [userKey, provider, providerId, name, username, photoUrl, now] = this.params;
+      const existing = this.db.users.find((user) => user.user_key === userKey);
+      const row = {
+        user_key: userKey,
+        provider,
+        provider_id: providerId,
+        name,
+        username,
+        photo_url: photoUrl,
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+      };
+      if (existing) {
+        Object.assign(existing, row);
+      } else {
+        this.db.users.push(row);
+      }
+      return { success: true };
+    }
+    if (this.sql.startsWith("INSERT INTO auth_sessions")) {
+      const [tokenHash, userKey, createdAt, expiresAt, lastUsedAt] = this.params;
+      this.db.sessions.push({
+        token_hash: tokenHash,
+        user_key: userKey,
+        created_at: createdAt,
+        expires_at: expiresAt,
+        last_used_at: lastUsedAt,
+      });
+      return { success: true };
+    }
+    if (this.sql.startsWith("UPDATE auth_sessions SET last_used_at")) {
+      const [lastUsedAt, tokenHash] = this.params;
+      const session = this.db.sessions.find((row) => row.token_hash === tokenHash);
+      if (session) {
+        session.last_used_at = lastUsedAt;
+      }
+      return { success: true };
+    }
+    if (this.sql.startsWith("DELETE FROM auth_sessions WHERE token_hash = ?")) {
+      const [tokenHash] = this.params;
+      this.db.sessions = this.db.sessions.filter((row) => row.token_hash !== tokenHash);
       return { success: true };
     }
     if (this.sql.startsWith("INSERT OR IGNORE INTO matches")) {
@@ -1750,6 +1866,20 @@ class RecordingStatement {
   }
 
   async first() {
+    if (this.sql.startsWith("SELECT s.expires_at")) {
+      const session = this.db.sessions.find((row) => row.token_hash === this.params[0]);
+      const user = session && this.db.users.find((row) => row.user_key === session.user_key);
+      return session && user
+        ? {
+            expires_at: session.expires_at,
+            provider: user.provider,
+            provider_id: user.provider_id,
+            name: user.name,
+            username: user.username,
+            photo_url: user.photo_url,
+          }
+        : null;
+    }
     if (this.sql.startsWith("SELECT COUNT(*) AS online_matches")) {
       const [targetId, targetPlayedAt, userKey, upperPlayedAt, upperId] = this.params;
       const rows = this.db.matches.filter(

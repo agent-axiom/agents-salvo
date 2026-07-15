@@ -10,14 +10,8 @@ import {
 } from "../src/core/game.js";
 import { getGamePreset } from "../src/core/presets.js";
 import { summarizeBattleLog } from "../src/core/stats.js";
-import {
-  createSessionToken,
-  parseBearerToken,
-  publicUser,
-  verifySessionToken,
-  verifyTelegramLoginPayload,
-} from "./auth.js";
-import { cleanupExpiredAuthRecords } from "./session.js";
+import { parseBearerToken, publicUser, verifyTelegramLoginPayload } from "./auth.js";
+import { cleanupExpiredAuthRecords, createSession, resolveSession, revokeSession } from "./session.js";
 import {
   createTelegramAuthorization,
   exchangeTelegramCode,
@@ -94,7 +88,7 @@ export default {
       return currentUser(request, env);
     }
     if (route.kind === "authLogout" && request.method === "POST") {
-      return json({ ok: true });
+      return logout(request, env);
     }
     if (route.kind === "profileMe" && request.method === "GET") {
       return playerProfile(request, env);
@@ -157,7 +151,8 @@ export class BattleRoom {
     if (existing) {
       return json({ error: "Room already exists" }, 409);
     }
-    const user = publicUser(await requireUser(request, this.env));
+    const { user: authorizedUser } = await authorizeRequest(request, this.env);
+    const user = publicUser(authorizedUser);
 
     const room = {
       code: roomCode,
@@ -183,7 +178,8 @@ export class BattleRoom {
       return json({ error: "Room is full" }, 409);
     }
 
-    room.players.p2 = { token: createToken(), board: null, user: publicUser(await requireUser(request, this.env)) };
+    const { user } = await authorizeRequest(request, this.env);
+    room.players.p2 = { token: createToken(), board: null, user: publicUser(user) };
     await this.saveRoom(room);
     await this.broadcast(room);
 
@@ -783,13 +779,19 @@ function routeRequest(url) {
 }
 
 async function authenticateTelegram(request, env) {
+  let user;
   try {
     const payload = await request.json();
-    const user = await verifyTelegramLoginPayload(payload, env.TELEGRAM_BOT_TOKEN);
-    const token = await createSessionToken(user, env.SESSION_SECRET);
-    return json({ token, user });
+    user = await verifyTelegramLoginPayload(payload, env.TELEGRAM_BOT_TOKEN);
   } catch (error) {
     return json({ error: error.message }, 401);
+  }
+
+  try {
+    const { token } = await createSession(env.DB, user);
+    return json({ token, user });
+  } catch {
+    return json({ error: "Telegram authentication failed" }, 401);
   }
 }
 
@@ -926,7 +928,7 @@ async function redeemTelegramMobileTicket(request, env, ctx) {
       .bind(now, await hashTelegramSecret(payload.ticket), now)
       .first();
     const user = parseTelegramTicketUser(ticket?.user_json);
-    const token = await createSessionToken(user, env.SESSION_SECRET);
+    const { token } = await createSession(env.DB, user);
     scheduleTelegramCleanup(env.DB, ctx);
     return json({ token, user });
   } catch {
@@ -1064,20 +1066,30 @@ function currentEpochSeconds() {
 }
 
 async function currentUser(request, env) {
-  const token = parseBearerToken(request);
-  if (!token) {
+  if (!request.headers.has("Authorization")) {
     return json({ user: null });
   }
   try {
-    return json({ user: publicUser(await verifySessionToken(token, env.SESSION_SECRET)) });
+    const { user } = await authorizeRequest(request, env);
+    return json({ user: publicUser(user) });
+  } catch {
+    return json({ error: "Authentication failed" }, 401);
+  }
+}
+
+async function logout(request, env) {
+  try {
+    const { token } = await authorizeRequest(request, env);
+    await revokeSession(env.DB, token);
+    return json({ ok: true });
   } catch (error) {
-    return json({ error: error.message }, 401);
+    return json({ error: authenticationErrorMessage(error) }, 401);
   }
 }
 
 async function playerProfile(request, env) {
   try {
-    const user = await requireUser(request, env);
+    const { user } = await authorizeRequest(request, env);
     const [profile, leaderboardPayload] = await Promise.all([
       getPlayerProfile(env.DB, user),
       getLeaderboard(env.DB),
@@ -1090,7 +1102,7 @@ async function playerProfile(request, env) {
 
 async function saveProfileMatch(request, env) {
   try {
-    const user = await requireUser(request, env);
+    const { user } = await authorizeRequest(request, env);
     const match = await recordCompletedMatch(env.DB, user, await request.json(), { source: "client" });
     const [profile, leaderboardPayload] = await Promise.all([
       getPlayerProfile(env.DB, user),
@@ -1118,7 +1130,7 @@ async function leaderboard(env) {
 
 async function archivedReplay(request, env, replayId) {
   try {
-    const user = await requireUser(request, env);
+    const { user } = await authorizeRequest(request, env);
     return json({ replay: await getAuthorizedReplay(env.DB, replayId, user) });
   } catch (error) {
     return json({ error: error.message }, replayErrorStatus(error));
@@ -1127,7 +1139,7 @@ async function archivedReplay(request, env, replayId) {
 
 async function playerReplays(request, env, url) {
   try {
-    const user = await requireUser(request, env);
+    const { user } = await authorizeRequest(request, env);
     const archive = await listPlayerReplays(env.DB, user, {
       cursor: url.searchParams.get("cursor") || undefined,
     });
@@ -1137,12 +1149,20 @@ async function playerReplays(request, env, url) {
   }
 }
 
-async function requireUser(request, env) {
+async function authorizeRequest(request, env) {
   const token = parseBearerToken(request);
   if (!token) {
     throw new Error("Authentication required");
   }
-  return verifySessionToken(token, env.SESSION_SECRET);
+  try {
+    return { token, user: await resolveSession(env.DB, token) };
+  } catch {
+    throw new Error("Authentication failed");
+  }
+}
+
+function authenticationErrorMessage(error) {
+  return error?.message === "Authentication required" ? "Authentication required" : "Authentication failed";
 }
 
 function authErrorStatus(error) {
