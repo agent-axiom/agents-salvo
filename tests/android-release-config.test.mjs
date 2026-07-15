@@ -151,6 +151,34 @@ test("release verifier rejects unexpected identity and failed signatures", () =>
   );
 });
 
+test("release verifier accepts range-qualified apksigner certificate labels", () => {
+  const artifactPath = releaseFixture();
+  const result = verifyAndroidRelease({
+    artifactPath,
+    runCommand: validCommandRunner({
+      signatureOutput:
+        "Verifies\n" +
+        `Signer (minSdkVersion=24, maxSdkVersion=35) certificate SHA-256 digest: ${ANDROID_RELEASE_CERTIFICATE_SHA256}\n`,
+    }),
+  });
+
+  assert.equal(result.certificateSha256, ANDROID_RELEASE_CERTIFICATE_SHA256);
+});
+
+test("release verifier rejects reports containing another signer certificate", () => {
+  assert.throws(
+    () => verifyAndroidRelease({
+      artifactPath: releaseFixture(),
+      runCommand: validCommandRunner({
+        signatureOutput:
+          `Signer #1 certificate SHA-256 digest: ${ANDROID_RELEASE_CERTIFICATE_SHA256}\n` +
+          "Signer (minSdkVersion=36, maxSdkVersion=37) certificate SHA-256 digest: DEADBEEF\n",
+      }),
+    }),
+    /unexpected Android signing certificate/i,
+  );
+});
+
 test("release verifier rejects missing or unexpected merged APK permissions", () => {
   assert.throws(
     () => verifyAndroidRelease({
