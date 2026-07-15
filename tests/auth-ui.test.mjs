@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 const app = readFileSync("src/app.js", "utf8");
 const index = readFileSync("src/index.html", "utf8");
 const remote = readFileSync("src/remote.js", "utf8");
+const styles = readFileSync("src/styles.css", "utf8");
 
 test("frontend config exposes the public Telegram bot username only", () => {
   assert.match(index, /telegramBotUsername:\s*"agents_salvo_bot"/);
@@ -28,6 +29,14 @@ test("frontend selects legacy or OIDC Telegram login from worker capability", ()
   assert.match(app, /salvo\.authToken/);
   assert.match(app, /data-action="auth-logout"/);
   assert.doesNotMatch(app, /auth\.mobileSecureLoginPending/);
+});
+
+test("Telegram login requires an explicit, readable privacy consent control", () => {
+  assert.match(app, /data-action="auth-consent"/);
+  assert.match(app, /authConsentSettingKey/);
+  assert.match(app, /requireTelegramAuthConsent\(\)/);
+  assert.match(styles, /\.auth-consent\s*\{/);
+  assert.match(styles, /\.auth-consent input/);
 });
 
 test("frontend exposes player profile and completed battle recording hooks", () => {

@@ -2,7 +2,12 @@ node_modules/
 dist/
 .wrangler/
 .dev.vars
+.env
 .DS_Store
 .idea/
 .superpowers/
 .worktrees/
+*.jks
+*.keystore
+android/release.properties
+android/app/build/outputs/

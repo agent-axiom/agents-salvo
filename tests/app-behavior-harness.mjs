@@ -66,7 +66,7 @@ async function runDeferredStartupScenario() {
   await flushMicrotasks();
   assert.equal(harness.calls.networkSamples, 1);
   assert.equal(harness.calls.secureReads, 1);
-  assert.equal(harness.calls.preferenceReads.length, 6);
+  assert.equal(harness.calls.preferenceReads.length, 7);
   assert.equal(harness.calls.snapshotReads, 0);
   assert.equal(harness.fetchCalls.some(({ url }) => url.endsWith("/auth/me")), false);
 
@@ -309,7 +309,8 @@ async function runAuthCapabilityScenario() {
       options: { capability: { method: "legacy" } },
       method: "legacy",
       oidc: false,
-      widget: true,
+      widget: false,
+      widgetAfterConsent: true,
       unavailable: false,
     },
     {
@@ -387,6 +388,12 @@ async function runAuthCapabilityScenario() {
     if (authCase.options.workerUrl === "") {
       assert.equal(harness.fetchCalls.some(({ url }) => url.endsWith("/auth/telegram/config")), false);
     }
+    if (authCase.widgetAfterConsent) {
+      await harness.root.change("auth-consent", { checked: true });
+      assert.equal(app.getState().auth.consent, true);
+      assert.equal(harness.root.innerHTML.includes('id="telegram-login-slot"'), true);
+      assert.equal(harness.document.createdScripts.length > 0, true);
+    }
     await app.stop();
   }
 }
@@ -406,6 +413,16 @@ async function runAuthStartScenario() {
     const app = bootSalvoApp(harness.dependencies);
     await app.startup.done;
 
+    assert.equal(app.getState().auth.consent, false);
+    assert.match(harness.root.innerHTML, /data-action="auth-consent"/);
+    assert.match(harness.root.innerHTML, /data-action="auth-telegram-oidc"[^>]*disabled/);
+    await harness.root.click("auth-telegram-oidc");
+    assert.equal(harness.fetchCalls.some(({ url }) => url.endsWith("/auth/telegram/mobile/start")), false);
+    assert.deepEqual(harness.calls.openedUrls, []);
+    assert.match(harness.root.innerHTML, /consent|соглас|同意/i);
+
+    await harness.root.change("auth-consent", { checked: true });
+    assert.equal(app.getState().auth.consent, true);
     await harness.root.click("auth-telegram-oidc");
     const request = harness.fetchCalls.find(({ url }) => url.endsWith("/auth/telegram/mobile/start"));
     assert.deepEqual(JSON.parse(request.init.body), { platform: expectedPlatform });
@@ -426,6 +443,7 @@ async function runAuthNativeCallbackScenario() {
   const harness = createAppHarness({
     native: true,
     platformName: "android",
+    preferences: resolvedDeferred("accepted"),
     capability: { method: "oidc" },
     onCloseExternalUrl: async () => events.push("close"),
     onSecureSet: async (token) => events.push(`secure:${token}`),
@@ -463,6 +481,7 @@ async function runAuthNativeCallbackScenario() {
   const cancelledApp = bootSalvoApp(cancelled.dependencies);
   await cancelledApp.startup.done;
   await cancelled.root.click("start-agent");
+  await cancelled.root.change("auth-consent", { checked: true });
   await cancelled.root.click("auth-telegram-oidc");
   assert.equal(cancelledApp.getState().auth.loading, true);
   await cancelled.emitDeepLink("salvo://open/auth/error");
@@ -492,6 +511,7 @@ async function runAuthRacesScenario() {
   });
   const startsApp = bootSalvoApp(starts.dependencies);
   await startsApp.startup.done;
+  await starts.root.change("auth-consent", { checked: true });
   const staleStart = starts.root.click("auth-telegram-oidc");
   await waitFor(() => startCount === 1);
   const currentStart = starts.root.click("auth-telegram-oidc");
@@ -507,6 +527,7 @@ async function runAuthRacesScenario() {
   const callbacks = createAppHarness({
     native: true,
     platformName: "android",
+    preferences: resolvedDeferred("accepted"),
     capability: { method: "oidc" },
     redeemResponse() {
       redeemCount += 1;
@@ -531,6 +552,7 @@ async function runAuthRacesScenario() {
   const duplicates = createAppHarness({
     native: true,
     platformName: "android",
+    preferences: resolvedDeferred("accepted"),
     capability: { method: "oidc" },
     redeemResponse() {
       duplicateCount += 1;
@@ -552,6 +574,7 @@ async function runAuthRacesScenario() {
   const logoutRace = createAppHarness({
     native: true,
     platformName: "android",
+    preferences: resolvedDeferred("accepted"),
     capability: { method: "oidc" },
     redeemResponse: () => logoutRedeem.promise,
   });
@@ -575,6 +598,7 @@ async function runAuthBootstrapScenario() {
   const bootstrap = createAppHarness({
     initialUrl: `https://agent-axiom.github.io/agents-salvo/?view=fleet&auth_ticket=${ticket}#scores`,
     secureSession: resolvedDeferred("old-session-token"),
+    preferences: resolvedDeferred("accepted"),
     capability: { method: "oidc" },
     redeemResponse: {
       token: "bootstrap-token",
@@ -628,6 +652,7 @@ async function runAuthRecoveryScenario() {
   const persistence = createAppHarness({
     native: true,
     platformName: "android",
+    preferences: resolvedDeferred("accepted"),
     capability: { method: "oidc" },
     redeemResponse: {
       token: "must-not-commit",
@@ -975,6 +1000,12 @@ function createRootHarness(document) {
       if (focus) target.focus();
       const event = { target };
       await Promise.all((listeners.get("click") ?? []).map((listener) => listener(event)));
+    },
+    async change(action, values = {}) {
+      const target = makeActionElement(action);
+      Object.assign(target, values);
+      const event = { target };
+      await Promise.all((listeners.get("change") ?? []).map((listener) => listener(event)));
     },
   };
   return root;

@@ -585,6 +585,30 @@ input {
   line-height: 1.35;
 }
 
+.auth-consent {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  padding: 10px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface-strong) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.auth-consent input {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  box-shadow: none;
+}
+
 .auth-privacy a {
   color: var(--primary-ink);
   font-weight: 700;

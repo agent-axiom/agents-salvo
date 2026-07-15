@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 import capacitorCliConfig from "@capacitor/cli/dist/config.js";
@@ -280,6 +281,7 @@ test("mobile toolchain is pinned and uses bundled local web assets", () => {
     "@capacitor/cli": "8.4.1",
     "@capacitor/ios": "8.4.1",
     esbuild: "0.28.1",
+    pngjs: "7.0.0",
     typescript: "5.9.3",
     yaml: "2.9.0",
   });
@@ -350,23 +352,26 @@ test("Capacitor CLI loads the local TypeScript config", async () => {
 });
 
 test("mobile build emits bundled local web artifacts", () => {
-  execFileSync(process.execPath, ["scripts/build.mjs"]);
+  const buildOutput = mkdtempSync(join(tmpdir(), "salvo-mobile-build-"));
+  execFileSync(process.execPath, ["scripts/build.mjs"], {
+    env: { ...process.env, SALVO_BUILD_DIR: buildOutput },
+  });
 
-  assert.equal(existsSync("dist/index.html"), true);
-  assert.equal(existsSync("dist/assets"), true);
+  assert.equal(existsSync(join(buildOutput, "index.html")), true);
+  assert.equal(existsSync(join(buildOutput, "assets")), true);
   assert.equal(
-    readFileSync("dist/index.html", "utf8"),
+    readFileSync(join(buildOutput, "index.html"), "utf8"),
     readFileSync("src/index.html", "utf8"),
   );
   assert.deepEqual(
     readFileSync(
-      "dist/assets/images/backgrounds/paper-texture-512.png",
+      join(buildOutput, "assets/images/backgrounds/paper-texture-512.png"),
     ),
     readFileSync(
       "src/assets/images/backgrounds/paper-texture-512.png",
     ),
   );
-  const bundledApp = readFileSync("dist/app.js", "utf8");
+  const bundledApp = readFileSync(join(buildOutput, "app.js"), "utf8");
   assert.doesNotMatch(
     bundledApp,
     /(?:from\s*|import\s*(?:\(\s*)?)["']@capacitor\//,
@@ -375,6 +380,24 @@ test("mobile build emits bundled local web artifacts", () => {
     bundledApp,
     /(?:from\s*|import\s*(?:\(\s*)?)["']\.\.?\//,
   );
+});
+
+test("build output override rejects non-temporary directories before deleting files", () => {
+  const unsafeOutput = mkdtempSync(join(process.cwd(), ".salvo-unsafe-build-"));
+  const sentinel = join(unsafeOutput, "keep.txt");
+  writeFileSync(sentinel, "do not delete", "utf8");
+  try {
+    const result = spawnSync(process.execPath, ["scripts/build.mjs"], {
+      encoding: "utf8",
+      env: { ...process.env, SALVO_BUILD_DIR: unsafeOutput },
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /temporary directory/i);
+    assert.equal(readFileSync(sentinel, "utf8"), "do not delete");
+  } finally {
+    rmSync(unsafeOutput, { recursive: true, force: true });
+  }
 });
 
 test("mobile source artwork has deterministic opaque dimensions", () => {

@@ -1,0 +1,125 @@
+name: Build RuStore Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rustore-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Test and build signed Android release
+    if: github.ref == 'refs/heads/main'
+    environment: rustore-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Enforce coverage thresholds
+        run: npm run coverage
+
+      - name: Sync native project
+        run: npm run mobile:sync
+
+      - name: Test, lint, and assemble Android debug
+        run: android/gradlew -p android test lint assembleDebug
+
+      - name: Run Android instrumentation smoke test
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: 35
+          target: aosp_atd
+          arch: x86_64
+          emulator-boot-timeout: 300
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: android/gradlew -p android :app:connectedDebugAndroidTest
+
+      - name: Add Android verification tools to PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest_build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          test -x "$latest_build_tools/apksigner"
+          test -x "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
+          printf '%s\n' "$latest_build_tools" >> "$GITHUB_PATH"
+          printf '%s\n' "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+      - name: Verify published privacy notice
+        run: curl --fail --silent --show-error --location --retry 5 --retry-delay 5 --retry-all-errors https://agent-axiom.github.io/agents-salvo/privacy.html
+
+      - name: Decode release keystore
+        shell: bash
+        env:
+          RUSTORE_KEYSTORE_BASE64: ${{ secrets.RUSTORE_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$RUSTORE_KEYSTORE_BASE64"
+          printf '%s' "$RUSTORE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/salvo-release.jks"
+          chmod 600 "$RUNNER_TEMP/salvo-release.jks"
+          test -s "$RUNNER_TEMP/salvo-release.jks"
+
+      - name: Build signed APK and AAB
+        env:
+          SALVO_RELEASE_KEYSTORE: ${{ runner.temp }}/salvo-release.jks
+          SALVO_RELEASE_STORE_PASSWORD: ${{ secrets.RUSTORE_STORE_PASSWORD }}
+          SALVO_RELEASE_KEY_ALIAS: ${{ secrets.RUSTORE_KEY_ALIAS }}
+          SALVO_RELEASE_KEY_PASSWORD: ${{ secrets.RUSTORE_KEY_PASSWORD }}
+        run: android/gradlew -p android assembleRelease bundleRelease
+
+      - name: Verify signed APK
+        run: npm run android:release:verify
+
+      - name: Verify and checksum AAB
+        shell: bash
+        run: |
+          set -euo pipefail
+          aab="android/app/build/outputs/bundle/release/app-release.aab"
+          test -s "$aab"
+          jarsigner -verify -verbose -certs "$aab" | tee "$RUNNER_TEMP/aab-signature.txt"
+          grep -q "jar verified" "$RUNNER_TEMP/aab-signature.txt"
+          (
+            cd "$(dirname "$aab")"
+            sha256sum "$(basename "$aab")" > "$(basename "$aab").sha256"
+          )
+
+      - name: Upload signed RuStore package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: salvo-rustore-1.0.0-${{ github.run_number }}
+          path: |
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/apk/release/app-release.apk.sha256
+            android/app/build/outputs/bundle/release/app-release.aab
+            android/app/build/outputs/bundle/release/app-release.aab.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove decoded keystore
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/salvo-release.jks"

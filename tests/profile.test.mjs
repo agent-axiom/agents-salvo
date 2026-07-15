@@ -562,6 +562,21 @@ test("leaderboard endpoint ranks online players by rating", async () => {
       [2, "Captain Test", 1008, 2],
     ],
   );
+  assert.deepEqual(
+    Object.keys(payload.leaderboard.entries[0]).sort(),
+    [
+      "label",
+      "name",
+      "onlineLosses",
+      "onlineMatches",
+      "onlineWinRate",
+      "onlineWins",
+      "rank",
+      "rating",
+      "seasonMatches",
+      "seasonWins",
+    ],
+  );
 });
 
 function completedMatchPayload() {

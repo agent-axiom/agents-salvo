@@ -88,7 +88,9 @@ const telegramAuthBootstrap = platform.isNative()
 const root = document.querySelector("#app");
 if (!root) throw new Error("Salvo app root was not found");
 const trainingProgressSettingKey = "trainingProgress";
+const authConsentSettingKey = "authConsentV1";
 const canonicalReplayBaseUrl = "https://agent-axiom.github.io/agents-salvo/";
+const canonicalPrivacyUrl = `${canonicalReplayBaseUrl}privacy.html`;
 const resultReplayClock = createReplayClock({
   setInterval: (callback, delay) => window.setInterval(callback, delay),
   clearInterval: (handle) => window.clearInterval(handle),
@@ -149,6 +151,7 @@ const state = {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     telegramBotUsername: window.SALVO_CONFIG?.telegramBotUsername || "",
     method: "unknown",
+    consent: false,
     token: "",
     user: null,
     error: "",
@@ -312,6 +315,12 @@ function hydratePlatformPreferences() {
       }
       if (trainingProgress && typeof trainingProgress === "object" && !Array.isArray(trainingProgress)) {
         state.training.progress = trainingProgress;
+        schedulePlatformHydrationRender();
+      }
+    }),
+    preferenceCoordinator.hydrate(authConsentSettingKey, (consent) => {
+      if (consent === "accepted") {
+        state.auth.consent = true;
         schedulePlatformHydrationRender();
       }
     }),
@@ -783,10 +792,11 @@ function renderAuthControl() {
     return `
       <div class="auth-control">
         <span>${translate("auth.label")}</span>
+        ${renderTelegramAuthConsent()}
         <button
           class="primary-button auth-oidc-button"
           data-action="auth-telegram-oidc"
-          ${state.auth.loading ? "disabled" : ""}
+          ${state.auth.loading || !state.auth.consent ? "disabled" : ""}
         >${translate(state.auth.opening ? "auth.openingTelegram" : "auth.signInTelegram")}</button>
         ${state.auth.loading ? `<small>${translate(state.auth.opening ? "auth.openingTelegram" : "auth.loading")}</small>` : ""}
         ${state.auth.error ? `<small class="auth-error">${escapeHtml(state.auth.error)}</small>` : ""}
@@ -799,7 +809,8 @@ function renderAuthControl() {
     return `
       <div class="auth-control">
         <span>${translate("auth.label")}</span>
-        <div id="telegram-login-slot" class="telegram-login-slot" aria-label="${translate("auth.telegram")}"></div>
+        ${renderTelegramAuthConsent()}
+        ${state.auth.consent ? `<div id="telegram-login-slot" class="telegram-login-slot" aria-label="${translate("auth.telegram")}"></div>` : ""}
         ${state.auth.loading ? `<small>${translate("auth.loading")}</small>` : ""}
         ${state.auth.error ? `<small class="auth-error">${translate("auth.error", { message: state.auth.error })}</small>` : ""}
         ${renderTelegramAuthNotices()}
@@ -822,8 +833,17 @@ function renderTelegramAuthNotices() {
     <small class="auth-value-notice">${translate("auth.valueNotice")}</small>
     <small class="auth-privacy">
       ${translate("auth.privacyNotice")}
-      <a href="/agents-salvo/privacy.html" target="_blank" rel="noopener noreferrer">${translate("auth.privacyLink")}</a>.
+      <a href="/agents-salvo/privacy.html" data-action="open-privacy" target="_blank" rel="noopener noreferrer">${translate("auth.privacyLink")}</a>.
     </small>
+  `;
+}
+
+function renderTelegramAuthConsent() {
+  return `
+    <label class="auth-consent">
+      <input type="checkbox" data-action="auth-consent" ${state.auth.consent ? "checked" : ""}>
+      <span>${translate("auth.consent")}</span>
+    </label>
   `;
 }
 
@@ -2693,6 +2713,15 @@ root.addEventListener("change", async (event) => {
     render();
     await preferenceCoordinator.write("language", state.language);
   }
+  if (action === "auth-consent") {
+    state.auth.consent = Boolean(event.target.checked);
+    state.auth.error = "";
+    render();
+    await preferenceCoordinator.write(
+      authConsentSettingKey,
+      state.auth.consent ? "accepted" : "declined",
+    );
+  }
   if (action === "agent-difficulty") {
     state.agentDifficulty = event.target.value;
   }
@@ -2808,6 +2837,11 @@ root.addEventListener("click", async (event) => {
   }
 
   const action = button.dataset.action;
+  if (action === "open-privacy" && platform.isNative()) {
+    event.preventDefault();
+    await platform.openExternalUrl(canonicalPrivacyUrl);
+    return;
+  }
   void unlockAudio();
   if (action !== "shot" && action !== "online-shot" && action !== "audio-toggle") {
     playSound("ui");
@@ -3977,7 +4011,7 @@ function mountTelegramLoginWidget() {
     return;
   }
   const slot = document.querySelector("#telegram-login-slot");
-  if (!slot || state.auth.user || state.auth.loading) {
+  if (!slot || !state.auth.consent || state.auth.user || state.auth.loading) {
     return;
   }
   if (!state.network.connected || navigator.onLine === false) {
@@ -4438,6 +4472,7 @@ async function handleAuthFailure(error, request, controller) {
 }
 
 async function startTelegramOidc() {
+  if (!requireTelegramAuthConsent()) return false;
   const client = telegramAuthClient;
   const authPlatform = platform.isNative() ? platform.getPlatform() : "web";
   if (
@@ -4503,6 +4538,7 @@ function cancelTelegramAuth() {
 }
 
 async function redeemTelegramTicket(ticket) {
+  if (!requireTelegramAuthConsent()) return false;
   if (state.auth.user || authCallbacksBlocked || activeAuthTicket === ticket) return true;
   const client = telegramAuthClient;
   if (!client || !requireOnline(() => {
@@ -4560,6 +4596,7 @@ async function redeemTelegramTicket(ticket) {
 }
 
 async function handleTelegramAuth(payload) {
+  if (!requireTelegramAuthConsent()) return;
   if (!requireOnline((message) => {
     state.auth.error = message;
   })) return;
@@ -4606,6 +4643,13 @@ async function handleTelegramAuth(payload) {
       finishPrivateRequest("auth", controller);
     }
   }
+}
+
+function requireTelegramAuthConsent() {
+  if (state.auth.consent) return true;
+  state.auth.error = translate("auth.consentRequired");
+  render();
+  return false;
 }
 
 async function refreshAuth() {

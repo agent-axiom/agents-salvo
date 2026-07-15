@@ -1,5 +1,23 @@
 apply plugin: 'com.android.application'
 
+def releaseSigningEnvironment = [
+    SALVO_RELEASE_KEYSTORE: System.getenv('SALVO_RELEASE_KEYSTORE'),
+    SALVO_RELEASE_STORE_PASSWORD: System.getenv('SALVO_RELEASE_STORE_PASSWORD'),
+    SALVO_RELEASE_KEY_ALIAS: System.getenv('SALVO_RELEASE_KEY_ALIAS'),
+    SALVO_RELEASE_KEY_PASSWORD: System.getenv('SALVO_RELEASE_KEY_PASSWORD'),
+]
+def missingReleaseSigningEnvironment = releaseSigningEnvironment.findAll { _, value -> !value }.keySet()
+def releaseTaskRequested = gradle.startParameter.taskNames.any { taskName ->
+    taskName.tokenize(':').last().toLowerCase().contains('release')
+}
+
+if (releaseTaskRequested && !missingReleaseSigningEnvironment.isEmpty()) {
+    throw new GradleException(
+        "Android release signing is not configured. Missing environment variables: " +
+            missingReleaseSigningEnvironment.join(', ')
+    )
+}
+
 android {
     namespace = "io.github.agentaxiom.salvo"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -8,7 +26,7 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
-        versionName "1.0"
+        versionName "1.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +34,19 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (missingReleaseSigningEnvironment.isEmpty()) {
+                storeFile file(releaseSigningEnvironment.SALVO_RELEASE_KEYSTORE)
+                storePassword releaseSigningEnvironment.SALVO_RELEASE_STORE_PASSWORD
+                keyAlias releaseSigningEnvironment.SALVO_RELEASE_KEY_ALIAS
+                keyPassword releaseSigningEnvironment.SALVO_RELEASE_KEY_PASSWORD
+            }
+        }
+    }
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

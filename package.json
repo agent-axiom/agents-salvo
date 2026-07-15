@@ -13,7 +13,9 @@
     "mobile:sync": "npm run build && cap sync",
     "mobile:android": "npm run mobile:sync && cap open android",
     "mobile:ios": "npm run mobile:sync && cap open ios",
-    "mobile:verify": "npm run build && cap sync --inline"
+    "mobile:verify": "npm run build && cap sync --inline",
+    "android:release:verify": "node scripts/verify-android-release.mjs android/app/build/outputs/apk/release/app-release.apk",
+    "rustore:assets:verify": "node scripts/verify-rustore-assets.mjs"
   },
   "engines": {
     "node": ">=24.14.1 <25"
@@ -33,6 +35,7 @@
     "@capacitor/cli": "8.4.1",
     "@capacitor/ios": "8.4.1",
     "esbuild": "0.28.1",
+    "pngjs": "7.0.0",
     "typescript": "5.9.3",
     "yaml": "2.9.0"
   }
