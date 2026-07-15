@@ -147,12 +147,12 @@ export class BattleRoom {
   }
 
   async create(request, roomCode) {
+    const { user: authorizedUser } = await authorizeRequest(request, this.env);
+    const user = publicUser(authorizedUser);
     const existing = await this.getRoom();
     if (existing) {
       return json({ error: "Room already exists" }, 409);
     }
-    const { user: authorizedUser } = await authorizeRequest(request, this.env);
-    const user = publicUser(authorizedUser);
 
     const room = {
       code: roomCode,
@@ -173,12 +173,12 @@ export class BattleRoom {
   }
 
   async join(request, roomCode) {
+    const { user } = await authorizeRequest(request, this.env);
     const room = await this.requireRoom();
     if (room.players.p2) {
       return json({ error: "Room is full" }, 409);
     }
 
-    const { user } = await authorizeRequest(request, this.env);
     room.players.p2 = { token: createToken(), board: null, user: publicUser(user) };
     await this.saveRoom(room);
     await this.broadcast(room);

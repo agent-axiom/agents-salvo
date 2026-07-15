@@ -422,6 +422,48 @@ test("BattleRoom requires Telegram sessions to create and join rooms", async () 
   assert.equal(savedRoom.players.p2.user.id, "2");
 });
 
+test("BattleRoom authenticates before revealing that a room already exists", async () => {
+  const storedRoom = {
+    code: "ROOM01",
+    players: {
+      p1: { token: "p1-token", board: null, user: { provider: "telegram", id: "1" } },
+      p2: null,
+    },
+    presetId: null,
+    game: null,
+  };
+  const storage = new MemoryStorage({ room: structuredClone(storedRoom) });
+  const room = new BattleRoom({ storage }, { DB: new RecordingD1() });
+
+  const response = await room.fetch(new Request("https://worker.test/rooms?code=ROOM01", { method: "POST" }));
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { error: "Authentication required" });
+  assert.deepEqual(await storage.get("room"), storedRoom);
+});
+
+test("BattleRoom authenticates before revealing that a room is full", async () => {
+  const storedRoom = {
+    code: "ROOM01",
+    players: {
+      p1: { token: "p1-token", board: null, user: { provider: "telegram", id: "1" } },
+      p2: { token: "p2-token", board: null, user: { provider: "telegram", id: "2" } },
+    },
+    presetId: null,
+    game: null,
+  };
+  const storage = new MemoryStorage({ room: structuredClone(storedRoom) });
+  const room = new BattleRoom({ storage }, { DB: new RecordingD1() });
+
+  const response = await room.fetch(
+    new Request("https://worker.test/rooms/ROOM01/join", { method: "POST" }),
+  );
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { error: "Authentication required" });
+  assert.deepEqual(await storage.get("room"), storedRoom);
+});
+
 test("BattleRoom creates, joins, and rejects duplicate or full rooms", async () => {
   const storage = new MemoryStorage();
   const env = { DB: new RecordingD1() };
@@ -482,8 +524,15 @@ test("BattleRoom creates, joins, and rejects duplicate or full rooms", async () 
 });
 
 test("BattleRoom handles fetch-level room and socket errors", async () => {
-  const empty = new BattleRoom({ storage: new MemoryStorage() });
-  const missingJoin = await empty.fetch(new Request("https://worker.test/rooms/MISS/join", { method: "POST" }));
+  const env = { DB: new RecordingD1() };
+  const empty = new BattleRoom({ storage: new MemoryStorage() }, env);
+  const headers = await authHeaders(
+    { provider: "telegram", id: "1", name: "One", username: "one", photoUrl: "" },
+    env,
+  );
+  const missingJoin = await empty.fetch(
+    new Request("https://worker.test/rooms/MISS/join", { method: "POST", headers }),
+  );
   assert.equal(missingJoin.status, 400);
   assert.deepEqual(await missingJoin.json(), { error: "Room not found" });
 
