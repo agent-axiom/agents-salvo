@@ -462,6 +462,7 @@ test("verifyTelegramIdToken rejects malformed claim containers and numeric dates
 test("normalizeTelegramOidcUser applies the required profile fallback order", () => {
   assert.deepEqual(
     normalizeTelegramOidcUser({
+      sub: "telegram-subject-42",
       id: 42,
       name: "  Explicit Name  ",
       given_name: "Ignored",
@@ -478,14 +479,32 @@ test("normalizeTelegramOidcUser applies the required profile fallback order", ()
     },
   );
   assert.equal(
-    normalizeTelegramOidcUser({ id: "43", given_name: " Grace ", family_name: " Hopper " }).name,
+    normalizeTelegramOidcUser({
+      sub: "telegram-subject-43",
+      id: "43",
+      given_name: " Grace ",
+      family_name: " Hopper ",
+    }).name,
     "Grace Hopper",
   );
   assert.equal(
-    normalizeTelegramOidcUser({ id: "44", preferred_username: " amazing_grace " }).name,
+    normalizeTelegramOidcUser({
+      sub: "telegram-subject-44",
+      id: "44",
+      preferred_username: " amazing_grace ",
+    }).name,
     "amazing_grace",
   );
-  assert.equal(normalizeTelegramOidcUser({ id: "45" }).name, "Telegram 45");
+  assert.equal(
+    normalizeTelegramOidcUser({ sub: "telegram-subject-45", id: "45" }).name,
+    "Telegram 45",
+  );
+});
+
+test("normalizeTelegramOidcUser rejects missing or blank subjects", () => {
+  for (const claims of [{ id: "42" }, { sub: "", id: "42" }, { sub: " \t ", id: "42" }]) {
+    assert.throws(() => normalizeTelegramOidcUser(claims), /Telegram authentication failed/);
+  }
 });
 
 function validClaims(overrides = {}) {

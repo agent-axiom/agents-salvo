@@ -171,6 +171,9 @@ export async function verifyTelegramIdToken(idToken, options = {}) {
 }
 
 export function normalizeTelegramOidcUser(claims) {
+  if (!hasTrimmedString(claims?.sub)) {
+    throw telegramAuthenticationError();
+  }
   const id = telegramProfileId(claims?.id);
   const explicitName = trimmedString(claims?.name);
   const givenName = trimmedString(claims?.given_name);
