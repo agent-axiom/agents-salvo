@@ -129,17 +129,24 @@ export function verifyAndroidRelease({
     ["verify", "--verbose", "--print-certs", absolutePath],
     "Android signature verification",
   );
-  const certificateMatch = signatureReport.match(/Signer #1 certificate SHA-256 digest:\s*([0-9a-f:]+)/i);
-  if (!certificateMatch) {
+  const certificateDigests = [
+    ...signatureReport.matchAll(
+      /Signer (?:#\d+|\([^\r\n)]*\)) certificate SHA-256 digest:\s*([0-9a-f:]+)/gi,
+    ),
+  ].map((match) => match[1].replaceAll(":", "").toLowerCase());
+  if (certificateDigests.length === 0) {
     throw new Error("Android signature verification did not report a signer certificate digest.");
   }
-  const certificateSha256 = certificateMatch[1].replaceAll(":", "").toLowerCase();
   const normalizedExpectedCertificate = expectedCertificateSha256.replaceAll(":", "").toLowerCase();
-  if (certificateSha256 !== normalizedExpectedCertificate) {
+  const unexpectedCertificates = [
+    ...new Set(certificateDigests.filter((digest) => digest !== normalizedExpectedCertificate)),
+  ];
+  if (unexpectedCertificates.length > 0) {
     throw new Error(
-      `Unexpected Android signing certificate: expected ${normalizedExpectedCertificate}, received ${certificateSha256}`,
+      `Unexpected Android signing certificate: expected ${normalizedExpectedCertificate}, received ${unexpectedCertificates.join(", ")}`,
     );
   }
+  const certificateSha256 = normalizedExpectedCertificate;
 
   const sha256 = createHash("sha256").update(readFileSync(absolutePath)).digest("hex");
   const checksumPath = `${absolutePath}.sha256`;
