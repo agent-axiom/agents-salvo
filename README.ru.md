@@ -66,7 +66,18 @@ xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator \
   -configuration Debug CODE_SIGNING_ALLOWED=NO build
 ```
 
-Для Android debug APK и сборки iOS Simulator не нужны аккаунты Google Play или Apple Developer. Запуск на физическом iOS-устройстве и распространение через TestFlight или магазины требуют соответствующих ключей подписи; release signing и публикация не входят в этот этап.
+Для Android debug APK и сборки iOS Simulator не нужны аккаунты Google Play или Apple Developer. Запуск на физическом iOS-устройстве и распространение через TestFlight или магазины требуют соответствующих ключей подписи.
+
+### Релиз для RuStore
+
+Ручной workflow `Build RuStore Release` прогоняет тесты, собирает подписанные APK и AAB, проверяет их подписи и идентификаторы и загружает файлы как GitHub Actions artifact. Для него нужны секреты репозитория:
+
+- `RUSTORE_KEYSTORE_BASE64`
+- `RUSTORE_STORE_PASSWORD`
+- `RUSTORE_KEY_ALIAS`
+- `RUSTORE_KEY_PASSWORD`
+
+Нельзя коммитить ключ подписи или его пароли. Оригинальный keystore и минимум одну зашифрованную резервную копию нужно хранить вне репозитория: все будущие обновления `io.github.agentaxiom.salvo` должны подписываться тем же ключом. Локальная проверка материалов магазина запускается командой `npm run rustore:assets:verify`. Тексты карточки, скриншоты, декларация данных и чек-лист владельца находятся в [`distribution/rustore`](distribution/rustore/).
 
 ## GitHub Pages
 

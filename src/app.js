@@ -89,6 +89,7 @@ const root = document.querySelector("#app");
 if (!root) throw new Error("Salvo app root was not found");
 const trainingProgressSettingKey = "trainingProgress";
 const canonicalReplayBaseUrl = "https://agent-axiom.github.io/agents-salvo/";
+const canonicalPrivacyUrl = `${canonicalReplayBaseUrl}privacy.html`;
 const resultReplayClock = createReplayClock({
   setInterval: (callback, delay) => window.setInterval(callback, delay),
   clearInterval: (handle) => window.clearInterval(handle),
@@ -822,7 +823,7 @@ function renderTelegramAuthNotices() {
     <small class="auth-value-notice">${translate("auth.valueNotice")}</small>
     <small class="auth-privacy">
       ${translate("auth.privacyNotice")}
-      <a href="/agents-salvo/privacy.html" target="_blank" rel="noopener noreferrer">${translate("auth.privacyLink")}</a>.
+      <a href="/agents-salvo/privacy.html" data-action="open-privacy" target="_blank" rel="noopener noreferrer">${translate("auth.privacyLink")}</a>.
     </small>
   `;
 }
@@ -2808,6 +2809,11 @@ root.addEventListener("click", async (event) => {
   }
 
   const action = button.dataset.action;
+  if (action === "open-privacy" && platform.isNative()) {
+    event.preventDefault();
+    await platform.openExternalUrl(canonicalPrivacyUrl);
+    return;
+  }
   void unlockAudio();
   if (action !== "shot" && action !== "online-shot" && action !== "audio-toggle") {
     playSound("ui");

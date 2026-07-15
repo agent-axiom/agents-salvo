@@ -4,7 +4,9 @@ import { build } from "esbuild";
 
 const root = resolve(import.meta.dirname, "..");
 const src = resolve(root, "src");
-const dist = resolve(root, "dist");
+const dist = process.env.SALVO_BUILD_DIR
+  ? resolve(process.env.SALVO_BUILD_DIR)
+  : resolve(root, "dist");
 
 await rm(dist, { recursive: true, force: true });
 await mkdir(dist, { recursive: true });
