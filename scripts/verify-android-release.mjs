@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -49,13 +49,43 @@ function defaultCommandRunner(command, args) {
   return sdkCommand === command ? pathResult : spawnSync(sdkCommand, args, options);
 }
 
+function commandDiagnostics(result) {
+  return String(result?.stderr || result?.stdout || "command returned no diagnostics").trim();
+}
+
 function runChecked(runCommand, command, args, description) {
   const result = runCommand(command, args);
   if (!result || result.status !== 0) {
-    const details = String(result?.stderr || result?.stdout || "command returned no diagnostics").trim();
-    throw new Error(`${description} failed: ${details}`);
+    throw new Error(`${description} failed: ${commandDiagnostics(result)}`);
   }
   return String(result.stdout ?? "").trim();
+}
+
+function verifyApkSignature(runCommand, absolutePath) {
+  const pemResult = runCommand("apksigner", [
+    "verify",
+    "--verbose",
+    "--print-certs-pem",
+    absolutePath,
+  ]);
+  if (pemResult?.status === 0) {
+    return { format: "pem", report: String(pemResult.stdout ?? "").trim() };
+  }
+
+  const pemFailure = commandDiagnostics(pemResult);
+  if (!/print-certs-pem/i.test(pemFailure) || !/(?:unsupported|unknown|unrecognized|invalid)\s+(?:option|argument)/i.test(pemFailure)) {
+    throw new Error(`Android signature verification failed: ${pemFailure}`);
+  }
+
+  return {
+    format: "digest",
+    report: runChecked(
+      runCommand,
+      "apksigner",
+      ["verify", "--verbose", "--print-certs", absolutePath],
+      "Android signature verification",
+    ),
+  };
 }
 
 export function verifyAndroidRelease({
@@ -123,17 +153,34 @@ export function verifyAndroidRelease({
     throw new Error(`Unexpected Android version name: expected ${expectedVersionName}, received ${versionName}`);
   }
 
-  const signatureReport = runChecked(
+  const { format: signatureFormat, report: signatureReport } = verifyApkSignature(
     runCommand,
-    "apksigner",
-    ["verify", "--verbose", "--print-certs", absolutePath],
-    "Android signature verification",
+    absolutePath,
   );
-  const certificateDigests = [
-    ...signatureReport.matchAll(
-      /Signer (?:#\d+|\([^\r\n)]*\)) certificate SHA-256 digest:\s*([0-9a-f:]+)/gi,
-    ),
-  ].map((match) => match[1].replaceAll(":", "").toLowerCase());
+  let certificateDigests;
+  if (signatureFormat === "pem") {
+    const pemCertificates = signatureReport.match(
+      /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
+    ) ?? [];
+    const beginCount = signatureReport.match(/-----BEGIN CERTIFICATE-----/g)?.length ?? 0;
+    const endCount = signatureReport.match(/-----END CERTIFICATE-----/g)?.length ?? 0;
+    if (beginCount === 0 || beginCount !== endCount || pemCertificates.length !== beginCount) {
+      throw new Error("Android signature verification reported an invalid signer certificate.");
+    }
+    try {
+      certificateDigests = pemCertificates.map((certificate) =>
+        new X509Certificate(certificate).fingerprint256.replaceAll(":", "").toLowerCase()
+      );
+    } catch {
+      throw new Error("Android signature verification reported an invalid signer certificate.");
+    }
+  } else {
+    certificateDigests = [
+      ...signatureReport.matchAll(
+        /Signer (?:#\d+|\([^\r\n)]*\)) certificate SHA-256 digest:\s*([0-9a-f:]+)/gi,
+      ),
+    ].map((match) => match[1].replaceAll(":", "").toLowerCase());
+  }
   if (certificateDigests.length === 0) {
     throw new Error("Android signature verification did not report a signer certificate digest.");
   }
