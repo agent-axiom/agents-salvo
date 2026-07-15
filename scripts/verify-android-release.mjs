@@ -41,7 +41,12 @@ function resolveAndroidCommand(command) {
 }
 
 function defaultCommandRunner(command, args) {
-  return spawnSync(resolveAndroidCommand(command), args, { encoding: "utf8" });
+  const options = { encoding: "utf8" };
+  const pathResult = spawnSync(command, args, options);
+  if (pathResult.error?.code !== "ENOENT") return pathResult;
+
+  const sdkCommand = resolveAndroidCommand(command);
+  return sdkCommand === command ? pathResult : spawnSync(sdkCommand, args, options);
 }
 
 function runChecked(runCommand, command, args, description) {

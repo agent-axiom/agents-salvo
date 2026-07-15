@@ -190,8 +190,13 @@ test("release verifier writes a reproducible SHA-256 sidecar", () => {
 
 test("release verifier CLI reports success and failure with stable exit codes", () => {
   const toolsDirectory = mkdtempSync(join(tmpdir(), "salvo-android-tools-"));
+  const androidHome = mkdtempSync(join(tmpdir(), "salvo-shadowed-android-sdk-"));
   const apkAnalyzer = join(toolsDirectory, "apkanalyzer");
   const apkSigner = join(toolsDirectory, "apksigner");
+  const sdkAnalyzer = join(androidHome, "cmdline-tools", "latest", "bin", "apkanalyzer");
+  const sdkSigner = join(androidHome, "build-tools", "99.0.0", "apksigner");
+  mkdirSync(join(androidHome, "cmdline-tools", "latest", "bin"), { recursive: true });
+  mkdirSync(join(androidHome, "build-tools", "99.0.0"), { recursive: true });
   writeFileSync(
     apkAnalyzer,
     `#!/bin/sh
@@ -208,15 +213,24 @@ fi
     apkSigner,
     `#!/bin/sh\necho 'Signer #1 certificate SHA-256 digest: ${ANDROID_RELEASE_CERTIFICATE_SHA256}'\n`,
   );
+  writeFileSync(sdkAnalyzer, "#!/bin/sh\nexit 99\n");
+  writeFileSync(sdkSigner, "#!/bin/sh\nexit 99\n");
   chmodSync(apkAnalyzer, 0o700);
   chmodSync(apkSigner, 0o700);
+  chmodSync(sdkAnalyzer, 0o700);
+  chmodSync(sdkSigner, 0o700);
 
   const success = spawnSync(
     process.execPath,
     [resolve("scripts/verify-android-release.mjs"), releaseFixture()],
     {
       encoding: "utf8",
-      env: { ...process.env, PATH: `${toolsDirectory}:${process.env.PATH}` },
+      env: {
+        ...process.env,
+        ANDROID_HOME: androidHome,
+        ANDROID_SDK_ROOT: "",
+        PATH: `${toolsDirectory}:${process.env.PATH}`,
+      },
     },
   );
   assert.equal(success.status, 0, success.stderr);
