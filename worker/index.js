@@ -17,6 +17,14 @@ import {
   verifySessionToken,
   verifyTelegramLoginPayload,
 } from "./auth.js";
+import { cleanupExpiredAuthRecords } from "./session.js";
+import {
+  createTelegramAuthorization,
+  exchangeTelegramCode,
+  loadTelegramJwks,
+  oidcConfigured,
+  verifyTelegramIdToken,
+} from "./telegram-oidc.js";
 import { getLeaderboard, getPlayerProfile, recordCompletedMatch, recordOnlineReplayBatch } from "./profile.js";
 import {
   HttpError,
@@ -31,6 +39,15 @@ const archiveDeadLetterPrefix = "replayArchiveDeadLetter:";
 const archiveSchedulePrefix = "replayArchiveSchedule:";
 const archiveMaxAttempts = 12;
 const archiveAlarmBatchSize = 10;
+const telegramCallbackUri = "https://agents-salvo-room.if-ab6.workers.dev/auth/telegram/mobile/callback";
+const telegramWebTarget = "https://agent-axiom.github.io/agents-salvo/";
+const telegramFlowTtlSeconds = 5 * 60;
+const telegramTicketTtlSeconds = 5 * 60;
+const maxTelegramJsonBytes = 1024;
+const maxTelegramCodeLength = 4096;
+const telegramSecretPattern = /^[A-Za-z0-9_-]{43}$/;
+const telegramPlatforms = new Set(["web", "android", "ios"]);
+const telegramTextEncoder = new TextEncoder();
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -39,7 +56,7 @@ const corsHeaders = {
 };
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
     }
@@ -55,6 +72,21 @@ export default {
       return json({ error: "Not found" }, 404);
     }
 
+    if (route.kind === "authTelegramConfig" && request.method === "GET") {
+      return json({ method: oidcConfigured(env) ? "oidc" : "legacy" });
+    }
+    if (route.kind === "authTelegramMobileStart" && request.method === "POST") {
+      return startTelegramMobileAuth(request, env, ctx);
+    }
+    if (route.kind === "authTelegramMobileCallback" && request.method === "GET") {
+      return completeTelegramMobileAuth(url, env);
+    }
+    if (route.kind === "authTelegramMobileRedeem" && request.method === "POST") {
+      return redeemTelegramMobileTicket(request, env, ctx);
+    }
+    if (route.kind.startsWith("authTelegramMobile") || route.kind === "authTelegramConfig") {
+      return json({ error: "Not found" }, 404);
+    }
     if (route.kind === "authTelegram" && request.method === "POST") {
       return authenticateTelegram(request, env);
     }
@@ -701,6 +733,18 @@ function startRematch(room, preset) {
 }
 
 function routeRequest(url) {
+  if (url.pathname === "/auth/telegram/config") {
+    return { kind: "authTelegramConfig" };
+  }
+  if (url.pathname === "/auth/telegram/mobile/start") {
+    return { kind: "authTelegramMobileStart" };
+  }
+  if (url.pathname === "/auth/telegram/mobile/callback") {
+    return { kind: "authTelegramMobileCallback" };
+  }
+  if (url.pathname === "/auth/telegram/mobile/redeem") {
+    return { kind: "authTelegramMobileRedeem" };
+  }
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length === 2 && parts[0] === "auth" && parts[1] === "telegram") {
     return { kind: "authTelegram" };
@@ -747,6 +791,276 @@ async function authenticateTelegram(request, env) {
   } catch (error) {
     return json({ error: error.message }, 401);
   }
+}
+
+async function startTelegramMobileAuth(request, env, ctx) {
+  if (!oidcConfigured(env) || !env.DB) {
+    return json({ error: "Telegram OIDC unavailable" }, 503);
+  }
+
+  let payload;
+  try {
+    payload = await readStrictTelegramJson(request, "platform");
+    if (!telegramPlatforms.has(payload.platform)) {
+      throw new Error("Invalid platform");
+    }
+  } catch {
+    return json({ error: "Invalid request" }, 400);
+  }
+
+  try {
+    const now = currentEpochSeconds();
+    const authorization = await createTelegramAuthorization({
+      clientId: env.TELEGRAM_CLIENT_ID.trim(),
+      redirectUri: telegramCallbackUri,
+      platform: payload.platform,
+    });
+    await env.DB
+      .prepare(
+        `INSERT INTO telegram_oidc_flows
+          (state_hash, nonce, code_verifier, platform, created_at, expires_at, consumed_at)
+        VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+      )
+      .bind(
+        await hashTelegramSecret(authorization.flow.state),
+        authorization.flow.nonce,
+        authorization.flow.codeVerifier,
+        authorization.flow.platform,
+        now,
+        now + telegramFlowTtlSeconds,
+      )
+      .run();
+    scheduleTelegramCleanup(env.DB, ctx);
+    return json({ authorizationUrl: authorization.url.toString() });
+  } catch {
+    return json({ error: "Telegram OIDC unavailable" }, 503);
+  }
+}
+
+async function completeTelegramMobileAuth(url, env) {
+  let platform;
+  try {
+    if (!oidcConfigured(env) || !env.DB) {
+      throw new Error("Unavailable");
+    }
+    const state = url.searchParams.get("state");
+    if (!telegramSecretPattern.test(state ?? "")) {
+      throw new Error("Invalid state");
+    }
+
+    const now = currentEpochSeconds();
+    const flow = await env.DB
+      .prepare(
+        `UPDATE telegram_oidc_flows
+        SET consumed_at = ?
+        WHERE state_hash = ? AND consumed_at IS NULL AND expires_at > ?
+        RETURNING nonce, code_verifier, platform`,
+      )
+      .bind(now, await hashTelegramSecret(state), now)
+      .first();
+    if (!validTelegramFlow(flow)) {
+      throw new Error("Invalid flow");
+    }
+    platform = flow.platform;
+    if (url.searchParams.has("error")) {
+      throw new Error("Provider denied");
+    }
+
+    const code = url.searchParams.get("code");
+    if (typeof code !== "string" || code.trim() === "" || code.length > maxTelegramCodeLength) {
+      throw new Error("Invalid code");
+    }
+    const fetcher = env.TELEGRAM_FETCH ?? globalThis.fetch;
+    const tokenPayload = await exchangeTelegramCode({
+      code,
+      redirectUri: telegramCallbackUri,
+      clientId: env.TELEGRAM_CLIENT_ID.trim(),
+      clientSecret: env.TELEGRAM_CLIENT_SECRET.trim(),
+      codeVerifier: flow.code_verifier,
+      fetcher,
+    });
+    const user = await verifyTelegramIdToken(tokenPayload.id_token, {
+      clientId: env.TELEGRAM_CLIENT_ID.trim(),
+      nonce: flow.nonce,
+      loadJwks: () => loadTelegramJwks({ fetcher }),
+    });
+
+    const ticketCreatedAt = currentEpochSeconds();
+    const ticket = createTelegramTicket();
+    await env.DB
+      .prepare(
+        `INSERT INTO telegram_login_tickets
+          (ticket_hash, user_json, created_at, expires_at, consumed_at)
+        VALUES (?, ?, ?, ?, NULL)`,
+      )
+      .bind(
+        await hashTelegramSecret(ticket),
+        JSON.stringify(publicUser(user)),
+        ticketCreatedAt,
+        ticketCreatedAt + telegramTicketTtlSeconds,
+      )
+      .run();
+    return Response.redirect(telegramSuccessRedirect(platform, ticket), 302);
+  } catch {
+    return Response.redirect(telegramFailureRedirect(platform), 302);
+  }
+}
+
+async function redeemTelegramMobileTicket(request, env, ctx) {
+  try {
+    if (!env.DB) {
+      throw new Error("Unavailable");
+    }
+    const payload = await readStrictTelegramJson(request, "ticket");
+    if (!telegramSecretPattern.test(payload.ticket ?? "")) {
+      throw new Error("Invalid ticket");
+    }
+    const now = currentEpochSeconds();
+    const ticket = await env.DB
+      .prepare(
+        `UPDATE telegram_login_tickets
+        SET consumed_at = ?
+        WHERE ticket_hash = ? AND consumed_at IS NULL AND expires_at > ?
+        RETURNING user_json`,
+      )
+      .bind(now, await hashTelegramSecret(payload.ticket), now)
+      .first();
+    const user = parseTelegramTicketUser(ticket?.user_json);
+    const token = await createSessionToken(user, env.SESSION_SECRET);
+    scheduleTelegramCleanup(env.DB, ctx);
+    return json({ token, user });
+  } catch {
+    return json({ error: "Telegram authentication failed" }, 401);
+  }
+}
+
+async function readStrictTelegramJson(request, requiredKey) {
+  const contentType = request.headers.get("Content-Type") ?? "";
+  if (!/^application\/json(?:\s*;|$)/i.test(contentType)) {
+    throw new Error("Invalid content type");
+  }
+  const contentLength = Number(request.headers.get("Content-Length"));
+  if (Number.isFinite(contentLength) && contentLength > maxTelegramJsonBytes) {
+    throw new Error("Request too large");
+  }
+
+  const reader = request.body?.getReader();
+  if (!reader) {
+    throw new Error("Request body required");
+  }
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      length += value.byteLength;
+      if (length > maxTelegramJsonBytes) {
+        await reader.cancel().catch(() => {});
+        throw new Error("Request too large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+
+  const body = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Invalid JSON object");
+  }
+  const keys = Object.keys(payload);
+  if (keys.length !== 1 || keys[0] !== requiredKey) {
+    throw new Error("Unexpected JSON fields");
+  }
+  return payload;
+}
+
+function validTelegramFlow(flow) {
+  return (
+    flow &&
+    telegramSecretPattern.test(flow.nonce ?? "") &&
+    telegramSecretPattern.test(flow.code_verifier ?? "") &&
+    telegramPlatforms.has(flow.platform)
+  );
+}
+
+function parseTelegramTicketUser(userJson) {
+  if (typeof userJson !== "string" || userJson.length > 4096) {
+    throw new Error("Invalid user");
+  }
+  const value = JSON.parse(userJson);
+  const expectedKeys = ["id", "name", "photoUrl", "provider", "username"];
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join(",") !== expectedKeys.join(",") ||
+    value.provider !== "telegram" ||
+    typeof value.id !== "string" ||
+    value.id.trim() === "" ||
+    value.id.length > 128 ||
+    typeof value.name !== "string" ||
+    value.name.length > 256 ||
+    typeof value.username !== "string" ||
+    value.username.length > 128 ||
+    typeof value.photoUrl !== "string" ||
+    value.photoUrl.length > 2048
+  ) {
+    throw new Error("Invalid user");
+  }
+  return publicUser(value);
+}
+
+function telegramSuccessRedirect(platform, ticket) {
+  if (platform === "web") {
+    const target = new URL(telegramWebTarget);
+    target.searchParams.set("auth_ticket", ticket);
+    return target.toString();
+  }
+  return `salvo://open/auth/${ticket}`;
+}
+
+function telegramFailureRedirect(platform) {
+  if (platform === "android" || platform === "ios") {
+    return "salvo://open/auth/error";
+  }
+  const target = new URL(telegramWebTarget);
+  target.searchParams.set("auth_error", "telegram");
+  return target.toString();
+}
+
+function scheduleTelegramCleanup(db, ctx) {
+  const cleanup = cleanupExpiredAuthRecords(db, { limit: 100 });
+  const observed = cleanup.catch(() => {});
+  if (typeof ctx?.waitUntil === "function") {
+    ctx.waitUntil(observed);
+  }
+}
+
+function createTelegramTicket() {
+  return telegramBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+}
+
+async function hashTelegramSecret(value) {
+  const digest = await crypto.subtle.digest("SHA-256", telegramTextEncoder.encode(value));
+  return telegramBase64Url(new Uint8Array(digest));
+}
+
+function telegramBase64Url(bytes) {
+  return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+function currentEpochSeconds() {
+  return Math.floor(Date.now() / 1000);
 }
 
 async function currentUser(request, env) {

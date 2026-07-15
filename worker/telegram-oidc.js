@@ -2,11 +2,15 @@ import { publicUser } from "./auth.js";
 
 const authorizationEndpoint = "https://oauth.telegram.org/auth";
 const tokenEndpoint = "https://oauth.telegram.org/token";
+const jwksEndpoint = "https://oauth.telegram.org/.well-known/jwks.json";
 const telegramIssuer = "https://oauth.telegram.org";
 const allowedPlatforms = new Set(["web", "android", "ios"]);
 const randomByteLength = 32;
 const maxIdTokenLength = 16 * 1024;
 const maxTokenResponseBytes = 64 * 1024;
+const maxJwksResponseBytes = 64 * 1024;
+const maxJwksKeys = 32;
+const jwksTimeoutMilliseconds = 5_000;
 const base64UrlPattern = /^[A-Za-z0-9_-]+$/;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -98,6 +102,34 @@ export async function exchangeTelegramCode(options = {}) {
     return payload;
   } catch {
     throw telegramAuthenticationError();
+  }
+}
+
+export async function loadTelegramJwks(options = {}) {
+  const fetcher = options.fetcher ?? globalThis.fetch;
+  if (typeof fetcher !== "function") {
+    throw telegramAuthenticationError();
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), jwksTimeoutMilliseconds);
+  try {
+    const response = await fetcher(jwksEndpoint, {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!isSuccessfulResponse(response)) {
+      throw telegramAuthenticationError();
+    }
+    const jwks = JSON.parse(await readBoundedResponseText(response, maxJwksResponseBytes));
+    if (!isRecord(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length > maxJwksKeys) {
+      throw telegramAuthenticationError();
+    }
+    return jwks;
+  } catch {
+    throw telegramAuthenticationError();
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -275,11 +307,11 @@ function base64EncodeBytes(bytes) {
   return btoa(binary);
 }
 
-async function readBoundedResponseText(response) {
+async function readBoundedResponseText(response, maxBytes = maxTokenResponseBytes) {
   const contentLength = response.headers?.get?.("Content-Length");
   if (contentLength !== null && contentLength !== undefined) {
     const parsedLength = Number(contentLength);
-    if (Number.isFinite(parsedLength) && parsedLength > maxTokenResponseBytes) {
+    if (Number.isFinite(parsedLength) && parsedLength > maxBytes) {
       throw telegramAuthenticationError();
     }
   }
@@ -298,7 +330,7 @@ async function readBoundedResponseText(response) {
           throw telegramAuthenticationError();
         }
         totalLength += value.byteLength;
-        if (totalLength > maxTokenResponseBytes) {
+        if (totalLength > maxBytes) {
           try {
             await reader.cancel();
           } catch {
@@ -325,7 +357,7 @@ async function readBoundedResponseText(response) {
     throw telegramAuthenticationError();
   }
   const text = await response.text();
-  if (textEncoder.encode(text).byteLength > maxTokenResponseBytes) {
+  if (textEncoder.encode(text).byteLength > maxBytes) {
     throw telegramAuthenticationError();
   }
   return text;
