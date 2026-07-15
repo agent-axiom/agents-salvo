@@ -3,38 +3,54 @@ const platforms = new Set(["web", "android", "ios"]);
 const ticketPattern = /^[A-Za-z0-9_-]{32,256}$/;
 const tokenPattern = /^[A-Za-z0-9_-]+$/;
 const genericErrorMessage = "Telegram authentication unavailable";
+const defaultTimeoutMs = 10_000;
+const maximumTimeoutMs = 2_147_483_647;
 
-export function createTelegramAuthClient({ workerUrl, fetcher = globalThis.fetch } = {}) {
+export function createTelegramAuthClient({
+  workerUrl,
+  fetcher = globalThis.fetch,
+  timeoutMs = defaultTimeoutMs,
+} = {}) {
   const baseUrl = normalizeWorkerUrl(workerUrl);
+  const requestTimeoutMs = normalizeTimeout(timeoutMs);
   if (typeof fetcher !== "function") {
     throw new TypeError("A fetch function is required");
   }
 
-  const request = async (path, init, validate) => {
+  const request = async (path, init, validate, callerSignal) => {
+    const requestAbort = createRequestAbort(callerSignal, requestTimeoutMs);
+    let responseStatus = 0;
     let response;
     try {
-      response = await fetcher(`${baseUrl}${path}`, init);
+      if (requestAbort.signal.aborted) throw new Error();
+      response = await waitForAbort(
+        fetcher(`${baseUrl}${path}`, { ...init, signal: requestAbort.signal }),
+        requestAbort.signal,
+      );
+      responseStatus = httpStatus(response?.status);
+      return await parseBoundedResponse(response, validate, requestAbort.signal);
     } catch (error) {
-      throw clientError(httpStatus(error?.status));
+      throw clientError(responseStatus || httpStatus(error?.status));
+    } finally {
+      requestAbort.dispose();
     }
-    return parseBoundedResponse(response, validate);
   };
 
   return {
-    capability() {
-      return request("/auth/telegram/config", { method: "GET" }, validateCapability);
+    capability({ signal } = {}) {
+      return request("/auth/telegram/config", { method: "GET" }, validateCapability, signal);
     },
-    start(platform) {
+    start(platform, { signal } = {}) {
       if (!platforms.has(platform)) {
         return Promise.reject(new TypeError("Unsupported Telegram auth platform"));
       }
-      return request("/auth/telegram/mobile/start", jsonPost({ platform }), validateStart);
+      return request("/auth/telegram/mobile/start", jsonPost({ platform }), validateStart, signal);
     },
-    redeem(ticket) {
+    redeem(ticket, { signal } = {}) {
       if (typeof ticket !== "string" || !ticketPattern.test(ticket)) {
         return Promise.reject(new TypeError("Invalid Telegram auth ticket"));
       }
-      return request("/auth/telegram/mobile/redeem", jsonPost({ ticket }), validateRedeem);
+      return request("/auth/telegram/mobile/redeem", jsonPost({ ticket }), validateRedeem, signal);
     },
   };
 }
@@ -55,6 +71,8 @@ function normalizeWorkerUrl(workerUrl) {
       || workerUrl.includes("?")
       || workerUrl.includes("#")
       || hasCredentials(workerUrl)
+      || url.port
+      || hasExplicitPort(workerUrl)
     ) {
       throw new TypeError("Invalid Telegram auth worker URL");
     }
@@ -68,6 +86,13 @@ function normalizeWorkerUrl(workerUrl) {
   }
 }
 
+function normalizeTimeout(timeoutMs) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > maximumTimeoutMs) {
+    throw new TypeError("Invalid Telegram auth timeout");
+  }
+  return timeoutMs;
+}
+
 function jsonPost(body) {
   return {
     method: "POST",
@@ -76,7 +101,7 @@ function jsonPost(body) {
   };
 }
 
-async function parseBoundedResponse(response, validate) {
+async function parseBoundedResponse(response, validate, signal) {
   const status = httpStatus(response?.status);
   try {
     if (!response || response.ok !== true || typeof response.headers?.get !== "function") {
@@ -88,7 +113,7 @@ async function parseBoundedResponse(response, validate) {
     const declaredLength = Number(response.headers.get("Content-Length"));
     if (Number.isFinite(declaredLength) && declaredLength > responseByteLimit) throw new Error();
 
-    const text = await readBoundedText(response.body);
+    const text = await readBoundedText(response.body, signal);
     const value = validate(JSON.parse(text));
     if (value === null) throw new Error();
     return value;
@@ -97,27 +122,101 @@ async function parseBoundedResponse(response, validate) {
   }
 }
 
-async function readBoundedText(body) {
+async function readBoundedText(body, signal) {
   if (!body || typeof body.getReader !== "function") throw new Error();
   const reader = body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let byteCount = 0;
   let text = "";
+  let complete = false;
   try {
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      byteCount += value.byteLength;
-      if (byteCount > responseByteLimit) {
-        await reader.cancel().catch(() => {});
-        throw new Error();
+      if (signal.aborted) throw new Error();
+      const { done, value } = await waitForAbort(reader.read(), signal);
+      if (done) {
+        complete = true;
+        break;
       }
+      byteCount += value.byteLength;
+      if (byteCount > responseByteLimit) throw new Error();
       text += decoder.decode(value, { stream: true });
     }
     return text + decoder.decode();
   } finally {
-    reader.releaseLock();
+    if (!complete) cancelReader(reader);
+    try {
+      reader.releaseLock();
+    } catch {}
   }
+}
+
+function createRequestAbort(callerSignal, timeoutMs) {
+  if (callerSignal != null && !isAbortSignal(callerSignal)) {
+    throw new TypeError("Invalid caller abort signal");
+  }
+
+  const controller = new AbortController();
+  const relayAbort = () => controller.abort();
+  let listening = false;
+  if (callerSignal?.aborted) {
+    relayAbort();
+  } else if (callerSignal) {
+    callerSignal.addEventListener("abort", relayAbort, { once: true });
+    listening = true;
+  }
+
+  const timer = controller.signal.aborted
+    ? null
+    : setTimeout(relayAbort, timeoutMs);
+
+  return {
+    signal: controller.signal,
+    dispose() {
+      if (timer !== null) clearTimeout(timer);
+      if (listening) callerSignal.removeEventListener("abort", relayAbort);
+    },
+  };
+}
+
+function isAbortSignal(value) {
+  return value !== null
+    && typeof value === "object"
+    && typeof value.aborted === "boolean"
+    && typeof value.addEventListener === "function"
+    && typeof value.removeEventListener === "function";
+}
+
+function waitForAbort(value, signal) {
+  return new Promise((resolve, reject) => {
+    let listening = false;
+    let settled = false;
+    const finish = (settle, result) => {
+      if (settled) return;
+      settled = true;
+      if (listening) signal.removeEventListener("abort", onAbort);
+      settle(result);
+    };
+    const onAbort = () => finish(reject, new Error());
+
+    Promise.resolve(value).then(
+      (result) => finish(resolve, result),
+      (error) => finish(reject, error),
+    );
+    if (signal.aborted) {
+      onAbort();
+    } else {
+      signal.addEventListener("abort", onAbort, { once: true });
+      listening = true;
+      if (signal.aborted) onAbort();
+    }
+  });
+}
+
+function cancelReader(reader) {
+  try {
+    const cancellation = reader.cancel();
+    cancellation?.catch?.(() => {});
+  } catch {}
 }
 
 function validateCapability(value) {
@@ -196,7 +295,8 @@ function hasExactKeys(value, expectedKeys) {
 
 function hasExplicitPort(rawUrl) {
   const authority = rawUrl.match(/^https:\/\/([^/?#]+)/i)?.[1] ?? "";
-  return /:\d+$/.test(authority.split("@").at(-1));
+  const host = authority.split("@").at(-1);
+  return host.startsWith("[") ? /^\[[^\]]+\]:/.test(host) : host.includes(":");
 }
 
 function hasCredentials(rawUrl) {
