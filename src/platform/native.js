@@ -6,6 +6,9 @@ import { Network } from "@capacitor/network";
 import { Preferences } from "@capacitor/preferences";
 import { Share } from "@capacitor/share";
 import { SplashScreen } from "@capacitor/splash-screen";
+import { SecureStorage } from "@aparajita/capacitor-secure-storage";
+
+const secureSessionKey = "salvo.authToken";
 
 const defaultPlugins = {
   Capacitor,
@@ -16,6 +19,7 @@ const defaultPlugins = {
   Preferences,
   Share,
   SplashScreen,
+  SecureStorage,
   SystemBars,
 };
 
@@ -40,6 +44,29 @@ async function unavailableSecureSession() {
   throw new Error("Secure session storage unavailable");
 }
 
+function createSecureSession(secureStorage) {
+  if (
+    typeof secureStorage?.getItem !== "function"
+    || typeof secureStorage?.setItem !== "function"
+    || typeof secureStorage?.removeItem !== "function"
+  ) {
+    return {
+      get: unavailableSecureSession,
+      set: unavailableSecureSession,
+      clear: unavailableSecureSession,
+    };
+  }
+
+  return {
+    async get() {
+      const value = await secureStorage.getItem(secureSessionKey);
+      return typeof value === "string" ? value : "";
+    },
+    set: (token) => secureStorage.setItem(secureSessionKey, token),
+    clear: () => secureStorage.removeItem(secureSessionKey),
+  };
+}
+
 function invokeObserved(listener, value) {
   try {
     void Promise.resolve(listener(value)).catch(() => {});
@@ -59,6 +86,7 @@ export function createNativePlatform(plugins = defaultPlugins) {
     Preferences: preferences,
     Share: sharePlugin,
     SplashScreen: splashScreen,
+    SecureStorage: secureStorage,
     SystemBars: systemBars,
   } = plugins;
 
@@ -184,10 +212,6 @@ export function createNativePlatform(plugins = defaultPlugins) {
         await preferences.set({ key: storageKey, value: String(value) });
       },
     },
-    secureSession: {
-      get: unavailableSecureSession,
-      set: unavailableSecureSession,
-      clear: unavailableSecureSession,
-    },
+    secureSession: createSecureSession(secureStorage),
   };
 }
