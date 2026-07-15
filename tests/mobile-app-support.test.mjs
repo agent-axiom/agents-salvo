@@ -658,11 +658,28 @@ test("web bootstrap captures a valid ticket and cleans auth parameters", () => {
   const ticket = "xY9_-".repeat(7);
   const history = historyHarness();
   const result = captureTelegramAuthBootstrap({
-    rawUrl: `https://agent-axiom.github.io/agents-salvo/?view=fleet&auth_ticket=${ticket}&auth_error=telegram#scores`,
+    rawUrl: `https://agent-axiom.github.io/agents-salvo/?view=fleet&auth_ticket=${ticket}#scores`,
     history,
   });
 
   assert.deepEqual(result, { type: "ticket", ticket });
+  assert.deepEqual(history.calls, [[
+    "replaceState",
+    null,
+    "",
+    "https://agent-axiom.github.io/agents-salvo/?view=fleet#scores",
+  ]]);
+});
+
+test("web bootstrap rejects conflicting auth parameters and cleans both", () => {
+  const ticket = "xY9_-".repeat(7);
+  const history = historyHarness();
+  const result = captureTelegramAuthBootstrap({
+    rawUrl: `https://agent-axiom.github.io/agents-salvo/?view=fleet&auth_ticket=${ticket}&auth_error=telegram#scores`,
+    history,
+  });
+
+  assert.deepEqual(result, { type: "none" });
   assert.deepEqual(history.calls, [[
     "replaceState",
     null,

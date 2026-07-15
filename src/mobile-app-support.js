@@ -367,7 +367,7 @@ export function captureTelegramAuthBootstrap({ rawUrl, history } = {}) {
     if (typeof history?.replaceState !== "function") return none;
 
     let result = none;
-    if (tickets.length === 1 && telegramTicketPattern.test(tickets[0])) {
+    if (tickets.length === 1 && errors.length === 0 && telegramTicketPattern.test(tickets[0])) {
       result = { type: "ticket", ticket: tickets[0] };
     } else if (tickets.length === 0 && errors.length === 1 && errors[0] === "telegram") {
       result = { type: "authError", code: "telegram" };
