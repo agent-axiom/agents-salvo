@@ -222,6 +222,39 @@ test("exchangeTelegramCode redacts fetch and non-2xx provider failures", async (
   );
 });
 
+test("exchangeTelegramCode aborts a pending provider request with a generic redacted error", async () => {
+  const code = "sensitive-timeout-code";
+  const providerError = "sensitive-provider-timeout";
+  let requestSignal;
+  const startedAt = Date.now();
+
+  await assertTelegramFailure(
+    () =>
+      exchangeTelegramCode({
+        code,
+        redirectUri,
+        clientId,
+        clientSecret,
+        codeVerifier: "sensitive-timeout-verifier",
+        timeoutMilliseconds: 20,
+        fetcher: async (_url, init) => {
+          requestSignal = init.signal;
+          return new Promise((_resolve, reject) => {
+            init.signal.addEventListener(
+              "abort",
+              () => reject(new Error(`${providerError} ${code} ${clientSecret}`)),
+              { once: true },
+            );
+          });
+        },
+      }),
+    [clientSecret, code, "sensitive-timeout-verifier", providerError],
+  );
+
+  assert.equal(requestSignal.aborted, true);
+  assert.ok(Date.now() - startedAt < 1_000);
+});
+
 test("exchangeTelegramCode rejects malformed JSON with a generic error", async () => {
   await assertTelegramFailure(
     () =>

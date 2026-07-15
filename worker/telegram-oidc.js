@@ -10,6 +10,7 @@ const maxIdTokenLength = 16 * 1024;
 const maxTokenResponseBytes = 64 * 1024;
 const maxJwksResponseBytes = 64 * 1024;
 const maxJwksKeys = 32;
+const tokenExchangeTimeoutMilliseconds = 5_000;
 const jwksTimeoutMilliseconds = 5_000;
 const base64UrlPattern = /^[A-Za-z0-9_-]+$/;
 const textEncoder = new TextEncoder();
@@ -56,6 +57,7 @@ export async function createTelegramAuthorization(options = {}) {
 }
 
 export async function exchangeTelegramCode(options = {}) {
+  let timeout;
   try {
     const { code, redirectUri, clientId, clientSecret, codeVerifier } = options;
     const fetcher = options.fetcher ?? globalThis.fetch;
@@ -77,6 +79,12 @@ export async function exchangeTelegramCode(options = {}) {
     body.set("client_id", clientId);
     body.set("code_verifier", codeVerifier);
 
+    const controller = new AbortController();
+    const timeoutMilliseconds = boundedTimeoutMilliseconds(
+      options.timeoutMilliseconds,
+      tokenExchangeTimeoutMilliseconds,
+    );
+    timeout = setTimeout(() => controller.abort(), timeoutMilliseconds);
     const response = await fetcher(tokenEndpoint, {
       method: "POST",
       headers: {
@@ -84,6 +92,7 @@ export async function exchangeTelegramCode(options = {}) {
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: body.toString(),
+      signal: controller.signal,
     });
     if (!isSuccessfulResponse(response)) {
       throw telegramAuthenticationError();
@@ -102,6 +111,10 @@ export async function exchangeTelegramCode(options = {}) {
     return payload;
   } catch {
     throw telegramAuthenticationError();
+  } finally {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
   }
 }
 
@@ -379,6 +392,17 @@ function isRecord(value) {
 
 function hasTrimmedString(value) {
   return typeof value === "string" && value.trim() !== "";
+}
+
+function boundedTimeoutMilliseconds(value, maximum) {
+  if (value === undefined) {
+    return maximum;
+  }
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw telegramAuthenticationError();
+  }
+  return Math.min(parsed, maximum);
 }
 
 function trimmedString(value) {
