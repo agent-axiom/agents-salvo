@@ -240,9 +240,8 @@ export function userSubject(user) {
   return `${user.provider}:${user.id}`;
 }
 
-async function upsertUser(db, user) {
-  const now = new Date().toISOString();
-  await userUpsertStatement(db, user, now).run();
+export async function upsertUser(db, user, { now = new Date() } = {}) {
+  await userUpsertStatement(db, user, now.toISOString()).run();
 }
 
 function userUpsertStatement(db, user, now) {
