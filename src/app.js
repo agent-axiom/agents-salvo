@@ -56,6 +56,7 @@ import {
   createPreferenceCoordinator,
   createSecureSessionCoordinator,
   createUnknownNetworkState,
+  captureTelegramAuthBootstrap,
   hasConfirmedNetworkConnection,
   networkStateFromSample,
   parseSalvoDeepLink,
@@ -64,6 +65,7 @@ import {
 import { createMobileRuntime } from "./mobile.js";
 import { platform } from "./platform/index.js";
 import { RemoteClient } from "./remote.js";
+import { createTelegramAuthClient } from "./telegram-auth.js";
 
 export function bootSalvoApp({
   document: appDocument = globalThis.document,
@@ -80,6 +82,9 @@ const navigator = appNavigator;
 const platform = appPlatform;
 const audio = appAudio;
 const fetch = appFetch;
+const telegramAuthBootstrap = platform.isNative()
+  ? { type: "none" }
+  : captureTelegramAuthBootstrap({ rawUrl: window.location.href, history: window.history });
 const root = document.querySelector("#app");
 if (!root) throw new Error("Salvo app root was not found");
 const trainingProgressSettingKey = "trainingProgress";
@@ -94,6 +99,10 @@ let leaveDialogReturnFocus = null;
 let pendingLeaveTransition = null;
 const initialRequestedReplayId = replayIdFromSearch(window.location.search);
 let authEpoch = 0;
+let authCallbacksBlocked = false;
+let activeAuthTicket = null;
+let capabilityGeneration = 0;
+let capabilityController = null;
 const privateRequestControllers = {
   auth: null,
   profile: null,
@@ -139,10 +148,12 @@ const state = {
   auth: {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     telegramBotUsername: window.SALVO_CONFIG?.telegramBotUsername || "",
+    method: "unknown",
     token: "",
     user: null,
     error: "",
     loading: false,
+    opening: false,
   },
   profile: {
     data: null,
@@ -191,6 +202,18 @@ const state = {
     progress: {},
   },
 };
+
+let telegramAuthClient = null;
+if (state.auth.workerUrl) {
+  try {
+    telegramAuthClient = createTelegramAuthClient({
+      workerUrl: state.auth.workerUrl,
+      fetcher: fetch,
+    });
+  } catch {
+    telegramAuthClient = null;
+  }
+}
 
 const preferenceCoordinator = createPreferenceCoordinator({
   settings: platform.settings,
@@ -369,14 +392,70 @@ function requireOnline(onOffline) {
 }
 
 function startMobileApp() {
-  return startMobileAppServices({
+  const services = startMobileAppServices({
     startRuntime: () => mobileRuntime.start(),
     hydratePreferences: hydratePlatformPreferences,
     hydrateSecureSession,
-    refreshAuth,
+    refreshAuth: telegramAuthBootstrap.type === "ticket" ? async () => {} : refreshAuth,
     refreshLeaderboard,
     onError: reportRuntimeError,
   });
+  const capabilityReady = services.runtimeReady.then(loadTelegramAuthCapability);
+  const bootstrapReady = Promise.all([
+    services.runtimeReady,
+    services.secureSessionReady,
+    capabilityReady,
+  ]).then(processTelegramAuthBootstrap);
+  const done = Promise.all([services.done, capabilityReady, bootstrapReady]).then(() => undefined);
+  return {
+    ...services,
+    capabilityReady,
+    bootstrapReady,
+    done,
+  };
+}
+
+async function loadTelegramAuthCapability() {
+  const generation = ++capabilityGeneration;
+  capabilityController?.abort();
+  capabilityController = null;
+
+  if (!telegramAuthClient || !requireOnline()) {
+    if (generation !== capabilityGeneration) return;
+    state.auth.method = "unavailable";
+    if (!state.auth.user) state.auth.error = translate("auth.unavailable");
+    render();
+    return;
+  }
+
+  const controller = new AbortController();
+  capabilityController = controller;
+  try {
+    const capability = await telegramAuthClient.capability({ signal: controller.signal });
+    if (generation !== capabilityGeneration || controller.signal.aborted) return;
+    state.auth.method = capability.method;
+    if (!state.auth.user && !state.auth.loading) state.auth.error = "";
+    render();
+  } catch {
+    if (generation !== capabilityGeneration || controller.signal.aborted) return;
+    state.auth.method = "unavailable";
+    if (!state.auth.user) state.auth.error = translate("auth.unavailable");
+    render();
+  } finally {
+    if (capabilityGeneration === generation && capabilityController === controller) {
+      capabilityController = null;
+    }
+  }
+}
+
+async function processTelegramAuthBootstrap() {
+  if (telegramAuthBootstrap.type === "ticket") {
+    return redeemTelegramTicket(telegramAuthBootstrap.ticket);
+  }
+  if (telegramAuthBootstrap.type === "authError") {
+    return cancelTelegramAuth();
+  }
+  return false;
 }
 
 function reportRuntimeError(error) {
@@ -697,11 +776,33 @@ function renderAuthControl() {
     `;
   }
 
-  if (platform.isNative()) {
+  const oidcAvailable = state.auth.method === "oidc" && (
+    !platform.isNative() || platform.getPlatform() === "android"
+  );
+  if (oidcAvailable) {
     return `
       <div class="auth-control">
         <span>${translate("auth.label")}</span>
-        <p class="status-line">${translate("auth.mobileSecureLoginPending")}</p>
+        <button
+          class="primary-button auth-oidc-button"
+          data-action="auth-telegram-oidc"
+          ${state.auth.loading ? "disabled" : ""}
+        >${translate(state.auth.opening ? "auth.openingTelegram" : "auth.signInTelegram")}</button>
+        ${state.auth.loading ? `<small>${translate(state.auth.opening ? "auth.openingTelegram" : "auth.loading")}</small>` : ""}
+        ${state.auth.error ? `<small class="auth-error">${escapeHtml(state.auth.error)}</small>` : ""}
+        ${renderTelegramAuthNotices()}
+      </div>
+    `;
+  }
+
+  if (!platform.isNative() && state.auth.method === "legacy") {
+    return `
+      <div class="auth-control">
+        <span>${translate("auth.label")}</span>
+        <div id="telegram-login-slot" class="telegram-login-slot" aria-label="${translate("auth.telegram")}"></div>
+        ${state.auth.loading ? `<small>${translate("auth.loading")}</small>` : ""}
+        ${state.auth.error ? `<small class="auth-error">${translate("auth.error", { message: state.auth.error })}</small>` : ""}
+        ${renderTelegramAuthNotices()}
       </div>
     `;
   }
@@ -709,10 +810,20 @@ function renderAuthControl() {
   return `
     <div class="auth-control">
       <span>${translate("auth.label")}</span>
-      <div id="telegram-login-slot" class="telegram-login-slot" aria-label="${translate("auth.telegram")}"></div>
-      ${state.auth.loading ? `<small>${translate("auth.loading")}</small>` : ""}
-      ${state.auth.error ? `<small class="auth-error">${translate("auth.error", { message: state.auth.error })}</small>` : ""}
+      <p class="status-line auth-unavailable">${escapeHtml(state.auth.error || translate("auth.unavailable"))}</p>
+      <button class="secondary-button auth-retry-button" data-action="auth-telegram-retry">${translate("auth.retry")}</button>
+      ${renderTelegramAuthNotices()}
     </div>
+  `;
+}
+
+function renderTelegramAuthNotices() {
+  return `
+    <small class="auth-value-notice">${translate("auth.valueNotice")}</small>
+    <small class="auth-privacy">
+      ${translate("auth.privacyNotice")}
+      <a href="/agents-salvo/privacy.html" target="_blank" rel="noopener noreferrer">${translate("auth.privacyLink")}</a>.
+    </small>
   `;
 }
 
@@ -2764,6 +2875,8 @@ root.addEventListener("click", async (event) => {
   if (action === "share-battle-summary") await shareBattleSummary();
   if (action === "share-telegram") await shareRoom();
   if (action === "battle-tab") selectBattleTab(button.dataset.tab);
+  if (action === "auth-telegram-oidc") await startTelegramOidc();
+  if (action === "auth-telegram-retry") await loadTelegramAuthCapability();
   if (action === "auth-logout") await logoutAuth();
   if (action === "refresh-profile") await refreshProfile();
   if (action === "refresh-leaderboard") await refreshLeaderboard();
@@ -2944,6 +3057,13 @@ function dismissRestoreNotice() {
 async function handlePlatformDeepLink(rawUrl) {
   const route = parseSalvoDeepLink(rawUrl);
   if (!route) return false;
+  if (route.type === "auth" || route.type === "authError") {
+    await closeTelegramBrowser();
+    if (route.type === "authError") {
+      return cancelTelegramAuth();
+    }
+    return redeemTelegramTicket(route.ticket);
+  }
   return requestLeaveBattle(async () => {
     try {
       if (route.type === "room") {
@@ -3853,6 +3973,9 @@ function remoteHandlers() {
 }
 
 function mountTelegramLoginWidget() {
+  if (platform.isNative() || state.auth.method !== "legacy") {
+    return;
+  }
   const slot = document.querySelector("#telegram-login-slot");
   if (!slot || state.auth.user || state.auth.loading) {
     return;
@@ -4240,7 +4363,9 @@ async function establishAuthSession(token, user, isCurrent) {
       applyAuthenticatedSession(token, user);
     }, { isCurrent: () => isCurrent() });
   } catch {
-    throw new Error(translate("auth.secureStorageFailed"));
+    throw Object.assign(new Error(translate("auth.secureStorageFailed")), {
+      authKey: "auth.secureStorageFailed",
+    });
   }
 }
 
@@ -4258,6 +4383,9 @@ function applyAuthenticatedSession(token, user) {
   state.auth.user = user;
   state.auth.error = "";
   state.auth.loading = false;
+  state.auth.opening = false;
+  authCallbacksBlocked = true;
+  activeAuthTicket = null;
 }
 
 async function invalidateAuthSession({ error = "", preserveRequestedId = true } = {}) {
@@ -4276,6 +4404,8 @@ async function invalidateAuthSession({ error = "", preserveRequestedId = true } 
       state.auth.user = null;
       state.auth.error = error;
       state.auth.loading = false;
+      state.auth.opening = false;
+      activeAuthTicket = null;
       resetProfile();
       clearPrivateReplayData({ preserveRequestedId });
       resetResultReplayPlayback();
@@ -4305,6 +4435,128 @@ async function handleAuthFailure(error, request, controller) {
   await invalidateAuthSession({ error: error.message, preserveRequestedId: true });
   render();
   return true;
+}
+
+async function startTelegramOidc() {
+  const client = telegramAuthClient;
+  const authPlatform = platform.isNative() ? platform.getPlatform() : "web";
+  if (
+    state.auth.method !== "oidc"
+    || !client
+    || (platform.isNative() && authPlatform !== "android")
+  ) {
+    state.auth.error = translate("auth.unavailable");
+    render();
+    return false;
+  }
+  if (!requireOnline(() => {
+    state.auth.error = translate("auth.unavailable");
+  })) return false;
+
+  authCallbacksBlocked = false;
+  activeAuthTicket = null;
+  const request = captureAuthRequest();
+  const controller = beginPrivateRequest("auth");
+  let opened = false;
+  state.auth.loading = true;
+  state.auth.opening = true;
+  state.auth.error = "";
+  render();
+  try {
+    const { authorizationUrl } = await client.start(authPlatform, { signal: controller.signal });
+    if (!authOperationIsCurrent(request, controller)) return false;
+    await platform.openExternalUrl(authorizationUrl);
+    if (!authOperationIsCurrent(request, controller)) return false;
+    opened = true;
+    render();
+    return true;
+  } catch {
+    if (!authOperationIsCurrent(request, controller)) return false;
+    state.auth.loading = false;
+    state.auth.opening = false;
+    state.auth.error = translate("auth.unavailable");
+    render();
+    return false;
+  } finally {
+    if (!opened) finishPrivateRequest("auth", controller);
+  }
+}
+
+async function closeTelegramBrowser() {
+  if (!platform.isNative() || typeof platform.closeExternalUrl !== "function") return;
+  try {
+    await platform.closeExternalUrl();
+  } catch {
+    // Browser cleanup must not prevent processing a validated callback.
+  }
+}
+
+function cancelTelegramAuth() {
+  if (state.auth.user || authCallbacksBlocked) return true;
+  abortPrivateRequest("auth");
+  activeAuthTicket = null;
+  state.auth.loading = false;
+  state.auth.opening = false;
+  state.auth.error = translate("auth.cancelled");
+  render();
+  return true;
+}
+
+async function redeemTelegramTicket(ticket) {
+  if (state.auth.user || authCallbacksBlocked || activeAuthTicket === ticket) return true;
+  const client = telegramAuthClient;
+  if (!client || !requireOnline(() => {
+    state.auth.error = translate("auth.unavailable");
+  })) {
+    state.auth.loading = false;
+    state.auth.opening = false;
+    render();
+    return true;
+  }
+
+  activeAuthTicket = ticket;
+  const request = captureAuthRequest();
+  const controller = beginPrivateRequest("auth");
+  state.auth.loading = true;
+  state.auth.opening = false;
+  state.auth.error = "";
+  render();
+  try {
+    const authPayload = await client.redeem(ticket, { signal: controller.signal });
+    if (!authOperationIsCurrent(request, controller)) return true;
+    const established = await establishAuthSession(
+      authPayload.token,
+      authPayload.user,
+      () => authOperationIsCurrent(request, controller),
+    );
+    if (!established) return true;
+    render();
+    const sessionRequest = captureAuthRequest();
+    await refreshProfile();
+    if (authRequestIsCurrent(sessionRequest, currentAuthRequest())) {
+      await resumeRequestedReplay();
+    }
+    return true;
+  } catch (error) {
+    if (!authOperationIsCurrent(request, controller)) return true;
+    const errorKey = error?.authKey === "auth.secureStorageFailed"
+      ? "auth.secureStorageFailed"
+      : "auth.invalidTicket";
+    await invalidateAuthSession({
+      error: translate(errorKey),
+      preserveRequestedId: true,
+    });
+    render();
+    return true;
+  } finally {
+    if (activeAuthTicket === ticket) activeAuthTicket = null;
+    if (privateRequestControllers.auth === controller) {
+      state.auth.loading = false;
+      state.auth.opening = false;
+      finishPrivateRequest("auth", controller);
+      render();
+    }
+  }
 }
 
 async function handleTelegramAuth(payload) {
@@ -4404,6 +4656,8 @@ async function refreshAuth() {
 }
 
 async function logoutAuth() {
+  authCallbacksBlocked = true;
+  activeAuthTicket = null;
   const token = state.auth.token;
   const workerUrl = state.auth.workerUrl;
   const invalidated = await invalidateAuthSession({ preserveRequestedId: true });

@@ -68,7 +68,7 @@ function nativePlugins(overrides = {}) {
       getLaunchUrl: async () => undefined,
       exitApp: async () => {},
     },
-    Browser: { open: async () => {} },
+    Browser: { open: async () => {}, close: async () => {} },
     Haptics: {
       impact: async () => {},
       notification: async () => {},
@@ -199,6 +199,7 @@ test("web external URLs and unsupported platform hooks are safe no-ops", async (
   });
 
   await adapter.openExternalUrl("https://salvo.test/rules");
+  await adapter.closeExternalUrl();
   assert.deepEqual(calls, [
     ["https://salvo.test/rules", "_blank", "noopener,noreferrer"],
   ]);
@@ -210,6 +211,7 @@ test("web external URLs and unsupported platform hooks are safe no-ops", async (
   await adapter.hideSplash();
   await adapter.configureSystemBars();
   await createWebPlatform({ window: undefined }).openExternalUrl("https://salvo.test");
+  await createWebPlatform({ window: undefined }).closeExternalUrl();
   deepLinkRemove();
   backRemove();
   lifecycleRemove();
@@ -309,11 +311,14 @@ test("native maps semantic haptics and swallows plugin failures", async () => {
   await assert.doesNotReject(() => unavailable.haptic("invalid"));
 });
 
-test("native delegates sharing, browser, splash, and system bars safely", async () => {
+test("native delegates sharing, browser open and close, splash, and system bars safely", async () => {
   const calls = [];
   const payload = { title: "Salvo", text: "Battle", url: "salvo://battle" };
   const adapter = createNativePlatform(nativePlugins({
-    Browser: { open: async (options) => calls.push(["browser", options]) },
+    Browser: {
+      open: async (options) => calls.push(["browser", options]),
+      close: async () => calls.push(["browser-close"]),
+    },
     Share: { share: async (options) => calls.push(["share", options]) },
     SplashScreen: { hide: async () => calls.push(["splash"]) },
     SystemBars: { show: async () => calls.push(["bars"]) },
@@ -321,11 +326,13 @@ test("native delegates sharing, browser, splash, and system bars safely", async 
 
   assert.deepEqual(await adapter.share(payload), { shared: true });
   await adapter.openExternalUrl("https://salvo.test");
+  await adapter.closeExternalUrl();
   await adapter.hideSplash();
   await adapter.configureSystemBars();
   assert.deepEqual(calls, [
     ["share", payload],
     ["browser", { url: "https://salvo.test" }],
+    ["browser-close"],
     ["splash"],
     ["bars"],
   ]);

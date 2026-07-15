@@ -670,7 +670,10 @@ test("preferences and secure auth hydrate asynchronously through the platform", 
   assert.match(app, /await secureSessionCoordinator\.establish\([\s\S]*?isCurrent:/);
   assert.match(app, /await secureSessionCoordinator\.invalidate\(/);
   assert.match(app, /auth\.secureStorageFailed/);
-  assert.match(app, /platform\.isNative\(\)[\s\S]*auth\.mobileSecureLoginPending/);
+  assert.match(app, /state\.auth\.method === "oidc"/);
+  assert.match(app, /platform\.getPlatform\(\) === "android"/);
+  assert.match(app, /translate\("auth\.unavailable"\)/);
+  assert.doesNotMatch(app, /auth\.mobileSecureLoginPending/);
 });
 
 test("restores only normalized local battle fields and reports recoverable restore errors", () => {
@@ -719,6 +722,8 @@ test("network state renders an offline banner and guards remote work", () => {
     "onlineRematch",
     "handleOnlineShot",
     "handleTelegramAuth",
+    "startTelegramOidc",
+    "loadTelegramAuthCapability",
     "refreshAuth",
     "logoutAuth",
     "loadReplayArchive",
@@ -778,6 +783,12 @@ test("menu, archive, replay, and history routes use the guarded app transition",
 test("deep links fail closed while routing sanitized room and replay targets", () => {
   const deepLinks = sourceBetween("async function handlePlatformDeepLink", "async function goToMenu");
   assert.match(deepLinks, /parseSalvoDeepLink\(rawUrl\)/);
+  assert.match(deepLinks, /route\.type === "auth"/);
+  assert.match(deepLinks, /route\.type === "authError"/);
+  assert.ok(
+    deepLinks.indexOf('route.type === "auth"') < deepLinks.indexOf("requestLeaveBattle"),
+    "auth callbacks must be handled before destructive navigation",
+  );
   assert.match(deepLinks, /showOnline\(\)/);
   assert.match(deepLinks, /state\.online\.roomCodeInput = route\.roomCode/);
   assert.match(deepLinks, /await openArchivedReplay\(route\.replayId/);

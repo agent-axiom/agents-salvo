@@ -41,6 +41,7 @@ export function createWebPlatform({
     async openExternalUrl(url) {
       host?.open?.(url, "_blank", "noopener,noreferrer");
     },
+    closeExternalUrl: async () => {},
     onDeepLink: async () => () => {},
     onBack: async () => () => {},
     onLifecycleChange: async () => () => {},

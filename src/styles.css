@@ -574,6 +574,22 @@ input {
   align-items: center;
 }
 
+.auth-oidc-button,
+.auth-retry-button {
+  width: 100%;
+  min-height: 42px;
+}
+
+.auth-value-notice,
+.auth-privacy {
+  line-height: 1.35;
+}
+
+.auth-privacy a {
+  color: var(--primary-ink);
+  font-weight: 700;
+}
+
 .auth-card {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) 34px;

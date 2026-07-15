@@ -23,6 +23,30 @@ test("actual app aborts private work while secure logout is pending", async () =
   await runScenarioInChild("logout");
 });
 
+test("actual app renders Telegram auth from platform capability", async () => {
+  await runScenarioInChild("auth-capability");
+});
+
+test("actual app starts Telegram OIDC with platform-specific browser behavior", async () => {
+  await runScenarioInChild("auth-start");
+});
+
+test("actual app redeems native Telegram callbacks without leaving the game", async () => {
+  await runScenarioInChild("auth-native-callback");
+});
+
+test("actual app suppresses stale Telegram auth work and logout races", async () => {
+  await runScenarioInChild("auth-races");
+});
+
+test("actual app cleans and redeems web Telegram bootstrap callbacks", async () => {
+  await runScenarioInChild("auth-bootstrap");
+});
+
+test("actual app retries Telegram capability and rejects failed secure persistence", async () => {
+  await runScenarioInChild("auth-recovery");
+});
+
 async function runScenarioInChild(name) {
   const inheritCoverage = childCoverageMode === "inherit";
   const childEnvironment = {

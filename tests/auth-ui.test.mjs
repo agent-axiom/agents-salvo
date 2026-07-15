@@ -11,15 +11,23 @@ test("frontend config exposes the public Telegram bot username only", () => {
   assert.doesNotMatch(index, /TELEGRAM_BOT_TOKEN|SESSION_SECRET/);
 });
 
-test("frontend mounts Telegram login and exchanges payloads with the worker", () => {
+test("frontend selects legacy or OIDC Telegram login from worker capability", () => {
+  assert.match(app, /import \{ createTelegramAuthClient \} from "\.\/telegram-auth\.js"/);
+  assert.match(app, /captureTelegramAuthBootstrap/);
   assert.match(app, /telegram-widget\.js/);
   assert.match(app, /window\.onTelegramAuth/);
   assert.match(app, /isTelegramLoginOriginAllowed/);
   assert.match(app, /auth\.domainHint/);
+  assert.match(app, /auth:\s*\{[\s\S]*?method:\s*"unknown"/);
+  assert.match(app, /data-action="auth-telegram-oidc"/);
+  assert.match(app, /\/agents-salvo\/privacy\.html/);
+  assert.match(app, /client\.start\(authPlatform/);
+  assert.match(app, /client\.redeem\(ticket/);
   assert.match(app, /\/auth\/telegram/);
   assert.match(app, /\/auth\/me/);
   assert.match(app, /salvo\.authToken/);
   assert.match(app, /data-action="auth-logout"/);
+  assert.doesNotMatch(app, /auth\.mobileSecureLoginPending/);
 });
 
 test("frontend exposes player profile and completed battle recording hooks", () => {

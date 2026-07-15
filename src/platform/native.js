@@ -92,6 +92,7 @@ export function createNativePlatform(plugins = defaultPlugins) {
       }
     },
     openExternalUrl: (url) => browser.open({ url }),
+    closeExternalUrl: () => browser.close(),
     async onDeepLink(listener) {
       const startupUrls = new Set();
       let state = "startup";
