@@ -9,11 +9,11 @@
 ## До сборки
 
 - [ ] Все тесты и coverage проходят на релизном commit.
-- [ ] `versionName` равен `1.0.0`, `versionCode` равен `1`.
+- [ ] `versionName` соответствует релизу, а `versionCode` больше кода последней загруженной версии; workflow использует монотонный `github.run_number`.
 - [ ] Package name равен `io.github.agentaxiom.salvo`.
 - [ ] Постоянный release keystore сохранён в защищённом месте и имеет отдельную резервную копию.
 - [ ] SHA-256 fingerprint сертификата совпадает с `EC:49:72:02:0B:0B:43:7F:83:BD:29:31:5C:52:60:E2:C7:5C:83:4E:D5:C4:E3:65:01:21:CD:87:8C:D7:14:36` и записан рядом с резервной копией.
-- [ ] GitHub Environment `rustore-production` разрешает деплой только с `main`, а его Secrets `RUSTORE_KEYSTORE_BASE64`, `RUSTORE_STORE_PASSWORD`, `RUSTORE_KEY_ALIAS`, `RUSTORE_KEY_PASSWORD` настроены.
+- [ ] GitHub Environment `rustore-production` разрешает деплой только с `main`, а его Secrets `RUSTORE_KEYSTORE_BASE64`, `RUSTORE_STORE_PASSWORD`, `RUSTORE_KEY_ALIAS`, `RUSTORE_KEY_PASSWORD`, `RUSTORE_KEY_ID`, `RUSTORE_PRIVATE_KEY`, `RUSTORE_DEVELOPER_EMAIL` настроены.
 
 ## Owner action: аккаунт и правовые поля
 
@@ -38,6 +38,17 @@
 - [ ] В итоговом APK присутствуют только `INTERNET`, `ACCESS_NETWORK_STATE`, `VIBRATE` и внутреннее signature-разрешение приложения.
 
 Для первой публикации использовать APK. AAB сохраняется как проверенный дополнительный артефакт; для его загрузки RuStore требует отдельно добавить подпись приложения.
+
+## Публикация обновлений через API
+
+API применяется только после появления первой активной версии приложения в RuStore. Ключ должен иметь доступ к приложению `io.github.agentaxiom.salvo` и операциям чтения приложений/версий, создания и удаления черновика, загрузки APK, отправки на модерацию и изменения процента публикации.
+
+1. Запустить ручной workflow `Check RuStore API Access`. Он только аутентифицируется и проверяет видимость приложения, не создавая версию.
+2. Запустить `Build RuStore Release` с `submit_to_rustore = true` и непустым `release_notes`. После тестов, подписи и проверки APK workflow создаст обновление, загрузит APK и отправит его на модерацию с автоматической публикацией на 5% аудитории.
+3. После одобрения и статуса частичной публикации запустить `Expand RuStore Rollout` с ID версии и целью `25`.
+4. После проверки метрик и отзывов запустить тот же workflow с целью `100`.
+
+Workflow допускает только увеличение `5 -> 25 -> 100` и не отправляет новую версию без явного подтверждения. Остановка публикации, откат и выбор предыдущей версии выполняются владельцем в RuStore Консоли; автоматический rollback намеренно не реализован.
 
 ## Приёмка на устройстве
 

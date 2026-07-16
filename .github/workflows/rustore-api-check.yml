@@ -1,0 +1,42 @@
+name: Check RuStore API Access
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rustore-api-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Verify RuStore credentials and application access
+    if: github.ref == 'refs/heads/main'
+    environment: rustore-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test RuStore API client
+        run: node --test tests/rustore-api-client.test.mjs
+
+      - name: Check RuStore API access
+        env:
+          RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
+          RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          npm run rustore:api:check | tee -a "$GITHUB_STEP_SUMMARY"
