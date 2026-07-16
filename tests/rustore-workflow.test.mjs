@@ -18,7 +18,15 @@ test("RuStore release workflow is manual and least privilege", () => {
   });
   assert.equal(workflow.jobs.release.if, "github.ref == 'refs/heads/main'");
   assert.equal(workflow.jobs.release.environment, "rustore-production");
+  assert.equal(workflow.jobs.release.env.SALVO_VERSION_CODE, "${{ github.run_number }}");
   assert.doesNotMatch(source, /^\s*(push|pull_request):/m);
+});
+
+test("RuStore release workflow assigns a monotonically increasing Android version code", () => {
+  const source = readFileSync(workflowPath, "utf8");
+
+  assert.match(source, /SALVO_VERSION_CODE:\s*\$\{\{ github\.run_number \}\}/);
+  assert.match(source, /Build signed APK and AAB[\s\S]*assembleRelease[\s\S]*bundleRelease/);
 });
 
 test("RuStore release workflow requires the published privacy notice before signing", () => {
