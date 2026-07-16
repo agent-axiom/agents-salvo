@@ -4668,27 +4668,29 @@ input {
   }
 
   .board-scroll {
-    overflow-x: auto;
-    overscroll-behavior-inline: contain;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: clip;
   }
 
   .coordinate-board {
-    width: max-content;
-    min-width: 100%;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
   }
 
   .column-headers,
   .board-grid {
-    grid-template-columns: repeat(var(--board-size, 10), minmax(44px, 1fr));
+    grid-template-columns: repeat(var(--board-size, 10), minmax(0, 1fr));
   }
 
   .row-headers {
-    grid-template-rows: repeat(var(--board-size, 10), minmax(44px, 1fr));
+    grid-template-rows: repeat(var(--board-size, 10), minmax(0, 1fr));
   }
 
   .cell {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: 0;
+    min-height: 0;
   }
 
   .archive-screen,

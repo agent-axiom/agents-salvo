@@ -836,7 +836,7 @@ test("haptics are independently configured and mapped to gameplay outcomes", () 
   assert.doesNotMatch(outcomes, /playHaptic\("miss"\)/);
 });
 
-test("mobile layout applies safe areas, compact banners, and 44px targets", () => {
+test("mobile layout applies safe areas, compact banners, and fluid battle boards", () => {
   assert.match(html, /<meta\s+name="viewport"\s+content="width=device-width, initial-scale=1\.0, viewport-fit=cover"\s*\/>/);
   for (const side of ["top", "right", "bottom", "left"]) {
     assert.match(css, new RegExp(`--safe-${side}:\\s*var\\(--safe-area-inset-${side},\\s*env\\(safe-area-inset-${side},\\s*0px\\)\\)`));
@@ -863,8 +863,11 @@ test("mobile layout applies safe areas, compact banners, and 44px targets", () =
     assert.match(css, new RegExp(`@media \\(max-width: 720px\\)[\\s\\S]*?${escapedSelector}[\\s\\S]*?min-height:\\s*44px`));
   }
   assert.match(app, /class="board-scroll"/);
-  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.board-scroll\s*\{[\s\S]*?overflow-x:\s*auto/);
-  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.cell\s*\{[\s\S]*?min-width:\s*44px;[\s\S]*?min-height:\s*44px/);
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.board-scroll\s*\{[\s\S]*?overflow-x:\s*clip/);
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.coordinate-board\s*\{[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0/);
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.column-headers,[\s\S]*?\.board-grid\s*\{[\s\S]*?minmax\(0,\s*1fr\)/);
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.row-headers\s*\{[\s\S]*?minmax\(0,\s*1fr\)/);
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.cell\s*\{[\s\S]*?min-width:\s*0;[\s\S]*?min-height:\s*0/);
   assert.match(css, /\.setup-primary-actions[\s\S]*?var\(--safe-bottom\)/);
   assert.match(cssRule(".result-actions"), /var\(--safe-bottom\)/);
   assert.match(cssRule(".modal-backdrop"), /var\(--safe-bottom\)/);
