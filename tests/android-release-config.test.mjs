@@ -66,7 +66,9 @@ Bj6dbwAjER2yP65JPM8iZq4nOpwzQQBc
 
 test("Android release identity is stable and production signed", () => {
   assert.match(gradle, /applicationId\s+["']io\.github\.agentaxiom\.salvo["']/);
-  assert.match(gradle, /versionCode\s+1\b/);
+  assert.match(gradle, /SALVO_VERSION_CODE/);
+  assert.match(gradle, /def\s+defaultVersionCode\s*=\s*1\b/);
+  assert.match(gradle, /versionCode\s+appVersionCode\b/);
   assert.match(gradle, /versionName\s+["']1\.0\.0["']/);
 
   for (const variable of [
@@ -120,6 +122,9 @@ function validCommandRunner(overrides = {}) {
     }
     if (invocation.includes("application-id")) {
       return { status: 0, stdout: `${overrides.packageId ?? "io.github.agentaxiom.salvo"}\n`, stderr: "" };
+    }
+    if (invocation.includes("version-code")) {
+      return { status: 0, stdout: `${overrides.versionCode ?? "1"}\n`, stderr: "" };
     }
     if (invocation.includes("version-name")) {
       return { status: 0, stdout: `${overrides.versionName ?? "1.0.0"}\n`, stderr: "" };
@@ -181,6 +186,14 @@ test("release verifier rejects unexpected identity and failed signatures", () =>
   assert.throws(
     () => verifyAndroidRelease({ artifactPath: releaseFixture(), runCommand: validCommandRunner({ packageId: "example.invalid" }) }),
     /application id/i,
+  );
+  assert.throws(
+    () => verifyAndroidRelease({
+      artifactPath: releaseFixture(),
+      expectedVersionCode: 5,
+      runCommand: validCommandRunner({ versionCode: "4" }),
+    }),
+    /version code/i,
   );
   assert.throws(
     () => verifyAndroidRelease({ artifactPath: releaseFixture(), runCommand: validCommandRunner({ versionName: "0.9.0" }) }),
@@ -315,6 +328,7 @@ test("release verifier writes a reproducible SHA-256 sidecar", () => {
   const result = verifyAndroidRelease({ artifactPath, runCommand: validCommandRunner() });
 
   assert.equal(result.applicationId, "io.github.agentaxiom.salvo");
+  assert.equal(result.versionCode, 1);
   assert.equal(result.versionName, "1.0.0");
   assert.equal(result.certificateSha256, ANDROID_RELEASE_CERTIFICATE_SHA256);
   assert.match(result.sha256, /^[a-f0-9]{64}$/);
@@ -340,6 +354,8 @@ if [ "$2" = permissions ]; then
   printf '%s\\n' ${ANDROID_RELEASE_PERMISSIONS.map((permission) => `'${permission}'`).join(" ")}
 elif [ "$2" = application-id ]; then
   echo io.github.agentaxiom.salvo
+elif [ "$2" = version-code ]; then
+  echo 1
 else
   echo 1.0.0
 fi
@@ -371,12 +387,13 @@ echo 'Signer #1 certificate SHA-256 digest: ${ANDROID_RELEASE_CERTIFICATE_SHA256
         ...process.env,
         ANDROID_HOME: androidHome,
         ANDROID_SDK_ROOT: "",
+        SALVO_VERSION_CODE: "1",
         PATH: `${toolsDirectory}:${process.env.PATH}`,
       },
     },
   );
   assert.equal(success.status, 0, success.stderr);
-  assert.match(success.stdout, /Verified app-release\.apk \(io\.github\.agentaxiom\.salvo 1\.0\.0\)/);
+  assert.match(success.stdout, /Verified app-release\.apk \(io\.github\.agentaxiom\.salvo 1\.0\.0, code 1\)/);
   assert.match(success.stdout, /SHA-256 [a-f0-9]{64}/);
 
   const failure = spawnSync(process.execPath, [resolve("scripts/verify-android-release.mjs")], { encoding: "utf8" });
@@ -400,6 +417,8 @@ if [ "$2" = permissions ]; then
   printf '%s\\n' ${ANDROID_RELEASE_PERMISSIONS.map((permission) => `'${permission}'`).join(" ")}
 elif [ "$2" = application-id ]; then
   echo io.github.agentaxiom.salvo
+elif [ "$2" = version-code ]; then
+  echo 1
 else
   echo 1.0.0
 fi
@@ -427,6 +446,7 @@ echo 'Signer #1 certificate SHA-256 digest: ${ANDROID_RELEASE_CERTIFICATE_SHA256
         ...process.env,
         ANDROID_HOME: androidHome,
         ANDROID_SDK_ROOT: "",
+        SALVO_VERSION_CODE: "1",
         PATH: "/usr/bin:/bin",
       },
     },

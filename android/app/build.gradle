@@ -1,5 +1,17 @@
 apply plugin: 'com.android.application'
 
+def defaultVersionCode = 1
+def maximumVersionCode = 2100000000
+def versionCodeText = System.getenv('SALVO_VERSION_CODE') ?: defaultVersionCode.toString()
+if (!(versionCodeText ==~ /^[1-9][0-9]*$/)) {
+    throw new GradleException('SALVO_VERSION_CODE must be a positive integer.')
+}
+def parsedVersionCode = versionCodeText.toBigInteger()
+if (parsedVersionCode > maximumVersionCode) {
+    throw new GradleException("SALVO_VERSION_CODE must not exceed ${maximumVersionCode}.")
+}
+def appVersionCode = parsedVersionCode.intValue()
+
 def releaseSigningEnvironment = [
     SALVO_RELEASE_KEYSTORE: System.getenv('SALVO_RELEASE_KEYSTORE'),
     SALVO_RELEASE_STORE_PASSWORD: System.getenv('SALVO_RELEASE_STORE_PASSWORD'),
@@ -7,14 +19,18 @@ def releaseSigningEnvironment = [
     SALVO_RELEASE_KEY_PASSWORD: System.getenv('SALVO_RELEASE_KEY_PASSWORD'),
 ]
 def missingReleaseSigningEnvironment = releaseSigningEnvironment.findAll { _, value -> !value }.keySet()
+def missingReleaseEnvironment = new LinkedHashSet(missingReleaseSigningEnvironment)
+if (!System.getenv('SALVO_VERSION_CODE')) {
+    missingReleaseEnvironment.add('SALVO_VERSION_CODE')
+}
 def releaseTaskRequested = gradle.startParameter.taskNames.any { taskName ->
     taskName.tokenize(':').last().toLowerCase().contains('release')
 }
 
-if (releaseTaskRequested && !missingReleaseSigningEnvironment.isEmpty()) {
+if (releaseTaskRequested && !missingReleaseEnvironment.isEmpty()) {
     throw new GradleException(
-        "Android release signing is not configured. Missing environment variables: " +
-            missingReleaseSigningEnvironment.join(', ')
+        "Android release is not configured. Missing environment variables: " +
+            missingReleaseEnvironment.join(', ')
     )
 }
 
@@ -25,7 +41,7 @@ android {
         applicationId "io.github.agentaxiom.salvo"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
+        versionCode appVersionCode
         versionName "1.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {

@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 
 export const ANDROID_RELEASE_APPLICATION_ID = "io.github.agentaxiom.salvo";
 export const ANDROID_RELEASE_VERSION_NAME = "1.0.0";
+export const ANDROID_MAXIMUM_VERSION_CODE = 2_100_000_000;
 export const ANDROID_RELEASE_CERTIFICATE_SHA256 = "ec4972020b0b437f83bd29315c5260e2c75c834ed5c4e3650121cd878cd71436";
 export const ANDROID_RELEASE_PERMISSIONS = Object.freeze([
   "android.permission.ACCESS_NETWORK_STATE",
@@ -91,6 +92,7 @@ function verifyApkSignature(runCommand, absolutePath) {
 export function verifyAndroidRelease({
   artifactPath,
   expectedApplicationId = ANDROID_RELEASE_APPLICATION_ID,
+  expectedVersionCode = null,
   expectedVersionName = ANDROID_RELEASE_VERSION_NAME,
   expectedCertificateSha256 = ANDROID_RELEASE_CERTIFICATE_SHA256,
   expectedPermissions = ANDROID_RELEASE_PERMISSIONS,
@@ -141,6 +143,23 @@ export function verifyAndroidRelease({
   );
   if (applicationId !== expectedApplicationId) {
     throw new Error(`Unexpected Android application ID: expected ${expectedApplicationId}, received ${applicationId}`);
+  }
+
+  const versionCodeText = runChecked(
+    runCommand,
+    "apkanalyzer",
+    ["manifest", "version-code", absolutePath],
+    "Android version code inspection",
+  );
+  if (!/^[1-9][0-9]*$/.test(versionCodeText)) {
+    throw new Error(`Unexpected Android version code: received ${versionCodeText || "an empty value"}`);
+  }
+  const versionCode = Number(versionCodeText);
+  if (!Number.isSafeInteger(versionCode) || versionCode > ANDROID_MAXIMUM_VERSION_CODE) {
+    throw new Error(`Unexpected Android version code: received ${versionCodeText}`);
+  }
+  if (expectedVersionCode !== null && versionCode !== Number(expectedVersionCode)) {
+    throw new Error(`Unexpected Android version code: expected ${expectedVersionCode}, received ${versionCode}`);
   }
 
   const versionName = runChecked(
@@ -203,6 +222,7 @@ export function verifyAndroidRelease({
     artifactPath: absolutePath,
     checksumPath,
     applicationId,
+    versionCode,
     versionName,
     certificateSha256,
     permissions,
@@ -213,9 +233,12 @@ export function verifyAndroidRelease({
 
 function runCli() {
   try {
-    const result = verifyAndroidRelease({ artifactPath: process.argv[2] });
+    const result = verifyAndroidRelease({
+      artifactPath: process.argv[2],
+      expectedVersionCode: process.env.SALVO_VERSION_CODE || null,
+    });
     process.stdout.write(
-      `Verified ${basename(result.artifactPath)} (${result.applicationId} ${result.versionName})\n` +
+      `Verified ${basename(result.artifactPath)} (${result.applicationId} ${result.versionName}, code ${result.versionCode})\n` +
         `SHA-256 ${result.sha256}\n`,
     );
   } catch (error) {

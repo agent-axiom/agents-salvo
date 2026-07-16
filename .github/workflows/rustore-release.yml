@@ -15,6 +15,8 @@ jobs:
     name: Test and build signed Android release
     if: github.ref == 'refs/heads/main'
     environment: rustore-production
+    env:
+      SALVO_VERSION_CODE: ${{ github.run_number }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
