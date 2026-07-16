@@ -1,0 +1,56 @@
+name: Expand RuStore Rollout
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_id:
+        description: RuStore version ID to expand
+        required: true
+        type: string
+      target:
+        description: Target rollout percentage
+        required: true
+        type: choice
+        options:
+          - "25"
+          - "100"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rustore-rollout-${{ inputs.version_id }}
+  cancel-in-progress: false
+
+jobs:
+  rollout:
+    name: Expand an approved RuStore rollout
+    if: github.ref == 'refs/heads/main'
+    environment: rustore-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test RuStore API client
+        run: node --test tests/rustore-api-client.test.mjs
+
+      - name: Expand RuStore rollout
+        env:
+          RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
+          RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
+          RUSTORE_VERSION_ID: ${{ inputs.version_id }}
+          RUSTORE_ROLLOUT_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          npm run rustore:api:rollout | tee -a "$GITHUB_STEP_SUMMARY"

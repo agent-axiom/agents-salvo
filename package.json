@@ -15,7 +15,10 @@
     "mobile:ios": "npm run mobile:sync && cap open ios",
     "mobile:verify": "npm run build && cap sync --inline",
     "android:release:verify": "node scripts/verify-android-release.mjs android/app/build/outputs/apk/release/app-release.apk",
-    "rustore:assets:verify": "node scripts/verify-rustore-assets.mjs"
+    "rustore:assets:verify": "node scripts/verify-rustore-assets.mjs",
+    "rustore:api:check": "node scripts/rustore-api.mjs check",
+    "rustore:api:submit": "node scripts/rustore-api.mjs submit",
+    "rustore:api:rollout": "node scripts/rustore-api.mjs rollout"
   },
   "engines": {
     "node": ">=24.14.1 <25"

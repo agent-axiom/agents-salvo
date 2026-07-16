@@ -76,8 +76,13 @@ xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator \
 - `RUSTORE_STORE_PASSWORD`
 - `RUSTORE_KEY_ALIAS`
 - `RUSTORE_KEY_PASSWORD`
+- `RUSTORE_KEY_ID`
+- `RUSTORE_PRIVATE_KEY`
+- `RUSTORE_DEVELOPER_EMAIL`
 
-Нельзя коммитить ключ подписи или его пароли. Оригинальный keystore и минимум одну зашифрованную резервную копию нужно хранить вне репозитория: все будущие обновления `io.github.agentaxiom.salvo` должны подписываться тем же ключом. Локальная проверка материалов магазина запускается командой `npm run rustore:assets:verify`. Тексты карточки, скриншоты, декларация данных и чек-лист владельца находятся в [`distribution/rustore`](distribution/rustore/).
+Нельзя коммитить ключи подписи/API или их пароли. Оригинальный keystore и минимум одну зашифрованную резервную копию нужно хранить вне репозитория: все будущие обновления `io.github.agentaxiom.salvo` должны подписываться тем же ключом. Локальная проверка материалов магазина запускается командой `npm run rustore:assets:verify`. Тексты карточки, скриншоты, декларация данных и чек-лист владельца находятся в [`distribution/rustore`](distribution/rustore/).
+
+API-публикация доступна после появления первой активной версии в RuStore. Сначала нужно запустить безопасный workflow `Check RuStore API Access`: он ничего не изменяет. Для обновления запустить `Build RuStore Release` с включённым `submit_to_rustore` и непустым описанием изменений. Проверенный APK отправится на модерацию и после одобрения автоматически откроется для 5% аудитории. Затем защищённый workflow `Expand RuStore Rollout` переводит ту же версию по её ID на 25%, а после проверки — на 100%. Остановка или откат версии остаются явным действием владельца в RuStore Консоли.
 
 ## GitHub Pages
 
