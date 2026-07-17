@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import worker from "../worker/index.js";
-import { getPlayerProfile, recordCompletedMatch } from "../worker/profile.js";
+import {
+  getPlayerProfile,
+  recordCompletedMatch,
+  recordOnlineReplayBatch,
+} from "../worker/profile.js";
 import { createSession } from "../worker/session.js";
 
 const profileUser = {
@@ -207,6 +211,43 @@ test("profile match endpoint rejects client-submitted online results", async () 
 
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "Online results are recorded by the game server" });
+});
+
+test("online replay batches require atomic storage and exact replay-linked participants", async () => {
+  const replay = { id: "expected-replay" };
+  const prepareOnlyDb = { prepare() {} };
+  const atomicDb = {
+    batch() {
+      assert.fail("invalid replay batches must not be written");
+    },
+    prepare() {
+      assert.fail("invalid replay batches must not prepare statements");
+    },
+  };
+
+  await assert.rejects(
+    recordOnlineReplayBatch(prepareOnlyDb, replay, []),
+    /Atomic replay storage is not configured/,
+  );
+  await assert.rejects(
+    recordOnlineReplayBatch(atomicDb, replay, [
+      { playerId: "p1", user: profileUser, payload: completedMatchPayload() },
+    ]),
+    /Two online replay participants are required/,
+  );
+
+  const mismatchedPayload = {
+    ...completedMatchPayload(),
+    mode: "online",
+    replayId: "different-replay",
+  };
+  await assert.rejects(
+    recordOnlineReplayBatch(atomicDb, replay, [
+      { playerId: "p1", user: profileUser, payload: mismatchedPayload },
+      { playerId: "p2", user: rivalUser, payload: mismatchedPayload },
+    ]),
+    /Online replay match linkage is invalid/,
+  );
 });
 
 test("profile endpoints fail generically when auth storage is unavailable", async () => {

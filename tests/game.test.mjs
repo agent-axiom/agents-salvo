@@ -93,6 +93,20 @@ test("placeShip rejects ships touching by side or corner", () => {
   );
 });
 
+test("placeShip rejects overlap and contact with special cells", () => {
+  const marker = { id: "mine-1", type: "mine" };
+  const board = placeMarker(createBoard(), marker, { row: 4, col: 4 });
+
+  assert.throws(
+    () => placeShip(board, { id: "overlap-mine", length: 1 }, { row: 4, col: 4 }, "horizontal"),
+    /overlap a special cell/i,
+  );
+  assert.throws(
+    () => placeShip(board, { id: "touch-mine", length: 1 }, { row: 3, col: 3 }, "horizontal"),
+    /touch a special cell/i,
+  );
+});
+
 test("removeShip removes one placed ship and keeps the rest of the board", () => {
   let board = createBoard();
   board = placeShip(board, { id: "battleship", length: 4 }, { row: 0, col: 0 }, "horizontal");
@@ -151,6 +165,24 @@ test("randomlyPlaceSetup supports quick and extended presets", () => {
   assert.equal(extended.ships.length, gamePresets.perelman.fleet.length);
   assert.equal(extended.markers.length, gamePresets.perelman.markers.length);
   assert.equal(hasCompleteSetup(extended, gamePresets.perelman), true);
+});
+
+test("random placement rejects fleets and marker sets that cannot fit", () => {
+  assert.throws(
+    () => randomlyPlaceFleet([{ id: "oversized", length: 2 }], 1, () => 0),
+    /No valid placement found for oversized/,
+  );
+  assert.throws(
+    () => randomlyPlaceSetup({
+      size: 1,
+      fleet: [],
+      markers: [
+        { id: "mine-1", type: "mine" },
+        { id: "mine-2", type: "mine" },
+      ],
+    }, () => 0),
+    /No valid placement found for mine-2/,
+  );
 });
 
 test("placeMarker places and removes mines and sweepers without touching ships", () => {

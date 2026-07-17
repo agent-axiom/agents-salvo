@@ -187,6 +187,38 @@ test("buildBattleReport recommends a training drill after low-accuracy losses", 
   });
 });
 
+test("buildBattleReport gives a steady baseline when the player did not fire", () => {
+  const report = buildBattleReport([], "p2", "p1");
+
+  assert.equal(report.result, "loss");
+  assert.equal(report.player.shots, 0);
+  assert.deepEqual(report.coaching, {
+    diagnosisId: "steady",
+    focusId: "endgame",
+    drillId: "openingMap",
+  });
+});
+
+test("buildBattleReport prioritizes finishing ships after a controlled loss", () => {
+  const log = [
+    { playerId: "p1", result: "hit" },
+    { playerId: "p1", result: "hit" },
+    { playerId: "p1", result: "sunk" },
+    { playerId: "p2", result: "hit" },
+    { playerId: "p2", result: "sunk" },
+  ];
+
+  const report = buildBattleReport(log, "p2", "p1");
+
+  assert.equal(report.player.accuracy, 100);
+  assert.equal(report.player.sunk, 1);
+  assert.deepEqual(report.coaching, {
+    diagnosisId: "finishShips",
+    focusId: "targetDiscipline",
+    drillId: "lineFinish",
+  });
+});
+
 test("buildBattleReport adds a tactical debrief for low-accuracy losses", () => {
   const log = [
     { playerId: "p1", result: "miss" },

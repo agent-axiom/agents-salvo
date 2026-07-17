@@ -712,6 +712,535 @@ test("a caught second publication rename failure restores previous output", asyn
   }
 });
 
+test("publication reports both the publish failure and failed rollback", async () => {
+  const { buildStatePaths, publishBuild } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-publish-rollback-failure-"));
+  const output = join(parent, "dist");
+  const stage = mkdtempSync(join(parent, ".dist.stage-"));
+  const publishFailure = new Error("injected publication failure");
+  const rollbackFailure = new Error("injected rollback failure");
+  mkdirSync(output);
+  writeFileSync(join(output, "prior.txt"), "prior", "utf8");
+  writeFileSync(join(stage, "next.txt"), "next", "utf8");
+  let renameCount = 0;
+
+  try {
+    await assert.rejects(
+      publishBuild(stage, output, {
+        async renamePath(from, to) {
+          renameCount += 1;
+          if (renameCount === 1) {
+            renameSync(from, to);
+            return;
+          }
+          throw renameCount === 2 ? publishFailure : rollbackFailure;
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        assert.deepEqual(error.errors, [publishFailure, rollbackFailure]);
+        assert.match(error.message, /previous output remains/);
+        return true;
+      },
+    );
+
+    const { backupPath } = buildStatePaths(output);
+    assert.equal(existsSync(output), false);
+    assert.equal(readFileSync(join(backupPath, "prior.txt"), "utf8"), "prior");
+    assert.equal(readFileSync(join(stage, "next.txt"), "utf8"), "next");
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("publication leaves output and stage untouched when backup creation fails", async () => {
+  const { buildStatePaths, publishBuild } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-backup-rename-failure-"));
+  const output = join(parent, "dist");
+  const stage = mkdtempSync(join(parent, ".dist.stage-"));
+  const failure = Object.assign(new Error("injected backup rename failure"), {
+    code: "EACCES",
+  });
+  mkdirSync(output);
+  writeFileSync(join(output, "prior.txt"), "prior", "utf8");
+  writeFileSync(join(stage, "next.txt"), "next", "utf8");
+
+  try {
+    await assert.rejects(
+      publishBuild(stage, output, {
+        async renamePath() {
+          throw failure;
+        },
+      }),
+      (error) => error === failure,
+    );
+
+    assert.equal(readFileSync(join(output, "prior.txt"), "utf8"), "prior");
+    assert.equal(readFileSync(join(stage, "next.txt"), "utf8"), "next");
+    assert.equal(existsSync(buildStatePaths(output).backupPath), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("recovery restores a backup when publication stopped in the rename gap", async () => {
+  const {
+    acquireBuildLock,
+    buildStatePaths,
+    reconcileBuildState,
+    releaseBuildLock,
+  } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-direct-backup-recovery-"));
+  const output = join(parent, "dist");
+  const { backupPath } = buildStatePaths(output);
+  mkdirSync(backupPath);
+  writeFileSync(join(backupPath, "prior.txt"), "prior", "utf8");
+  let lock;
+
+  try {
+    lock = await acquireBuildLock(output);
+    await reconcileBuildState(output, lock);
+
+    assert.equal(readFileSync(join(output, "prior.txt"), "utf8"), "prior");
+    assert.equal(existsSync(backupPath), false);
+  } finally {
+    if (lock) {
+      await releaseBuildLock(lock);
+    }
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("one destination lock cannot authorize recovery for another destination", async () => {
+  const {
+    acquireBuildLock,
+    reconcileBuildState,
+    releaseBuildLock,
+  } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-cross-destination-lock-"));
+  const firstOutput = join(parent, "first-dist");
+  const secondOutput = join(parent, "second-dist");
+  const lock = await acquireBuildLock(firstOutput);
+
+  try {
+    await assert.rejects(
+      reconcileBuildState(secondOutput, lock),
+      /Build lock is not owned by this process/,
+    );
+    assert.equal(existsSync(secondOutput), false);
+  } finally {
+    await releaseBuildLock(lock);
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("publication accepts only generated stage siblings under the destination parent", async () => {
+  const { publishBuild } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-stage-boundary-"));
+  const externalParent = mkdtempSync(join(tmpdir(), "salvo-external-stage-boundary-"));
+  const output = join(parent, "dist");
+  const ordinarySibling = join(parent, "ordinary-stage");
+  const externalStage = join(externalParent, ".dist.stage-external");
+  mkdirSync(ordinarySibling);
+  mkdirSync(externalStage);
+
+  try {
+    await assert.rejects(
+      publishBuild(externalStage, output),
+      /must remain under the canonical build destination parent/,
+    );
+    await assert.rejects(
+      publishBuild(ordinarySibling, output),
+      /must be a generated sibling of the destination/,
+    );
+    assert.equal(existsSync(ordinarySibling), true);
+    assert.equal(existsSync(externalStage), true);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+    rmSync(externalParent, { recursive: true, force: true });
+  }
+});
+
+test("lock acquisition validates lifecycle hooks before creating state", async () => {
+  const { acquireBuildLock } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-lock-hook-validation-"));
+  const output = join(parent, "dist");
+  const cases = [
+    ["onCandidateReady", /onCandidateReady must be a function/],
+    ["onRecoveryCandidateReady", /onRecoveryCandidateReady must be a function/],
+    ["onRecoveryClaimPublished", /onRecoveryClaimPublished must be a function/],
+  ];
+
+  try {
+    for (const [name, message] of cases) {
+      await assert.rejects(
+        acquireBuildLock(output, { [name]: true }),
+        (error) => error instanceof TypeError && message.test(error.message),
+      );
+    }
+    assertNoBuildDebris(output);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("lock acquisition fails cleanly when the destination parent is missing", async () => {
+  const { acquireBuildLock } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-missing-lock-parent-"));
+  const missingParent = join(parent, "missing");
+  const output = join(missingParent, "dist");
+
+  try {
+    await assert.rejects(
+      acquireBuildLock(output),
+      (error) => error?.code === "ENOENT",
+    );
+    assert.equal(existsSync(missingParent), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("lock acquisition rejects a candidate removed before publication", async () => {
+  const { acquireBuildLock } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-missing-lock-candidate-"));
+  const output = join(parent, "dist");
+
+  try {
+    await assert.rejects(
+      acquireBuildLock(output, {
+        onCandidateReady({ candidatePath }) {
+          rmSync(candidatePath, { recursive: true, force: true });
+        },
+      }),
+      (error) => error?.code === "ENOENT",
+    );
+    assertNoBuildDebris(output);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("lock acquisition refuses to clean a replaced candidate directory", async () => {
+  const { acquireBuildLock, buildStatePaths } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-replaced-lock-candidate-"));
+  const output = join(parent, "dist");
+  const { lockPath } = buildStatePaths(output);
+  let candidatePath;
+  let retiredPath;
+
+  try {
+    await assert.rejects(
+      acquireBuildLock(output, {
+        onCandidateReady(candidate) {
+          candidatePath = candidate.candidatePath;
+          retiredPath = `${candidatePath}.retired`;
+          renameSync(candidatePath, retiredPath);
+          mkdirSync(candidatePath);
+          writeFileSync(candidate.ownerPath, JSON.stringify(candidate.owner), "utf8");
+          mkdirSync(lockPath);
+        },
+      }),
+      /Build lock candidate ownership changed before cleanup/,
+    );
+    assert.equal(existsSync(candidatePath), true);
+    assert.equal(existsSync(retiredPath), true);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("lock acquisition refuses to clean a candidate with replaced owner metadata", async () => {
+  const { acquireBuildLock, buildStatePaths } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-replaced-candidate-owner-"));
+  const output = join(parent, "dist");
+  const { lockPath } = buildStatePaths(output);
+  let candidatePath;
+
+  try {
+    await assert.rejects(
+      acquireBuildLock(output, {
+        onCandidateReady(candidate) {
+          candidatePath = candidate.candidatePath;
+          writeFileSync(
+            candidate.ownerPath,
+            JSON.stringify({ ...candidate.owner, token: "replacement-owner" }),
+            "utf8",
+          );
+          mkdirSync(lockPath);
+        },
+      }),
+      /Build lock candidate ownership changed before cleanup/,
+    );
+    assert.equal(existsSync(candidatePath), true);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("stale lock recovery preserves an owner installed after the claim", async () => {
+  const { acquireBuildLock, buildStatePaths } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-recovery-owner-race-"));
+  const output = join(parent, "dist");
+  const { lockOwnerPath, lockPath, lockRecoveryPath } = buildStatePaths(output);
+  const deadOwner = {
+    pid: 2_147_483_647,
+    timestamp: Date.now(),
+    token: "dead-owner-before-recovery-claim",
+  };
+  const replacementOwner = {
+    pid: process.pid,
+    timestamp: Date.now(),
+    token: "live-owner-after-recovery-claim",
+  };
+  mkdirSync(lockPath);
+  writeFileSync(lockOwnerPath, JSON.stringify(deadOwner), "utf8");
+  let publishedClaims = 0;
+
+  try {
+    await assert.rejects(
+      acquireBuildLock(output, {
+        onRecoveryClaimPublished() {
+          publishedClaims += 1;
+          writeFileSync(lockOwnerPath, JSON.stringify(replacementOwner), "utf8");
+        },
+        retryMs: 5,
+        timeoutMs: 75,
+      }),
+      /Timed out waiting for build lock/,
+    );
+    assert.equal(publishedClaims, 1);
+    assert.deepEqual(JSON.parse(readFileSync(lockOwnerPath, "utf8")), replacementOwner);
+    assert.equal(existsSync(lockRecoveryPath), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("stale lock recovery yields to a competing live recovery claim", async () => {
+  const { acquireBuildLock, buildStatePaths } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-competing-recovery-claim-"));
+  const output = join(parent, "dist");
+  const { lockOwnerPath, lockPath, lockRecoveryPath } = buildStatePaths(output);
+  const competingOwner = {
+    pid: process.pid,
+    timestamp: Date.now(),
+    token: "competing-live-recovery-owner",
+  };
+  mkdirSync(lockPath);
+  writeFileSync(
+    lockOwnerPath,
+    JSON.stringify({
+      pid: 2_147_483_647,
+      timestamp: Date.now(),
+      token: "dead-owner-before-competing-claim",
+    }),
+    "utf8",
+  );
+  let candidateNotifications = 0;
+
+  try {
+    await assert.rejects(
+      acquireBuildLock(output, {
+        onRecoveryCandidateReady() {
+          candidateNotifications += 1;
+          mkdirSync(lockRecoveryPath);
+          writeFileSync(
+            join(lockRecoveryPath, "owner.json"),
+            JSON.stringify(competingOwner),
+            "utf8",
+          );
+        },
+        retryMs: 5,
+        timeoutMs: 75,
+      }),
+      /Timed out waiting for build lock/,
+    );
+    assert.equal(candidateNotifications, 1);
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(lockRecoveryPath, "owner.json"), "utf8")),
+      competingOwner,
+    );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("stale lock recovery does not remove a replacement lock inode", async () => {
+  const { acquireBuildLock, buildStatePaths } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-replaced-lock-after-claim-"));
+  const output = join(parent, "dist");
+  const { lockOwnerPath, lockPath, lockRecoveryPath } = buildStatePaths(output);
+  const replacementOwner = {
+    pid: process.pid,
+    timestamp: Date.now(),
+    token: "replacement-lock-inode-owner",
+  };
+  mkdirSync(lockPath);
+  writeFileSync(
+    lockOwnerPath,
+    JSON.stringify({
+      pid: 2_147_483_647,
+      timestamp: Date.now(),
+      token: "dead-owner-before-lock-replacement",
+    }),
+    "utf8",
+  );
+
+  try {
+    await assert.rejects(
+      acquireBuildLock(output, {
+        onRecoveryClaimPublished() {
+          const detachedClaim = join(parent, "detached-recovery-claim");
+          renameSync(lockRecoveryPath, detachedClaim);
+          rmSync(lockPath, { recursive: true, force: true });
+          mkdirSync(lockPath);
+          writeFileSync(lockOwnerPath, JSON.stringify(replacementOwner), "utf8");
+          renameSync(detachedClaim, lockRecoveryPath);
+        },
+        retryMs: 5,
+        timeoutMs: 75,
+      }),
+      /Timed out waiting for build lock/,
+    );
+    assert.deepEqual(JSON.parse(readFileSync(lockOwnerPath, "utf8")), replacementOwner);
+    assert.equal(existsSync(lockRecoveryPath), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("ownerless stale lock recovery preserves an owner installed after the claim", async () => {
+  const { acquireBuildLock, buildStatePaths } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-ownerless-recovery-race-"));
+  const output = join(parent, "dist");
+  const { lockOwnerPath, lockPath, lockRecoveryPath } = buildStatePaths(output);
+  const replacementOwner = {
+    pid: process.pid,
+    timestamp: Date.now(),
+    token: "owner-installed-after-ownerless-claim",
+  };
+  mkdirSync(lockPath);
+  const staleTime = new Date(Date.now() - 120_000);
+  utimesSync(lockPath, staleTime, staleTime);
+
+  try {
+    await assert.rejects(
+      acquireBuildLock(output, {
+        onRecoveryClaimPublished() {
+          writeFileSync(lockOwnerPath, JSON.stringify(replacementOwner), "utf8");
+        },
+        retryMs: 5,
+        staleMs: 60_000,
+        timeoutMs: 75,
+      }),
+      /Timed out waiting for build lock/,
+    );
+    assert.deepEqual(JSON.parse(readFileSync(lockOwnerPath, "utf8")), replacementOwner);
+    assert.equal(existsSync(lockRecoveryPath), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("stale lock recovery refuses to release a claim with replaced metadata", async () => {
+  const { acquireBuildLock, buildStatePaths } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-replaced-recovery-owner-"));
+  const output = join(parent, "dist");
+  const { lockOwnerPath, lockPath, lockRecoveryPath } = buildStatePaths(output);
+  mkdirSync(lockPath);
+  writeFileSync(
+    lockOwnerPath,
+    JSON.stringify({
+      pid: 2_147_483_647,
+      timestamp: Date.now(),
+      token: "dead-owner-before-claim-tampering",
+    }),
+    "utf8",
+  );
+
+  try {
+    await assert.rejects(
+      acquireBuildLock(output, {
+        onRecoveryClaimPublished({ owner, ownerPath }) {
+          writeFileSync(
+            lockOwnerPath,
+            JSON.stringify({
+              pid: process.pid,
+              timestamp: Date.now(),
+              token: "replacement-lock-owner",
+            }),
+            "utf8",
+          );
+          writeFileSync(
+            ownerPath,
+            JSON.stringify({ ...owner, token: "replacement-claim-owner" }),
+            "utf8",
+          );
+        },
+        retryMs: 5,
+        timeoutMs: 75,
+      }),
+      /Build recovery claim ownership changed before release/,
+    );
+    assert.equal(existsSync(lockRecoveryPath), true);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("stale lock recovery tolerates malformed dead-owner metadata", async () => {
+  const {
+    acquireBuildLock,
+    buildStatePaths,
+    releaseBuildLock,
+  } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-malformed-lock-owner-"));
+  const output = join(parent, "dist");
+  const { lockOwnerPath, lockPath } = buildStatePaths(output);
+  mkdirSync(lockPath);
+  writeFileSync(lockOwnerPath, "{not-json", "utf8");
+  const staleTime = new Date(Date.now() - 120_000);
+  utimesSync(lockPath, staleTime, staleTime);
+  let lock;
+
+  try {
+    lock = await acquireBuildLock(output, {
+      retryMs: 5,
+      staleMs: 60_000,
+      timeoutMs: 250,
+    });
+    assert.notEqual(lock.owner.token, undefined);
+    await releaseBuildLock(lock);
+    lock = null;
+    assert.equal(existsSync(lockPath), false);
+  } finally {
+    if (lock) {
+      await releaseBuildLock(lock).catch(() => {});
+    }
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("lock acquisition rejects non-file owner metadata without deleting it", async () => {
+  const { acquireBuildLock, buildStatePaths } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-lock-owner-directory-"));
+  const output = join(parent, "dist");
+  const { lockOwnerPath, lockPath } = buildStatePaths(output);
+  mkdirSync(lockPath);
+  mkdirSync(lockOwnerPath);
+
+  try {
+    await assert.rejects(
+      acquireBuildLock(output),
+      /Build lock owner path must be a regular file/,
+    );
+    assert.equal(existsSync(lockOwnerPath), true);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
 test("a dead lock owner is recovered and replaced with owner metadata", async () => {
   const {
     acquireBuildLock,

@@ -83,6 +83,75 @@ test("Mini App client and Worker accept the exact raw initData boundary", async 
   assert.equal(fetchCalls, 1);
 });
 
+test("Telegram Mini App verification rejects invalid policy and query encoding", async () => {
+  const initData = await signedInitData();
+  const cases = [
+    [initData, { now: Number.NaN }],
+    [initData, { maxAgeSeconds: -1 }],
+    [initData, { maxFutureSeconds: -1 }],
+    ["auth_date", undefined],
+  ];
+
+  for (const [candidate, options] of cases) {
+    await assert.rejects(
+      verifyTelegramMiniAppInitData(candidate, botToken, options),
+      { message: "Telegram Mini App authentication failed" },
+    );
+  }
+});
+
+test("Telegram Mini App verification rejects signed unsafe epochs", async () => {
+  const initData = await signedInitData({
+    auth_date: String(Number.MAX_SAFE_INTEGER + 1),
+  });
+
+  await assert.rejects(
+    verifyTelegramMiniAppInitData(initData, botToken, {
+      now: Number.MAX_SAFE_INTEGER,
+      maxAgeSeconds: Number.MAX_SAFE_INTEGER,
+      maxFutureSeconds: Number.MAX_SAFE_INTEGER,
+    }),
+    { message: "Telegram Mini App authentication failed" },
+  );
+});
+
+test("Telegram Mini App verification normalizes absent optional profile fields", async () => {
+  const initData = await signedInitData({
+    start_param: "",
+    user: JSON.stringify({ id: 42, first_name: " Captain " }),
+  });
+
+  assert.deepEqual(
+    await verifyTelegramMiniAppInitData(initData, botToken),
+    {
+      user: {
+        provider: "telegram",
+        id: "42",
+        name: "Captain",
+        username: "",
+        photoUrl: "",
+      },
+      languageCode: "",
+      startParam: "",
+    },
+  );
+});
+
+test("Telegram Mini App verification rejects an unparseable signed photo URL", async () => {
+  const initData = await signedInitData({
+    user: JSON.stringify({
+      id: 42,
+      first_name: "Captain",
+      photo_url: "not a URL",
+    }),
+  });
+
+  await assert.rejects(
+    verifyTelegramMiniAppInitData(initData, botToken),
+    { message: "Telegram Mini App authentication failed" },
+  );
+});
+
 test("Telegram Mini App auth route matches only the exact path and POST method", async () => {
   for (const [method, path] of [
     ["GET", "/auth/telegram/miniapp"],
