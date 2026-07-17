@@ -6,6 +6,9 @@ export function createWebPlatform({
   return {
     isNative: () => false,
     getPlatform: () => "web",
+    isAvailable: () => true,
+    getLaunchData: () => "",
+    getStartParam: () => "",
     getNetworkStatus: async () => ({
       connected: nav?.onLine !== false,
       connectionType: nav?.onLine === false ? "none" : "unknown",
@@ -45,6 +48,12 @@ export function createWebPlatform({
     onDeepLink: async () => () => {},
     onBack: async () => () => {},
     onLifecycleChange: async () => () => {},
+    onSettings: async () => () => {},
+    ready: async () => {},
+    setClosingConfirmation: async () => {},
+    getTheme: () => null,
+    onThemeChange: async () => () => {},
+    onViewportChange: async () => () => {},
     hideSplash: async () => {},
     configureSystemBars: async () => {},
     settings: {

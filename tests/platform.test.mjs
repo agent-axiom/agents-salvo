@@ -785,16 +785,34 @@ test("native secure sessions persist only through protected device storage", asy
 test("platform selection is explicit and safe during Node import", () => {
   const web = selectPlatform(false);
   const native = selectPlatform(true);
+  const telegram = selectPlatform(false, {
+    runtime: "telegram",
+    telegramWebApp: {
+      initData: "signed-init-data",
+      initDataUnsafe: { start_param: "room_ABCD" },
+    },
+  });
+  const nativeWins = selectPlatform(true, {
+    runtime: "telegram",
+    telegramWebApp: { initData: "signed-init-data" },
+  });
 
   assert.equal(web.isNative(), false);
   assert.equal(web.getPlatform(), "web");
   assert.equal(native.isNative(), true);
+  assert.equal(telegram.getPlatform(), "telegram");
+  assert.equal(telegram.getLaunchData(), "signed-init-data");
+  assert.equal(nativeWins.isNative(), true);
+  assert.notEqual(nativeWins.getPlatform(), "telegram");
   assert.equal(platform.isNative(), false);
 
-  for (const adapter of [web, native]) {
+  for (const adapter of [web, native, telegram]) {
     for (const method of [
       "isNative",
       "getPlatform",
+      "isAvailable",
+      "getLaunchData",
+      "getStartParam",
       "getNetworkStatus",
       "onNetworkChange",
       "share",
@@ -803,6 +821,12 @@ test("platform selection is explicit and safe during Node import", () => {
       "onDeepLink",
       "onBack",
       "onLifecycleChange",
+      "onSettings",
+      "ready",
+      "setClosingConfirmation",
+      "getTheme",
+      "onThemeChange",
+      "onViewportChange",
       "hideSplash",
       "configureSystemBars",
     ]) {
@@ -813,5 +837,27 @@ test("platform selection is explicit and safe during Node import", () => {
     assert.equal(typeof adapter.secureSession.get, "function");
     assert.equal(typeof adapter.secureSession.set, "function");
     assert.equal(typeof adapter.secureSession.clear, "function");
+  }
+});
+
+test("web and native expose safe no-op Telegram capabilities", async () => {
+  const adapters = [
+    createWebPlatform({ window: undefined, navigator: undefined, storage: undefined }),
+    createNativePlatform(nativePlugins()),
+  ];
+
+  for (const adapter of adapters) {
+    assert.equal(adapter.isAvailable(), true);
+    assert.equal(adapter.getLaunchData(), "");
+    assert.equal(adapter.getStartParam(), "");
+    assert.equal(adapter.getTheme(), null);
+    const removeSettings = await adapter.onSettings(() => {});
+    const removeTheme = await adapter.onThemeChange(() => {});
+    const removeViewport = await adapter.onViewportChange(() => {});
+    await adapter.ready();
+    await adapter.setClosingConfirmation(true);
+    removeSettings();
+    removeTheme();
+    removeViewport();
   }
 });

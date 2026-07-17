@@ -1,0 +1,570 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createTelegramPlatform } from "../src/platform/telegram.js";
+
+function storageHarness() {
+  const calls = [];
+  const values = new Map();
+
+  return {
+    calls,
+    storage: {
+      getItem(key) {
+        calls.push(["get", key]);
+        return values.get(key) ?? null;
+      },
+      setItem(key, value) {
+        calls.push(["set", key, value]);
+        values.set(key, value);
+      },
+      removeItem(key) {
+        calls.push(["remove", key]);
+        values.delete(key);
+      },
+    },
+  };
+}
+
+function fakeTelegram({ versionAtLeast = true } = {}) {
+  const calls = [];
+  const events = new Map();
+  const windowEvents = new Map();
+  const css = new Map();
+
+  function addEvent(name, listener) {
+    const listeners = events.get(name) ?? new Set();
+    listeners.add(listener);
+    events.set(name, listeners);
+  }
+
+  function removeEvent(name, listener) {
+    events.get(name)?.delete(listener);
+  }
+
+  function button(name) {
+    const listeners = new Set();
+    return {
+      listeners,
+      api: {
+        onClick(listener) {
+          calls.push([name, "onClick"]);
+          listeners.add(listener);
+        },
+        offClick(listener) {
+          calls.push([name, "offClick"]);
+          listeners.delete(listener);
+        },
+        show() {
+          calls.push([name, "show"]);
+        },
+        hide() {
+          calls.push([name, "hide"]);
+        },
+      },
+    };
+  }
+
+  const back = button("back");
+  const settings = button("settings");
+  const webApp = {
+    initData: "signed-init-data",
+    initDataUnsafe: { start_param: "room_ABCD" },
+    colorScheme: "dark",
+    viewportHeight: 640,
+    viewportStableHeight: 620,
+    isExpanded: true,
+    isViewportStable: true,
+    safeAreaInset: { top: 10, right: 11, bottom: 12, left: 13 },
+    contentSafeAreaInset: { top: 20, right: 21, bottom: 22, left: 23 },
+    BackButton: back.api,
+    SettingsButton: settings.api,
+    HapticFeedback: {
+      impactOccurred(style) {
+        calls.push(["impact", style]);
+      },
+      notificationOccurred(type) {
+        calls.push(["notification", type]);
+      },
+    },
+    isVersionAtLeast(version) {
+      calls.push(["version", version]);
+      return versionAtLeast;
+    },
+    ready() {
+      calls.push(["ready"]);
+    },
+    expand() {
+      calls.push(["expand"]);
+    },
+    requestFullscreen() {
+      calls.push(["fullscreen"]);
+    },
+    setHeaderColor(color) {
+      calls.push(["header", color]);
+    },
+    setBackgroundColor(color) {
+      calls.push(["background", color]);
+    },
+    enableClosingConfirmation() {
+      calls.push(["closing", true]);
+    },
+    disableClosingConfirmation() {
+      calls.push(["closing", false]);
+    },
+    openTelegramLink(url) {
+      calls.push(["telegram-link", url]);
+    },
+    openLink(url) {
+      calls.push(["link", url]);
+    },
+    onEvent(name, listener) {
+      calls.push(["onEvent", name]);
+      addEvent(name, listener);
+    },
+    offEvent(name, listener) {
+      calls.push(["offEvent", name]);
+      removeEvent(name, listener);
+    },
+  };
+  const window = {
+    document: {
+      documentElement: {
+        style: {
+          setProperty(name, value) {
+            css.set(name, value);
+          },
+        },
+      },
+    },
+    addEventListener(name, listener) {
+      windowEvents.set(name, listener);
+    },
+    removeEventListener(name, listener) {
+      if (windowEvents.get(name) === listener) windowEvents.delete(name);
+    },
+    open(...args) {
+      calls.push(["window-open", ...args]);
+    },
+  };
+
+  return {
+    back,
+    calls,
+    css,
+    events,
+    settings,
+    webApp,
+    window,
+    windowEvents,
+    emit(name, event) {
+      for (const listener of [...(events.get(name) ?? [])]) listener(event);
+    },
+  };
+}
+
+test("Telegram adapter exposes launch and network contract", async () => {
+  const fake = fakeTelegram();
+  const navigator = { onLine: true };
+  const adapter = createTelegramPlatform({
+    webApp: fake.webApp,
+    window: fake.window,
+    navigator,
+    storage: storageHarness().storage,
+  });
+
+  assert.equal(adapter.isNative(), false);
+  assert.equal(adapter.getPlatform(), "telegram");
+  assert.equal(adapter.isAvailable(), true);
+  assert.equal(adapter.getLaunchData(), "signed-init-data");
+  assert.equal(adapter.getStartParam(), "room_ABCD");
+  assert.deepEqual(await adapter.getNetworkStatus(), {
+    connected: true,
+    connectionType: "unknown",
+  });
+
+  const changes = [];
+  const remove = await adapter.onNetworkChange((status) => changes.push(status));
+  navigator.onLine = false;
+  fake.windowEvents.get("offline")();
+  navigator.onLine = true;
+  fake.windowEvents.get("online")();
+  assert.deepEqual(changes, [
+    { connected: false, connectionType: "none" },
+    { connected: true, connectionType: "unknown" },
+  ]);
+  remove();
+  assert.equal(fake.windowEvents.size, 0);
+});
+
+test("Telegram BackButton and SettingsButton show, deliver, and clean up", async () => {
+  const fake = fakeTelegram();
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  let backs = 0;
+  let settings = 0;
+
+  const removeBack = await adapter.onBack(() => {
+    backs += 1;
+  });
+  const removeSettings = await adapter.onSettings(() => {
+    settings += 1;
+  });
+  for (const listener of fake.back.listeners) listener();
+  for (const listener of fake.settings.listeners) listener();
+  assert.equal(backs, 1);
+  assert.equal(settings, 1);
+
+  removeBack();
+  removeSettings();
+  assert.equal(fake.back.listeners.size, 0);
+  assert.equal(fake.settings.listeners.size, 0);
+  assert.deepEqual(fake.calls.filter(([scope]) => scope === "back"), [
+    ["back", "onClick"],
+    ["back", "show"],
+    ["back", "offClick"],
+    ["back", "hide"],
+  ]);
+  assert.deepEqual(fake.calls.filter(([scope]) => scope === "settings"), [
+    ["settings", "onClick"],
+    ["settings", "show"],
+    ["settings", "offClick"],
+    ["settings", "hide"],
+  ]);
+});
+
+test("Telegram lifecycle and theme events map and remove listeners", async () => {
+  const fake = fakeTelegram();
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  const lifecycle = [];
+  const themes = [];
+  const removeLifecycle = await adapter.onLifecycleChange((state) => lifecycle.push(state));
+  const removeTheme = await adapter.onThemeChange((theme) => themes.push(theme));
+
+  assert.equal(adapter.getTheme(), "dark");
+  fake.emit("deactivated");
+  fake.emit("activated");
+  fake.webApp.colorScheme = "light";
+  fake.emit("themeChanged");
+  assert.deepEqual(lifecycle, [{ active: false }, { active: true }]);
+  assert.deepEqual(themes, ["light"]);
+
+  removeLifecycle();
+  removeTheme();
+  assert.equal(fake.events.get("activated").size, 0);
+  assert.equal(fake.events.get("deactivated").size, 0);
+  assert.equal(fake.events.get("themeChanged").size, 0);
+});
+
+test("Telegram viewport events expose state and update safe-area CSS variables", async () => {
+  const fake = fakeTelegram();
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  const viewports = [];
+  const remove = await adapter.onViewportChange((viewport) => viewports.push(viewport));
+
+  assert.equal(fake.events.get("viewportChanged").size, 1);
+  assert.equal(fake.events.get("safeAreaChanged").size, 1);
+  assert.equal(fake.events.get("contentSafeAreaChanged").size, 1);
+  assert.equal(fake.css.get("--tg-viewport-height"), "640px");
+  assert.equal(fake.css.get("--tg-viewport-stable-height"), "620px");
+  assert.equal(fake.css.get("--tg-safe-area-inset-top"), "10px");
+  assert.equal(fake.css.get("--tg-safe-area-inset-right"), "11px");
+  assert.equal(fake.css.get("--tg-safe-area-inset-bottom"), "12px");
+  assert.equal(fake.css.get("--tg-safe-area-inset-left"), "13px");
+  assert.equal(fake.css.get("--tg-content-safe-area-inset-top"), "20px");
+  assert.equal(fake.css.get("--tg-content-safe-area-inset-bottom"), "22px");
+
+  fake.webApp.viewportHeight = 600;
+  fake.webApp.viewportStableHeight = 590;
+  fake.webApp.contentSafeAreaInset = { top: 30, right: 31, bottom: 32, left: 33 };
+  fake.emit("viewportChanged", { isStateStable: false });
+  fake.emit("contentSafeAreaChanged");
+  assert.equal(fake.css.get("--tg-viewport-height"), "600px");
+  assert.equal(fake.css.get("--tg-content-safe-area-inset-bottom"), "32px");
+  assert.deepEqual(viewports.at(-1), {
+    height: 600,
+    stableHeight: 590,
+    isExpanded: true,
+    isStateStable: false,
+    safeAreaInset: { top: 10, right: 11, bottom: 12, left: 13 },
+    contentSafeAreaInset: { top: 30, right: 31, bottom: 32, left: 33 },
+  });
+
+  remove();
+  for (const name of [
+    "viewportChanged",
+    "safeAreaChanged",
+    "contentSafeAreaChanged",
+  ]) {
+    assert.equal(fake.events.get(name).size, 0);
+  }
+});
+
+test("Telegram ready expands, colors, and requests gated fullscreen", async () => {
+  const fake = fakeTelegram();
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+
+  await adapter.ready();
+  await adapter.setClosingConfirmation(true);
+  await adapter.setClosingConfirmation(false);
+
+  assert.deepEqual(fake.calls.filter(([name]) => [
+    "ready",
+    "expand",
+    "header",
+    "background",
+    "fullscreen",
+    "closing",
+  ].includes(name)), [
+    ["ready"],
+    ["expand"],
+    ["header", "#07111f"],
+    ["background", "#07111f"],
+    ["fullscreen"],
+    ["closing", true],
+    ["closing", false],
+  ]);
+  assert.ok(fake.calls.some((call) => call[0] === "version" && call[1] === "8.0"));
+});
+
+test("Telegram gates fullscreen and safe-area APIs below version 8.0", async () => {
+  const fake = fakeTelegram({ versionAtLeast: false });
+  let safeAreaReads = 0;
+  Object.defineProperties(fake.webApp, {
+    safeAreaInset: {
+      configurable: true,
+      get() {
+        safeAreaReads += 1;
+        return { top: 1, right: 1, bottom: 1, left: 1 };
+      },
+    },
+    contentSafeAreaInset: {
+      configurable: true,
+      get() {
+        safeAreaReads += 1;
+        return { top: 1, right: 1, bottom: 1, left: 1 };
+      },
+    },
+  });
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+
+  await adapter.ready();
+  const remove = await adapter.onViewportChange(() => {});
+  assert.equal(fake.calls.some(([name]) => name === "fullscreen"), false);
+  assert.equal(fake.events.has("safeAreaChanged"), false);
+  assert.equal(fake.events.has("contentSafeAreaChanged"), false);
+  assert.equal(safeAreaReads, 0);
+  assert.equal(fake.css.has("--tg-safe-area-inset-top"), false);
+  assert.equal(fake.css.get("--tg-viewport-height"), "640px");
+  remove();
+});
+
+test("Telegram maps semantic haptics and ignores unsupported feedback", async () => {
+  const fake = fakeTelegram();
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+
+  for (const event of [
+    "placement",
+    "hit",
+    "sunk",
+    "invalid",
+    "victory",
+    "defeat",
+    "unknown",
+  ]) {
+    await adapter.haptic(event);
+  }
+  assert.deepEqual(fake.calls.filter(([name]) => ["impact", "notification"].includes(name)), [
+    ["impact", "light"],
+    ["impact", "medium"],
+    ["impact", "heavy"],
+    ["notification", "warning"],
+    ["notification", "success"],
+    ["notification", "error"],
+  ]);
+
+  fake.webApp.HapticFeedback.impactOccurred = () => {
+    throw new Error("unsupported");
+  };
+  await assert.doesNotReject(() => adapter.haptic("placement"));
+});
+
+test("Telegram shares natively, copies on failure, and routes external links", async () => {
+  const fake = fakeTelegram();
+  const clipboard = [];
+  const navigator = {
+    clipboard: { writeText: async (value) => clipboard.push(value) },
+  };
+  const adapter = createTelegramPlatform({
+    webApp: fake.webApp,
+    window: fake.window,
+    navigator,
+  });
+  const payload = {
+    title: "Salvo",
+    text: "Join my battle",
+    url: "https://t.me/agents_salvo_bot?startapp=room_ABCD",
+  };
+
+  assert.deepEqual(await adapter.share(payload), { shared: true });
+  const shareCall = fake.calls.find(([name, url]) => (
+    name === "telegram-link" && new URL(url).pathname === "/share/url"
+  ));
+  const shareUrl = new URL(shareCall[1]);
+  assert.equal(shareUrl.searchParams.get("url"), payload.url);
+  assert.equal(shareUrl.searchParams.get("text"), payload.text);
+
+  await adapter.openExternalUrl("https://t.me/agents_salvo_bot");
+  await adapter.openExternalUrl("https://salvo.test/privacy");
+  assert.ok(fake.calls.some((call) => (
+    call[0] === "telegram-link" && call[1] === "https://t.me/agents_salvo_bot"
+  )));
+  assert.ok(fake.calls.some((call) => (
+    call[0] === "link" && call[1] === "https://salvo.test/privacy"
+  )));
+
+  fake.webApp.openTelegramLink = () => {
+    throw new Error("unsupported");
+  };
+  assert.deepEqual(await adapter.share(payload), { shared: true });
+  assert.deepEqual(clipboard, [payload.url]);
+  navigator.clipboard.writeText = async () => Promise.reject(new Error("denied"));
+  assert.deepEqual(await adapter.share(payload), { shared: false });
+});
+
+test("Telegram preferences are prefixed while secure sessions stay in memory", async () => {
+  const fake = fakeTelegram();
+  const storage = storageHarness();
+  const adapter = createTelegramPlatform({
+    webApp: fake.webApp,
+    window: fake.window,
+    storage: storage.storage,
+  });
+
+  await adapter.settings.set("theme", "dark");
+  assert.equal(await adapter.settings.get("theme"), "dark");
+  await adapter.settings.set("theme", null);
+  assert.equal(await adapter.settings.get("theme"), null);
+  await adapter.secureSession.set("telegram-token");
+  assert.equal(await adapter.secureSession.get(), "telegram-token");
+  await adapter.secureSession.clear();
+  assert.equal(await adapter.secureSession.get(), "");
+  assert.deepEqual(storage.calls, [
+    ["set", "salvo.theme", "dark"],
+    ["get", "salvo.theme"],
+    ["remove", "salvo.theme"],
+    ["get", "salvo.theme"],
+  ]);
+
+  const nextLaunch = createTelegramPlatform({
+    webApp: fake.webApp,
+    window: fake.window,
+    storage: storage.storage,
+  });
+  assert.equal(await nextLaunch.secureSession.get(), "");
+});
+
+test("Telegram creation tolerates inaccessible global localStorage", (t) => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  t.after(() => {
+    if (previous) {
+      Object.defineProperty(globalThis, "localStorage", previous);
+    } else {
+      delete globalThis.localStorage;
+    }
+  });
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    get() {
+      throw new Error("storage blocked");
+    },
+  });
+
+  assert.doesNotThrow(() => createTelegramPlatform({ webApp: {} }));
+});
+
+test("Telegram unavailable and throwing provider APIs remain safe", async () => {
+  const unavailable = createTelegramPlatform({
+    webApp: undefined,
+    window: undefined,
+    navigator: undefined,
+    storage: undefined,
+  });
+  assert.equal(unavailable.isAvailable(), false);
+  assert.equal(unavailable.getLaunchData(), "");
+  assert.equal(unavailable.getStartParam(), "");
+  assert.equal(unavailable.getTheme(), null);
+  assert.deepEqual(await unavailable.getNetworkStatus(), {
+    connected: true,
+    connectionType: "unknown",
+  });
+
+  const failure = () => {
+    throw new Error("provider failure");
+  };
+  const throwing = createTelegramPlatform({
+    webApp: {
+      get initData() { return failure(); },
+      get initDataUnsafe() { return failure(); },
+      get colorScheme() { return failure(); },
+      get BackButton() { return failure(); },
+      get SettingsButton() { return failure(); },
+      get HapticFeedback() { return failure(); },
+      isVersionAtLeast: failure,
+      ready: failure,
+      expand: failure,
+      requestFullscreen: failure,
+      setHeaderColor: failure,
+      setBackgroundColor: failure,
+      enableClosingConfirmation: failure,
+      disableClosingConfirmation: failure,
+      openTelegramLink: failure,
+      openLink: failure,
+      onEvent: failure,
+      offEvent: failure,
+    },
+    window: {
+      addEventListener: failure,
+      removeEventListener: failure,
+      open: failure,
+      document: { documentElement: { style: { setProperty: failure } } },
+    },
+    navigator: {
+      get onLine() { return failure(); },
+      get clipboard() { return failure(); },
+    },
+    storage: {
+      getItem: failure,
+      setItem: failure,
+      removeItem: failure,
+    },
+  });
+
+  assert.equal(throwing.isAvailable(), false);
+  assert.equal(throwing.getLaunchData(), "");
+  assert.equal(throwing.getStartParam(), "");
+  assert.equal(throwing.getTheme(), null);
+  assert.doesNotThrow(() => throwing.getNetworkStatus());
+  await assert.doesNotReject(() => throwing.ready());
+  await assert.doesNotReject(() => throwing.setClosingConfirmation(true));
+  await assert.doesNotReject(() => throwing.setClosingConfirmation(false));
+  await assert.doesNotReject(() => throwing.haptic("hit"));
+  await assert.doesNotReject(() => throwing.openExternalUrl("https://t.me/test"));
+  await assert.doesNotReject(() => throwing.openExternalUrl("https://example.com"));
+  assert.deepEqual(await throwing.share({ text: "x", url: "https://t.me/test" }), {
+    shared: false,
+  });
+  assert.equal(await throwing.settings.get("theme"), null);
+  await assert.doesNotReject(() => throwing.settings.set("theme", "dark"));
+
+  for (const subscribe of [
+    throwing.onNetworkChange,
+    throwing.onDeepLink,
+    throwing.onBack,
+    throwing.onSettings,
+    throwing.onLifecycleChange,
+    throwing.onThemeChange,
+    throwing.onViewportChange,
+  ]) {
+    const remove = await subscribe(() => {});
+    assert.doesNotThrow(remove);
+  }
+});

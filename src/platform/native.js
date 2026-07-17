@@ -93,6 +93,9 @@ export function createNativePlatform(plugins = defaultPlugins) {
   return {
     isNative: () => true,
     getPlatform: () => capacitor.getPlatform(),
+    isAvailable: () => true,
+    getLaunchData: () => "",
+    getStartParam: () => "",
     getNetworkStatus: () => network.getStatus(),
     onNetworkChange: (listener) => subscribe(
       network.addListener("networkStatusChange", listener),
@@ -184,6 +187,12 @@ export function createNativePlatform(plugins = defaultPlugins) {
       "appStateChange",
       (event) => listener({ active: Boolean(event?.isActive) }),
     )),
+    onSettings: async () => () => {},
+    ready: async () => {},
+    setClosingConfirmation: async () => {},
+    getTheme: () => null,
+    onThemeChange: async () => () => {},
+    onViewportChange: async () => () => {},
     async hideSplash() {
       try {
         await splashScreen.hide();
