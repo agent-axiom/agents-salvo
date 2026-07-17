@@ -360,10 +360,33 @@ test("mobile build emits bundled local web artifacts", () => {
 
   assert.equal(existsSync(join(buildOutput, "index.html")), true);
   assert.equal(existsSync(join(buildOutput, "assets")), true);
-  assert.equal(
-    readFileSync(join(buildOutput, "index.html"), "utf8"),
-    readFileSync("src/index.html", "utf8"),
-  );
+  const rootShell = readFileSync(join(buildOutput, "index.html"), "utf8");
+  const appReferences = [
+    ...rootShell.matchAll(/src="\.\/(app\.[a-f0-9]{10}\.js)"/g),
+  ];
+  const styleReferences = [
+    ...rootShell.matchAll(/href="\.\/(styles\.[a-f0-9]{10}\.css)"/g),
+  ];
+  assert.equal(appReferences.length, 1);
+  assert.equal(styleReferences.length, 1);
+  assert.doesNotMatch(rootShell, /telegram-web-app\.js/);
+
+  const localAssetReferences = [
+    ...rootShell.matchAll(/(?:href|src)="([^"]+)"/g),
+  ].map((match) => match[1]);
+  assert.equal(localAssetReferences.length > 0, true);
+  for (const reference of localAssetReferences) {
+    assert.match(
+      reference,
+      /^\.\//,
+      `${reference} must be a local native asset`,
+    );
+    assert.equal(
+      existsSync(join(buildOutput, reference.slice(2))),
+      true,
+      `${reference} is missing from the native build`,
+    );
+  }
   assert.deepEqual(
     readFileSync(
       join(buildOutput, "assets/images/backgrounds/paper-texture-512.png"),
@@ -372,7 +395,10 @@ test("mobile build emits bundled local web artifacts", () => {
       "src/assets/images/backgrounds/paper-texture-512.png",
     ),
   );
-  const bundledApp = readFileSync(join(buildOutput, "app.js"), "utf8");
+  const bundledApp = readFileSync(
+    join(buildOutput, appReferences[0][1]),
+    "utf8",
+  );
   assert.doesNotMatch(
     bundledApp,
     /(?:from\s*|import\s*(?:\(\s*)?)["']@capacitor\//,
