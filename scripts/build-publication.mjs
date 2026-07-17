@@ -6,10 +6,17 @@ import {
   readdir,
   rename,
   rm,
-  stat,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const DEFAULT_LOCK_RETRY_MS = 25;
@@ -17,15 +24,44 @@ const DEFAULT_LOCK_STALE_MS = 5 * 60 * 1000;
 const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
 
 export function buildStatePaths(output) {
-  const parent = dirname(output);
-  const name = basename(output);
-  const lockPath = resolve(parent, `.${name}.lock`);
+  // build.mjs canonicalizes the destination before state siblings are derived.
+  const destinationPath = resolve(output);
+  const parentPath = dirname(destinationPath);
+  const name = basename(destinationPath);
+  const lockPath = anchoredStatePath(
+    parentPath,
+    resolve(parentPath, `.${name}.lock`),
+    "Build lock path",
+  );
   return {
-    backupPath: resolve(parent, `.${name}.backup`),
-    lockOwnerPath: join(lockPath, "owner.json"),
+    backupPath: anchoredStatePath(
+      parentPath,
+      resolve(parentPath, `.${name}.backup`),
+      "Build backup path",
+    ),
+    destinationPath,
+    lockOwnerPath: anchoredStatePath(
+      parentPath,
+      join(lockPath, "owner.json"),
+      "Build lock owner path",
+    ),
     lockPath,
-    stagePrefix: resolve(parent, `.${name}.stage-`),
-    staleLockPrefix: resolve(parent, `.${name}.lock.stale-`),
+    lockRecoveryPath: anchoredStatePath(
+      parentPath,
+      join(lockPath, ".recovery"),
+      "Build lock recovery path",
+    ),
+    parentPath,
+    stagePrefix: anchoredStatePath(
+      parentPath,
+      resolve(parentPath, `.${name}.stage-`),
+      "Build stage path",
+    ),
+    staleLockPrefix: anchoredStatePath(
+      parentPath,
+      resolve(parentPath, `.${name}.lock.stale-`),
+      "Build stale lock path",
+    ),
   };
 }
 
@@ -67,7 +103,7 @@ export async function acquireBuildLock(
 
     const inspection = await inspectLock(paths.lockPath, staleMs);
     if (inspection.recoverable) {
-      const recovered = await recoverStaleLock(paths.lockPath, inspection);
+      const recovered = await recoverStaleLock(paths, inspection);
       if (recovered) {
         continue;
       }
@@ -80,7 +116,7 @@ export async function acquireBuildLock(
 }
 
 export async function releaseBuildLock(lock) {
-  const owner = await readLockOwner(join(lock.path, "owner.json"));
+  const owner = await readLockOwner(lock.path);
   if (!sameOwner(owner, lock.owner)) {
     throw new Error(`Build lock ownership changed before release: ${lock.path}.`);
   }
@@ -88,18 +124,22 @@ export async function releaseBuildLock(lock) {
 }
 
 export async function reconcileBuildState(output, lock) {
-  await assertLockOwnership(lock);
   const paths = buildStatePaths(output);
-  const destinationExists = await pathExists(output);
-  const backupExists = await pathExists(paths.backupPath);
+  await assertLockOwnership(lock, paths.lockPath);
+  const destinationExists = await pathExists(paths.destinationPath);
+  const backup = await inspectRealDirectory(
+    paths.backupPath,
+    "Build backup path",
+    { allowMissing: true },
+  );
 
-  if (!destinationExists && backupExists) {
-    await rename(paths.backupPath, output);
-  } else if (destinationExists && backupExists) {
+  if (!destinationExists && backup) {
+    await rename(paths.backupPath, paths.destinationPath);
+  } else if (destinationExists && backup) {
     await rm(paths.backupPath, { recursive: true, force: true });
   }
 
-  const entries = await readdir(dirname(output));
+  const entries = await readdir(paths.parentPath);
   const stageNamePrefix = basename(paths.stagePrefix);
   const staleLockNamePrefix = basename(paths.staleLockPrefix);
   for (const entry of entries) {
@@ -107,7 +147,20 @@ export async function reconcileBuildState(output, lock) {
       entry.startsWith(stageNamePrefix)
       || entry.startsWith(staleLockNamePrefix)
     ) {
-      await rm(resolve(dirname(output), entry), { recursive: true, force: true });
+      const statePath = anchoredStatePath(
+        paths.parentPath,
+        resolve(paths.parentPath, entry),
+        entry.startsWith(stageNamePrefix)
+          ? "Build stage path"
+          : "Build stale lock path",
+      );
+      await inspectRealDirectory(
+        statePath,
+        entry.startsWith(stageNamePrefix)
+          ? "Build stage path"
+          : "Build stale lock path",
+      );
+      await rm(statePath, { recursive: true, force: true });
     }
   }
 }
@@ -117,10 +170,15 @@ export async function publishBuild(
   output,
   { renamePath = rename, removePath = rm } = {},
 ) {
-  const { backupPath } = buildStatePaths(output);
+  const paths = buildStatePaths(output);
+  const stagePath = assertStagePath(paths, stage);
+  await inspectRealDirectory(stagePath, "Build stage path");
+  await inspectRealDirectory(paths.backupPath, "Build backup path", {
+    allowMissing: true,
+  });
   let hasPrevious = false;
   try {
-    await renamePath(output, backupPath);
+    await renamePath(paths.destinationPath, paths.backupPath);
     hasPrevious = true;
   } catch (error) {
     if (error.code !== "ENOENT") {
@@ -129,15 +187,15 @@ export async function publishBuild(
   }
 
   try {
-    await renamePath(stage, output);
+    await renamePath(stagePath, paths.destinationPath);
   } catch (publishError) {
     if (hasPrevious) {
       try {
-        await renamePath(backupPath, output);
+        await renamePath(paths.backupPath, paths.destinationPath);
       } catch (restoreError) {
         throw new AggregateError(
           [publishError, restoreError],
-          `Build publication failed; previous output remains at ${backupPath}.`,
+          `Build publication failed; previous output remains at ${paths.backupPath}.`,
         );
       }
     }
@@ -145,43 +203,54 @@ export async function publishBuild(
   }
 
   if (hasPrevious) {
-    await removePath(backupPath, { recursive: true, force: true });
+    await removePath(paths.backupPath, { recursive: true, force: true });
   }
 }
 
 async function writeLockOwner(paths, owner) {
-  const temporaryPath = join(paths.lockPath, `.owner-${owner.token}.tmp`);
+  await inspectRealDirectory(paths.lockPath, "Build lock path");
+  const temporaryPath = anchoredStatePath(
+    paths.parentPath,
+    join(paths.lockPath, `.owner-${owner.token}.tmp`),
+    "Build lock owner path",
+  );
   try {
     await writeFile(temporaryPath, `${JSON.stringify(owner)}\n`, {
       encoding: "utf8",
       flag: "wx",
     });
+    await inspectRealDirectory(paths.lockPath, "Build lock path");
     await rename(temporaryPath, paths.lockOwnerPath);
   } catch (error) {
-    await rm(temporaryPath, { force: true });
+    const lock = await inspectRealDirectory(paths.lockPath, "Build lock path", {
+      allowMissing: true,
+    });
+    if (lock) {
+      await rm(temporaryPath, { force: true });
+    }
     throw error;
   }
 }
 
-async function assertLockOwnership(lock) {
-  const owner = await readLockOwner(join(lock.path, "owner.json"));
+async function assertLockOwnership(lock, expectedPath = lock.path) {
+  if (resolve(lock.path) !== resolve(expectedPath)) {
+    throw new Error(`Build lock is not owned by this process: ${lock.path}.`);
+  }
+  const owner = await readLockOwner(lock.path);
   if (!sameOwner(owner, lock.owner)) {
     throw new Error(`Build lock is not owned by this process: ${lock.path}.`);
   }
 }
 
 async function inspectLock(lockPath, staleMs) {
-  let lockStats;
-  try {
-    lockStats = await stat(lockPath);
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      return { recoverable: false };
-    }
-    throw error;
+  const lockStats = await inspectRealDirectory(lockPath, "Build lock path", {
+    allowMissing: true,
+  });
+  if (!lockStats) {
+    return { recoverable: false };
   }
 
-  const owner = await readLockOwner(join(lockPath, "owner.json"));
+  const owner = await readLockOwner(lockPath);
   if (owner) {
     return {
       device: lockStats.dev,
@@ -198,12 +267,41 @@ async function inspectLock(lockPath, staleMs) {
   };
 }
 
-async function recoverStaleLock(lockPath, inspection) {
-  const recoveryMarker = join(lockPath, ".recovery");
+async function recoverStaleLock(paths, inspection) {
+  const lockStats = await inspectRealDirectory(
+    paths.lockPath,
+    "Build lock path",
+    { allowMissing: true },
+  );
+  if (!lockStats) {
+    return false;
+  }
+  if (
+    lockStats.dev !== inspection.device
+    || lockStats.ino !== inspection.inode
+  ) {
+    return false;
+  }
+  const existingRecovery = await inspectRealDirectory(
+    paths.lockRecoveryPath,
+    "Build lock recovery path",
+    { allowMissing: true },
+  );
+  if (existingRecovery) {
+    return false;
+  }
   try {
-    await mkdir(recoveryMarker);
+    await mkdir(paths.lockRecoveryPath);
   } catch (error) {
-    if (error.code === "EEXIST" || error.code === "ENOENT") {
+    if (error.code === "EEXIST") {
+      await inspectRealDirectory(
+        paths.lockRecoveryPath,
+        "Build lock recovery path",
+        { allowMissing: true },
+      );
+      return false;
+    }
+    if (error.code === "ENOENT") {
       return false;
     }
     throw error;
@@ -211,14 +309,17 @@ async function recoverStaleLock(lockPath, inspection) {
 
   let quarantined = false;
   try {
-    const currentStats = await stat(lockPath);
+    const currentStats = await inspectRealDirectory(
+      paths.lockPath,
+      "Build lock path",
+    );
     if (
       currentStats.dev !== inspection.device
       || currentStats.ino !== inspection.inode
     ) {
       return false;
     }
-    const currentOwner = await readLockOwner(join(lockPath, "owner.json"));
+    const currentOwner = await readLockOwner(paths.lockPath);
     if (inspection.owner) {
       if (
         !sameOwner(currentOwner, inspection.owner)
@@ -230,9 +331,14 @@ async function recoverStaleLock(lockPath, inspection) {
       return false;
     }
 
-    const quarantinePath = `${lockPath}.stale-${randomUUID()}`;
-    await rename(lockPath, quarantinePath);
+    const quarantinePath = anchoredStatePath(
+      paths.parentPath,
+      `${paths.staleLockPrefix}${randomUUID()}`,
+      "Build stale lock path",
+    );
+    await rename(paths.lockPath, quarantinePath);
     quarantined = true;
+    await inspectRealDirectory(quarantinePath, "Build stale lock path");
     await rm(quarantinePath, { recursive: true, force: true });
     return true;
   } catch (error) {
@@ -242,12 +348,47 @@ async function recoverStaleLock(lockPath, inspection) {
     throw error;
   } finally {
     if (!quarantined) {
-      await rm(recoveryMarker, { recursive: true, force: true });
+      const currentLock = await inspectRealDirectory(
+        paths.lockPath,
+        "Build lock path",
+        { allowMissing: true },
+      );
+      if (currentLock) {
+        const currentRecovery = await inspectRealDirectory(
+          paths.lockRecoveryPath,
+          "Build lock recovery path",
+          { allowMissing: true },
+        );
+        if (currentRecovery) {
+          await rm(paths.lockRecoveryPath, { recursive: true, force: true });
+        }
+      }
     }
   }
 }
 
-async function readLockOwner(ownerPath) {
+async function readLockOwner(lockPath) {
+  const parentPath = dirname(resolve(lockPath));
+  const ownerPath = anchoredStatePath(
+    parentPath,
+    join(lockPath, "owner.json"),
+    "Build lock owner path",
+  );
+  const lock = await inspectRealDirectory(lockPath, "Build lock path", {
+    allowMissing: true,
+  });
+  if (!lock) {
+    return null;
+  }
+  const ownerStats = await inspectRegularFile(
+    ownerPath,
+    "Build lock owner path",
+    { allowMissing: true },
+  );
+  if (!ownerStats) {
+    return null;
+  }
+  await inspectRealDirectory(lockPath, "Build lock path");
   try {
     const owner = JSON.parse(await readFile(ownerPath, "utf8"));
     if (
@@ -265,6 +406,82 @@ async function readLockOwner(ownerPath) {
     }
   }
   return null;
+}
+
+function anchoredStatePath(parentPath, candidate, label) {
+  const canonicalParent = resolve(parentPath);
+  const statePath = resolve(candidate);
+  const childPath = relative(canonicalParent, statePath);
+  if (
+    !childPath
+    || childPath === ".."
+    || childPath.startsWith(`..${sep}`)
+    || isAbsolute(childPath)
+  ) {
+    throw new Error(
+      `${label} must remain under the canonical build destination parent.`,
+    );
+  }
+  return statePath;
+}
+
+function assertStagePath(paths, stage) {
+  const stagePath = anchoredStatePath(
+    paths.parentPath,
+    stage,
+    "Build stage path",
+  );
+  const stageNamePrefix = basename(paths.stagePrefix);
+  if (
+    dirname(stagePath) !== paths.parentPath
+    || !basename(stagePath).startsWith(stageNamePrefix)
+    || basename(stagePath) === stageNamePrefix
+  ) {
+    throw new Error(
+      "Build stage path must be a generated sibling of the destination.",
+    );
+  }
+  return stagePath;
+}
+
+async function inspectRealDirectory(
+  path,
+  label,
+  { allowMissing = false } = {},
+) {
+  let stats;
+  try {
+    stats = await lstat(path);
+  } catch (error) {
+    if (allowMissing && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw new Error(`${label} must be a real directory: ${path}.`);
+  }
+  return stats;
+}
+
+async function inspectRegularFile(
+  path,
+  label,
+  { allowMissing = false } = {},
+) {
+  let stats;
+  try {
+    stats = await lstat(path);
+  } catch (error) {
+    if (allowMissing && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw new Error(`${label} must be a regular file: ${path}.`);
+  }
+  return stats;
 }
 
 function processIsAlive(pid) {

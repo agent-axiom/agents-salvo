@@ -450,6 +450,90 @@ test("build rejects a temporary symlink destination that resolves outside temp",
   }
 });
 
+test("build rejects a symlinked lock without touching its external target", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "salvo-lock-symlink-"));
+  const externalRoot = mkdtempSync(join(root, ".salvo-external-lock-"));
+  const output = join(temporaryRoot, "dist");
+  const lockPath = join(temporaryRoot, ".dist.lock");
+  writeFileSync(join(externalRoot, "keep.txt"), "do not modify", "utf8");
+  writeFileSync(
+    join(externalRoot, "owner.json"),
+    JSON.stringify({
+      pid: 2_147_483_647,
+      timestamp: Date.now(),
+      token: "external-dead-owner",
+    }),
+    "utf8",
+  );
+  const before = snapshotDirectory(externalRoot);
+  symlinkSync(externalRoot, lockPath, "dir");
+  try {
+    const { result } = build({ output });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Build lock path must be a real directory/);
+    assert.equal(existsSync(join(externalRoot, ".recovery")), false);
+    assert.deepEqual(snapshotDirectory(externalRoot), before);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+    rmSync(externalRoot, { recursive: true, force: true });
+  }
+});
+
+test("build rejects a non-directory lock with a stable error", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "salvo-lock-file-"));
+  const output = join(temporaryRoot, "dist");
+  const lockPath = join(temporaryRoot, ".dist.lock");
+  writeFileSync(lockPath, "unexpected lock node", "utf8");
+  try {
+    const { result } = build({ output });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Build lock path must be a real directory/);
+    assert.equal(readFileSync(lockPath, "utf8"), "unexpected lock node");
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("build rejects a symlinked backup without touching its target", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "salvo-backup-symlink-"));
+  const externalRoot = mkdtempSync(join(root, ".salvo-external-backup-"));
+  const output = join(temporaryRoot, "dist");
+  writeFileSync(join(externalRoot, "keep.txt"), "do not modify", "utf8");
+  const before = snapshotDirectory(externalRoot);
+  symlinkSync(externalRoot, join(temporaryRoot, ".dist.backup"), "dir");
+  try {
+    const { result } = build({ output });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Build backup path must be a real directory/);
+    assert.deepEqual(snapshotDirectory(externalRoot), before);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+    rmSync(externalRoot, { recursive: true, force: true });
+  }
+});
+
+test("build rejects a symlinked abandoned stage without touching its target", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "salvo-stage-symlink-"));
+  const externalRoot = mkdtempSync(join(root, ".salvo-external-stage-"));
+  const output = join(temporaryRoot, "dist");
+  writeFileSync(join(externalRoot, "keep.txt"), "do not modify", "utf8");
+  const before = snapshotDirectory(externalRoot);
+  symlinkSync(
+    externalRoot,
+    join(temporaryRoot, ".dist.stage-untrusted"),
+    "dir",
+  );
+  try {
+    const { result } = build({ output });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Build stage path must be a real directory/);
+    assert.deepEqual(snapshotDirectory(externalRoot), before);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+    rmSync(externalRoot, { recursive: true, force: true });
+  }
+});
+
 test("a failed staged build preserves the previously published output", () => {
   const isolatedRoot = makeIsolatedProject();
   const output = join(isolatedRoot, "dist");
