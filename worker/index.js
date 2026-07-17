@@ -19,6 +19,7 @@ import {
   oidcConfigured,
   verifyTelegramIdToken,
 } from "./telegram-oidc.js";
+import { verifyTelegramMiniAppInitData } from "./telegram-mini-app-auth.js";
 import { getLeaderboard, getPlayerProfile, recordCompletedMatch, recordOnlineReplayBatch } from "./profile.js";
 import {
   HttpError,
@@ -79,6 +80,12 @@ export default {
       return redeemTelegramMobileTicket(request, env, ctx);
     }
     if (route.kind.startsWith("authTelegramMobile") || route.kind === "authTelegramConfig") {
+      return json({ error: "Not found" }, 404);
+    }
+    if (route.kind === "authTelegramMiniApp") {
+      if (request.method === "POST") {
+        return authenticateTelegramMiniApp(request, env);
+      }
       return json({ error: "Not found" }, 404);
     }
     if (route.kind === "authTelegram" && request.method === "POST") {
@@ -741,6 +748,9 @@ function routeRequest(url) {
   if (url.pathname === "/auth/telegram/mobile/redeem") {
     return { kind: "authTelegramMobileRedeem" };
   }
+  if (url.pathname === "/auth/telegram/miniapp") {
+    return { kind: "authTelegramMiniApp" };
+  }
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length === 2 && parts[0] === "auth" && parts[1] === "telegram") {
     return { kind: "authTelegram" };
@@ -792,6 +802,20 @@ async function authenticateTelegram(request, env) {
     return json({ token, user });
   } catch {
     return json({ error: "Telegram authentication failed" }, 401);
+  }
+}
+
+async function authenticateTelegramMiniApp(request, env) {
+  try {
+    if (!env?.DB || typeof env.TELEGRAM_BOT_TOKEN !== "string" || env.TELEGRAM_BOT_TOKEN.length === 0) {
+      throw new Error("Unavailable");
+    }
+    const { initData } = await readStrictTelegramJson(request, "initData", 16 * 1024);
+    const { user } = await verifyTelegramMiniAppInitData(initData, env.TELEGRAM_BOT_TOKEN);
+    const { token } = await createSession(env.DB, user);
+    return json({ token, user });
+  } catch {
+    return json({ error: "Telegram Mini App authentication failed" }, 401);
   }
 }
 
@@ -936,13 +960,13 @@ async function redeemTelegramMobileTicket(request, env, ctx) {
   }
 }
 
-async function readStrictTelegramJson(request, requiredKey) {
+async function readStrictTelegramJson(request, requiredKey, maxBytes = maxTelegramJsonBytes) {
   const contentType = request.headers.get("Content-Type") ?? "";
   if (!/^application\/json(?:\s*;|$)/i.test(contentType)) {
     throw new Error("Invalid content type");
   }
   const contentLength = Number(request.headers.get("Content-Length"));
-  if (Number.isFinite(contentLength) && contentLength > maxTelegramJsonBytes) {
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
     throw new Error("Request too large");
   }
 
@@ -959,7 +983,7 @@ async function readStrictTelegramJson(request, requiredKey) {
         break;
       }
       length += value.byteLength;
-      if (length > maxTelegramJsonBytes) {
+      if (length > maxBytes) {
         await reader.cancel().catch(() => {});
         throw new Error("Request too large");
       }
