@@ -422,6 +422,31 @@ test("BattleRoom requires Telegram sessions to create and join rooms", async () 
   assert.equal(savedRoom.players.p2.user.id, "2");
 });
 
+test("BattleRoom rejects the creator joining the same room as p2", async () => {
+  const storage = new MemoryStorage();
+  const env = { DB: new RecordingD1() };
+  const room = new BattleRoom({ storage }, env);
+  const creatorHeaders = await authHeaders(
+    { provider: "telegram", id: "1", name: "One", username: "one", photoUrl: "" },
+    env,
+  );
+
+  const created = await room.fetch(
+    new Request("https://worker.test/rooms?code=ROOM01", { method: "POST", headers: creatorHeaders }),
+  );
+  assert.equal(created.status, 200);
+
+  const joined = await room.fetch(
+    new Request("https://worker.test/rooms/ROOM01/join", { method: "POST", headers: creatorHeaders }),
+  );
+
+  assert.equal(joined.status, 409);
+  assert.deepEqual(await joined.json(), { error: "Room is full" });
+  const savedRoom = await storage.get("room");
+  assert.equal(savedRoom.players.p1.user.id, "1");
+  assert.equal(savedRoom.players.p2, null);
+});
+
 test("BattleRoom authenticates before revealing that a room already exists", async () => {
   const storedRoom = {
     code: "ROOM01",

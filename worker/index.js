@@ -20,7 +20,13 @@ import {
   verifyTelegramIdToken,
 } from "./telegram-oidc.js";
 import { verifyTelegramMiniAppInitData } from "./telegram-mini-app-auth.js";
-import { getLeaderboard, getPlayerProfile, recordCompletedMatch, recordOnlineReplayBatch } from "./profile.js";
+import {
+  getLeaderboard,
+  getPlayerProfile,
+  recordCompletedMatch,
+  recordOnlineReplayBatch,
+  userSubject,
+} from "./profile.js";
 import {
   HttpError,
   createOnlineReplayRecord,
@@ -184,7 +190,7 @@ export class BattleRoom {
   async join(request, roomCode) {
     const { user } = await authorizeRequest(request, this.env);
     const room = await this.requireRoom();
-    if (room.players.p2) {
+    if (room.players.p2 || userSubject(room.players.p1.user) === userSubject(user)) {
       return json({ error: "Room is full" }, 409);
     }
 

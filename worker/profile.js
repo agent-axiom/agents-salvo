@@ -198,6 +198,17 @@ export async function recordOnlineReplayBatch(db, replay, playerMatches) {
   if (normalized.some(({ match }) => match.mode !== "online" || match.replayId !== replay.id)) {
     throw new Error("Online replay match linkage is invalid");
   }
+  const participants = new Map(normalized.map((participant) => [participant.playerId, participant]));
+  if (
+    participants.size !== 2 ||
+    !participants.has("p1") ||
+    !participants.has("p2") ||
+    replay.p1UserKey === replay.p2UserKey ||
+    participants.get("p1").userKey !== replay.p1UserKey ||
+    participants.get("p2").userKey !== replay.p2UserKey
+  ) {
+    throw new Error("Online replay participant identities are invalid");
+  }
 
   const now = new Date().toISOString();
   const statements = [
