@@ -31,6 +31,7 @@ const scenarios = {
   "telegram-launch-retry": runTelegramLaunchRetryScenario,
   "telegram-launch-authority": runTelegramLaunchAuthorityScenario,
   "telegram-launch-sharing": runTelegramLaunchSharingScenario,
+  "telegram-share-status-race": runTelegramShareStatusRaceScenario,
   "telegram-auth-recovery": runTelegramAuthRecoveryScenario,
   "telegram-runtime": runTelegramRuntimeScenario,
   "haptic-runtime": runHapticRuntimeScenario,
@@ -1157,7 +1158,8 @@ async function runTelegramLaunchSharingScenario() {
   const copiedRoomApp = bootSalvoApp(copiedRoom.dependencies);
   await copiedRoomApp.startup.done;
   await copiedRoom.root.click("share-telegram");
-  assert.equal(copiedRoomApp.getState().online.status, "invite-copied");
+  assert.equal(copiedRoomApp.getState().online.status, "");
+  assert.equal(copiedRoomApp.getState().online.shareStatus, "invite-copied");
   assert.equal(copiedRoomApp.getState().online.error, "");
   assert.match(copiedRoom.root.innerHTML, /Room invite link copied/);
   assert.doesNotMatch(copiedRoom.root.innerHTML, /Could not share/);
@@ -1225,6 +1227,49 @@ async function runTelegramLaunchSharingScenario() {
     webApp.stop(),
     webReplayApp.stop(),
   ]);
+}
+
+async function runTelegramShareStatusRaceScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const shareResult = deferred();
+  let remoteHandlers = null;
+  const harness = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-share-race-init-data",
+    startParam: "room_RACE",
+    shareResult: shareResult.promise,
+    createRemoteClient(handlers) {
+      remoteHandlers = handlers;
+      return remoteClientHarness({
+        async joinRoom(roomCode) {
+          return { roomCode, playerId: "p2", playerToken: "private-token", presetId: "classic" };
+        },
+      });
+    },
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const app = bootSalvoApp(harness.dependencies);
+  await app.startup.done;
+  assert.ok(remoteHandlers);
+
+  const sharing = harness.root.click("share-telegram");
+  await waitFor(() => harness.calls.sharePayloads.length === 1);
+  remoteHandlers.onStatus("disconnected");
+  assert.equal(app.getState().online.status, "disconnected");
+
+  shareResult.resolve({ shared: false, copied: true });
+  await sharing;
+  assert.equal(app.getState().online.status, "disconnected");
+  assert.equal(app.getState().online.shareStatus, "invite-copied");
+  assert.match(harness.root.innerHTML, /Disconnected/);
+  assert.match(harness.root.innerHTML, /Room invite link copied/);
+  assert.doesNotMatch(harness.root.innerHTML, /Could not share/);
+
+  await app.stop();
 }
 
 async function runTelegramAuthRecoveryScenario() {

@@ -216,6 +216,7 @@ const state = {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     roomCodeInput: "",
     status: "",
+    shareStatus: "",
     error: "",
     session: null,
     snapshot: null,
@@ -411,6 +412,7 @@ function applyLocalBattleSnapshot(snapshot) {
   state.online.roomCodeInput = "";
   state.online.error = "";
   state.online.status = "";
+  state.online.shareStatus = "";
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
   resetResultReplayPlayback();
@@ -2142,6 +2144,7 @@ function renderOnlineLobby() {
           </label>
           <button data-action="online-join" ${onlineDisabled}>${translate("online.join")}</button>
         </div>
+        ${renderOnlineShareStatus()}
         ${state.online.error ? `<p class="error-line">${translate("online.error", { message: state.online.error })}</p>` : ""}
       </aside>
       <section class="board-stage">
@@ -2179,6 +2182,7 @@ function renderOnlineRoom(snapshot) {
           <button data-action="share-telegram">${translate("online.shareTelegram")}</button>
         </div>
         ${renderOnlineStatus(snapshot)}
+        ${renderOnlineShareStatus()}
         ${state.online.error ? `<p class="error-line">${translate("online.error", { message: state.online.error })}</p>` : ""}
       </aside>
       <section class="board-stage">
@@ -3238,6 +3242,7 @@ function showOnline() {
   state.online.roomCodeInput = "";
   state.online.error = "";
   state.online.status = "";
+  state.online.shareStatus = "";
   state.battleTab = "target";
   state.tacticalAdvisorOpen = true;
   state.resultModalDismissed = null;
@@ -3493,6 +3498,7 @@ function applyMenuState({ updateHistory }) {
   state.training.session = null;
   state.online.error = "";
   state.online.status = "";
+  state.online.shareStatus = "";
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
   resetResultReplayPlayback();
@@ -4221,6 +4227,7 @@ function prepareOnlineConnection() {
   state.online.session = null;
   state.online.snapshot = null;
   state.online.status = "";
+  state.online.shareStatus = "";
   state.online.error = "";
   render();
 }
@@ -4229,6 +4236,7 @@ function handleOnlineConnectionError(error) {
   state.online.session = null;
   state.online.snapshot = null;
   state.online.status = "";
+  state.online.shareStatus = "";
   state.online.error = error.message;
   render();
 }
@@ -4335,7 +4343,7 @@ async function shareRoom() {
     ? await shareWithTelegramFallback(text, url)
     : { shared: false, copied: false };
   const succeeded = outcome.shared || outcome.copied;
-  state.online.status = outcome.copied ? "invite-copied" : "";
+  state.online.shareStatus = outcome.copied ? "invite-copied" : "";
   state.online.error = succeeded ? "" : translate("share.failed");
   if (showingResult) {
     state.resultCopyStatus = outcome.shared
@@ -5364,6 +5372,7 @@ function resetOnlineConnectionState() {
   state.online.session = null;
   state.online.snapshot = null;
   state.online.status = "";
+  state.online.shareStatus = "";
   state.online.error = "";
 }
 
@@ -5697,6 +5706,11 @@ function renderOnlineStatus(snapshot) {
   }
 
   return lines.map((line) => `<p class="status-line">${line}</p>`).join("");
+}
+
+function renderOnlineShareStatus() {
+  if (!state.online.shareStatus) return "";
+  return `<p class="status-line online-share-status" role="status">${onlineStatusText(state.online.shareStatus)}</p>`;
 }
 
 function currentResultKey() {

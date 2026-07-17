@@ -63,6 +63,10 @@ test("actual app shares Telegram launches without changing web canonical links",
   await runScenarioInChild("telegram-launch-sharing");
 });
 
+test("actual app preserves online connection status while Telegram sharing settles", async () => {
+  await runScenarioInChild("telegram-share-status-race");
+});
+
 test("actual app keeps Telegram Mini App auth failures recoverable and race-safe", async () => {
   await runScenarioInChild("telegram-auth-recovery");
 });

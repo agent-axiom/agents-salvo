@@ -836,7 +836,8 @@ test("room and summary sharing await platform share with Telegram fallback", () 
   assert.match(app, /if \(result\.copied\) return \{ shared: false, copied: true \}/);
   assert.match(app, /await platform\.openExternalUrl\(telegramUrl\.toString\(\)\)/);
   assert.match(app, /translate\("share\.failed"\)/);
-  assert.match(app, /state\.online\.status = outcome\.copied \? "invite-copied" : ""/);
+  assert.match(app, /state\.online\.shareStatus = outcome\.copied \? "invite-copied" : ""/);
+  assert.doesNotMatch(sourceBetween("async function shareRoom", "async function shareWithTelegramFallback"), /state\.online\.status/);
   assert.match(app, /state\.online\.error = succeeded \? "" : translate\("share\.failed"\)/);
   assert.match(i18n, /"online\.inviteCopied"/);
   assert.match(app, /if \(action === "share-battle-summary"\) await shareBattleSummary\(\)/);
