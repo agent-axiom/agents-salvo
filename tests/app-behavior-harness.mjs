@@ -1000,6 +1000,35 @@ async function runTelegramRuntimeScenario() {
   assert.deepEqual(providerClosingStates, [false, true, false]);
   await serializedClosingApp.stop();
 
+  const rejectStaleEnable = deferred();
+  const changedDuringFailure = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-init-data",
+    onSetClosingConfirmation: async (enabled) => {
+      if (enabled) await rejectStaleEnable.promise;
+    },
+  });
+  const changedDuringFailureApp = bootSalvoApp(changedDuringFailure.dependencies);
+  await changedDuringFailureApp.startup.done;
+  await changedDuringFailure.root.click("start-agent");
+  await changedDuringFailure.root.click("ready");
+  await flushMicrotasks();
+  assert.deepEqual(changedDuringFailure.calls.closingConfirmations, [false, true]);
+
+  changedDuringFailureApp.getState().game.phase = "finished";
+  changedDuringFailureApp.getState().game.winnerId = "p1";
+  await changedDuringFailure.root.click("menu");
+  assert.deepEqual(changedDuringFailure.calls.closingConfirmations, [false, true]);
+
+  rejectStaleEnable.reject(new Error("private stale closing-confirmation detail"));
+  await flushMicrotasks();
+  assert.deepEqual(
+    changedDuringFailure.calls.closingConfirmations,
+    [false, true, false],
+    "a newer desired state drains after the stale operation rejects",
+  );
+  await changedDuringFailureApp.stop();
+
   let enableAttempts = 0;
   const retryClosing = createAppHarness({
     platformName: "telegram",

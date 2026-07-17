@@ -3281,12 +3281,12 @@ function hasUnfinishedBattle() {
   return false;
 }
 
-function syncClosingConfirmation() {
+function syncClosingConfirmation(forceApply = false) {
   if (!isTelegramMiniApp || typeof platform.setClosingConfirmation !== "function") return;
   closingConfirmationDesired = hasUnfinishedBattle();
   if (
     closingConfirmationOperation
-    || closingConfirmationApplied === closingConfirmationDesired
+    || (!forceApply && closingConfirmationApplied === closingConfirmationDesired)
   ) return;
 
   const attempted = closingConfirmationDesired;
@@ -3309,6 +3309,9 @@ function syncClosingConfirmation() {
     (error) => {
       closingConfirmationOperation = null;
       reportRuntimeError(error);
+      if (closingConfirmationDesired !== attempted) {
+        syncClosingConfirmation(true);
+      }
     },
   );
 }

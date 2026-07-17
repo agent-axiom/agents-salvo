@@ -416,7 +416,11 @@ export function createTelegramPlatform({
       const safeAreaSupported = supportsVersion8();
       updateViewportCss(safeAreaSupported);
       if (safeAreaSupported) await callOptionalAsync(webApp, "requestFullscreen");
-      await settingsButtonController.reconcile();
+      try {
+        await settingsButtonController.reconcile();
+      } catch {
+        // SettingsButton is optional and must not block Mini App startup.
+      }
     },
     async setBackButtonVisible(enabled) {
       await backButtonController.setVisible(enabled);

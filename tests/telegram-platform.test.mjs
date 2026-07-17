@@ -548,6 +548,34 @@ test("Telegram ready retries SettingsButton visibility after its first show fail
   );
 });
 
+test("Telegram ready contains persistent SettingsButton visibility failures", async () => {
+  const fake = fakeTelegram();
+  let showAttempts = 0;
+  fake.settings.api.show = function show() {
+    showAttempts += 1;
+    return Promise.reject(new Error("private persistent SettingsButton detail"));
+  };
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  let settings = 0;
+  const remove = await adapter.onSettings(() => {
+    settings += 1;
+  });
+
+  assert.equal(fake.settings.listeners.size, 1);
+  assert.equal(showAttempts, 1);
+  await assert.doesNotReject(() => adapter.ready());
+  assert.equal(showAttempts, 2);
+  for (const listener of fake.settings.listeners) listener();
+  assert.equal(settings, 1);
+
+  await remove();
+  assert.equal(fake.settings.listeners.size, 0);
+  assert.equal(
+    fake.calls.filter((call) => call[0] === "settings" && call[1] === "hide").length,
+    1,
+  );
+});
+
 test("mobile runtime keeps Telegram BackButton subscribed while home is hidden", async () => {
   const fake = fakeTelegram();
   const platform = createTelegramPlatform({
