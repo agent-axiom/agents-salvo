@@ -116,6 +116,33 @@ test("Chrome harness waits for graceful exit before using SIGKILL fallback", asy
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
 });
 
+test("Chrome harness observes navigation and load failures before cleanup", async () => {
+  const unhandled = [];
+  const onUnhandledRejection = (error) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandledRejection);
+  let cleaned = false;
+  try {
+    await assert.rejects(
+      async () => {
+        try {
+          await navigateAndWait({
+            waitFor: () => Promise.reject(new Error("load event failed")),
+            call: () => Promise.reject(new Error("navigation failed")),
+          }, "file:///layout.html");
+        } finally {
+          cleaned = true;
+        }
+      },
+      /navigation failed/,
+    );
+    await delay(0);
+    assert.equal(cleaned, true);
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+  }
+});
+
 function board(size, id) {
   const cells = "<button class=\"cell\"></button>".repeat(size * size);
   const labels = "<span>A</span>".repeat(size);
@@ -377,6 +404,14 @@ async function openCdp(port, {
   return createCdpSession(socket, { timeoutMs });
 }
 
+async function navigateAndWait(cdp, url) {
+  const loaded = cdp.waitFor("Page.loadEventFired");
+  await Promise.all([
+    cdp.call("Page.navigate", { url }),
+    loaded,
+  ]);
+}
+
 function childHasExited(child) {
   return child.exitCode !== null || child.signalCode !== null;
 }
@@ -441,9 +476,7 @@ async function measure() {
       screenWidth: 360,
       screenHeight: 800,
     });
-    const loaded = cdp.waitFor("Page.loadEventFired");
-    await cdp.call("Page.navigate", { url: pathToFileURL(file).href });
-    await loaded;
+    await navigateAndWait(cdp, pathToFileURL(file).href);
     const { result } = await cdp.call("Runtime.evaluate", {
       expression: "document.documentElement.dataset.layout",
       returnByValue: true,
