@@ -31,6 +31,8 @@ const expectedUser = {
 };
 const authenticationFailure = JSON.stringify({ error: "Telegram Mini App authentication failed" });
 const maxInitDataBytes = 16 * 1024;
+const telegramMiniAppJsonEnvelopeBytes = 15;
+const maxTelegramMiniAppJsonBytes = maxInitDataBytes + telegramMiniAppJsonEnvelopeBytes;
 
 test("Telegram Mini App auth creates an opaque session for the existing Telegram identity", async (t) => {
   const db = memoryD1(t);
@@ -63,7 +65,7 @@ test("Mini App client and Worker accept the exact raw initData boundary", async 
     workerUrl: "https://worker.test",
     async fetcher(url, init) {
       fetchCalls += 1;
-      assert.equal(textEncoder.encode(init.body).byteLength, maxInitDataBytes + 15);
+      assert.equal(textEncoder.encode(init.body).byteLength, maxTelegramMiniAppJsonBytes);
       return worker.fetch(new Request(url, init), { DB: db, TELEGRAM_BOT_TOKEN: botToken });
     },
   });
@@ -101,6 +103,14 @@ test("Telegram Mini App auth rejects invalid requests and failures with one reda
   const staleInitData = await signedInitData({ auth_date: String(now - 600) });
   const tamperedInitData = initData.replace(/hash=([a-f0-9])/, (_, first) => `hash=${first === "a" ? "b" : "a"}`);
   const hash = new URLSearchParams(initData).get("hash");
+  const oversizedEnvelopeSecret = "oversized-envelope-secret";
+  const oversizedInitData = `${
+    "x".repeat(maxInitDataBytes + 1 - oversizedEnvelopeSecret.length)
+  }${oversizedEnvelopeSecret}`;
+  assert.equal(
+    textEncoder.encode(JSON.stringify({ initData: oversizedInitData })).byteLength,
+    maxTelegramMiniAppJsonBytes + 1,
+  );
   const d1Failure = {
     prepare() {
       throw new Error(`D1 failure: ${telegramUserJson}`);
@@ -132,8 +142,8 @@ test("Telegram Mini App auth rejects invalid requests and failures with one reda
       request: () => rawMiniAppRequest("{not-json", { DB: db, TELEGRAM_BOT_TOKEN: botToken }),
     },
     {
-      name: "oversized JSON",
-      request: () => postMiniApp({ initData: "x".repeat(16 * 1024) }, { DB: db, TELEGRAM_BOT_TOKEN: botToken }),
+      name: "oversized JSON envelope",
+      request: () => postMiniApp({ initData: oversizedInitData }, { DB: db, TELEGRAM_BOT_TOKEN: botToken }),
     },
     {
       name: "stale initData",
@@ -154,7 +164,16 @@ test("Telegram Mini App auth rejects invalid requests and failures with one reda
     const body = await response.text();
     assert.equal(response.status, 401, rejection.name);
     assert.equal(body, authenticationFailure, rejection.name);
-    assertRedacted(body, [botToken, initData, staleInitData, tamperedInitData, hash, queryId, telegramUserJson]);
+    assertRedacted(body, [
+      botToken,
+      initData,
+      staleInitData,
+      tamperedInitData,
+      hash,
+      queryId,
+      telegramUserJson,
+      oversizedEnvelopeSecret,
+    ]);
   }
   assert.equal(db.queryOne("SELECT COUNT(*) AS count FROM auth_sessions").count, 0);
 });
