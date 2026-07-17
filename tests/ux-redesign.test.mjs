@@ -27,6 +27,32 @@ test("coverage uses separate truthful core and actual-app gates", () => {
   assert.match(scripts["coverage:app"], /tests\/app-behavior\.test\.mjs/);
 });
 
+test("coverage enforces critical files with explicit focused gates", () => {
+  const scripts = packageJson.scripts;
+  assert.equal(
+    scripts.coverage,
+    [
+      "npm run coverage:core",
+      "npm run coverage:app",
+      "npm run coverage:critical:build-publication",
+      "npm run coverage:critical:build",
+      "npm run coverage:critical:worker",
+    ].join(" && "),
+  );
+  assert.equal(
+    scripts["coverage:critical:build-publication"],
+    "SALVO_APP_CHILD_COVERAGE=isolated node --experimental-test-coverage --test-coverage-include=scripts/build-publication.mjs --test-coverage-lines=98 --test tests/telegram-build.test.mjs",
+  );
+  assert.equal(
+    scripts["coverage:critical:build"],
+    "SALVO_APP_CHILD_COVERAGE=isolated node --experimental-test-coverage --test-coverage-include=scripts/build.mjs --test-coverage-lines=98 --test tests/telegram-build.test.mjs",
+  );
+  assert.equal(
+    scripts["coverage:critical:worker"],
+    "node --experimental-test-coverage --test-coverage-include=worker/index.js --test-coverage-lines=98 --test tests/worker.test.mjs tests/profile.test.mjs tests/telegram-mini-app-worker.test.mjs tests/telegram-oidc-worker.test.mjs",
+  );
+});
+
 test("main menu is a focused game hub with agent play as the primary action", () => {
   assert.match(app, /class="game-hub"/);
   assert.match(app, /class="hub-primary"/);
