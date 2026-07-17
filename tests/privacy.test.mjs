@@ -7,6 +7,16 @@ import { join } from "node:path";
 
 const app = readFileSync("src/app.js", "utf8");
 
+function privacySection(privacy, language, nextLanguage = null) {
+  const start = privacy.indexOf(`<section id="${language}"`);
+  const end = nextLanguage
+    ? privacy.indexOf(`<section id="${nextLanguage}"`, start)
+    : privacy.indexOf("</body>", start);
+  assert.ok(start >= 0, `privacy notice must include ${language}`);
+  assert.ok(end > start, `privacy notice must close ${language}`);
+  return privacy.slice(start, end);
+}
+
 test("privacy notice describes account and gameplay processing in all locales", () => {
   assert.equal(existsSync("src/privacy.html"), true, "privacy notice source must exist");
   const privacy = readFileSync("src/privacy.html", "utf8");
@@ -43,6 +53,27 @@ test("privacy notice describes account and gameplay processing in all locales", 
   assert.match(privacy, /leaderboard[^<]*(display name|отображаемое имя|显示名称)[^<]*(rating|рейтинг|评级)/i);
   assert.match(privacy, /username[^<]*(not public|не публику|不会公开)/i);
   assert.match(privacy, /profile photo[^<]*(not public|не публику|不会公开)/i);
+});
+
+test("privacy notice explains Telegram Mini App identity processing in all locales", () => {
+  const privacy = readFileSync("src/privacy.html", "utf8");
+  const sections = {
+    ru: privacySection(privacy, "ru", "en"),
+    en: privacySection(privacy, "en", "zh-CN"),
+    "zh-CN": privacySection(privacy, "zh-CN"),
+  };
+
+  assert.match(sections.ru, /подписанные данные запуска Telegram[\s\S]*Cloudflare Workers[\s\S]*проверки личности/i);
+  assert.match(sections.ru, /исходные данные запуска не сохраняются/i);
+  assert.match(sections.ru, /те же записи профиля/i);
+
+  assert.match(sections.en, /signed Telegram launch data[\s\S]*Cloudflare Workers[\s\S]*identity validation/i);
+  assert.match(sections.en, /raw launch data is not persisted/i);
+  assert.match(sections.en, /same profile records/i);
+
+  assert.match(sections["zh-CN"], /已签名的 Telegram 启动数据[\s\S]*Cloudflare Workers[\s\S]*身份验证/);
+  assert.match(sections["zh-CN"], /原始启动数据不会被持久保存/);
+  assert.match(sections["zh-CN"], /同一份档案记录/);
 });
 
 test("privacy notice is built and linked from Telegram authentication", () => {
