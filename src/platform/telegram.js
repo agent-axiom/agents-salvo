@@ -16,6 +16,8 @@ const colorsByTheme = {
 };
 
 const insetSides = ["top", "right", "bottom", "left"];
+const buttonCleanupErrorMessage = "Telegram button cleanup failed";
+const eventCleanupErrorMessage = "Telegram event cleanup failed";
 const settingsStorageErrorMessage = "Settings storage unavailable";
 const resolvedCleanup = Promise.resolve();
 
@@ -88,7 +90,7 @@ function normalizeTelegramUrl(value) {
   }
 }
 
-function createRetryableCleanup(entries, remove) {
+function createRetryableCleanup(entries, remove, errorMessage) {
   let active = [...entries];
   let inFlight = null;
   let completed = null;
@@ -103,6 +105,7 @@ function createRetryableCleanup(entries, remove) {
         if (!(await remove(entry))) failed.push(entry);
       }
       active = failed;
+      if (active.length > 0) throw new Error(errorMessage);
     })();
     let tracked;
     tracked = attempt.finally(() => {
@@ -122,22 +125,30 @@ async function subscribeEvents(webApp, registrations) {
   for (const [name, listener] of registrations) {
     if (!(await callOptionalAsync(webApp, "onEvent", name, listener))) {
       if (active.length === 0) return noOpCleanup;
-      const cleanup = createRetryableCleanup(active, remove);
-      await cleanup();
+      const cleanup = createRetryableCleanup(
+        active,
+        remove,
+        eventCleanupErrorMessage,
+      );
+      try {
+        await cleanup();
+      } catch {
+        // Return the failed cleanup so the runtime can retry leaked listeners.
+      }
       return cleanup;
     }
     active.push([name, listener]);
   }
   if (active.length === 0) return noOpCleanup;
 
-  return createRetryableCleanup(active, remove);
+  return createRetryableCleanup(active, remove, eventCleanupErrorMessage);
 }
 
 function createButtonSubscriptions(getButton) {
   let button = null;
   let activeCount = 0;
-  let visible = false;
-  let showInFlight = null;
+  let visibility = "hidden";
+  let visibilityTail = Promise.resolve();
 
   const resolveButton = () => {
     if (button) return button;
@@ -145,16 +156,26 @@ function createButtonSubscriptions(getButton) {
     return button;
   };
 
-  const ensureShown = async () => {
-    if (visible) return;
-    if (!showInFlight) {
-      showInFlight = callOptionalAsync(button, "show").then((shown) => {
-        if (shown) visible = true;
-      }).finally(() => {
-        showInFlight = null;
-      });
-    }
-    await showInFlight;
+  const reconcileVisibility = () => {
+    const transition = visibilityTail.then(async () => {
+      const desiredVisibility = activeCount > 0 ? "visible" : "hidden";
+      if (visibility === desiredVisibility) return;
+
+      if (desiredVisibility === "visible") {
+        visibility = await callOptionalAsync(button, "show")
+          ? "visible"
+          : "unknown";
+        return;
+      }
+
+      if (!(await callOptionalAsync(button, "hide"))) {
+        visibility = "unknown";
+        throw new Error(buttonCleanupErrorMessage);
+      }
+      visibility = "hidden";
+    });
+    visibilityTail = transition.catch(noOp);
+    return transition;
   };
 
   return async (listener) => {
@@ -165,8 +186,8 @@ function createButtonSubscriptions(getButton) {
     }
 
     activeCount += 1;
-    await ensureShown();
-    let active = true;
+    await reconcileVisibility();
+    let listenerRegistered = true;
     let inFlight = null;
     let completed = null;
 
@@ -174,18 +195,22 @@ function createButtonSubscriptions(getButton) {
       if (completed) return completed;
       if (inFlight) return inFlight;
 
+      let succeeded = false;
       const attempt = (async () => {
-        if (!(await callOptionalAsync(providerButton, "offClick", callback))) return;
-        active = false;
-        activeCount -= 1;
-        if (activeCount === 0 && visible) {
-          if (await callOptionalAsync(providerButton, "hide")) visible = false;
+        if (listenerRegistered) {
+          if (!(await callOptionalAsync(providerButton, "offClick", callback))) {
+            throw new Error(buttonCleanupErrorMessage);
+          }
+          listenerRegistered = false;
+          activeCount -= 1;
         }
+        await reconcileVisibility();
+        succeeded = true;
       })();
       let tracked;
       tracked = attempt.finally(() => {
         inFlight = null;
-        if (!active) completed = tracked;
+        if (succeeded) completed = tracked;
       });
       inFlight = tracked;
       return tracked;

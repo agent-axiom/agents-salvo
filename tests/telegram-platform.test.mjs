@@ -1,7 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createLocalBattleSnapshotStore } from "../src/core/local-battle-snapshot.js";
+import { createMobileRuntime } from "../src/mobile.js";
 import { createTelegramPlatform } from "../src/platform/telegram.js";
+
+const buttonCleanupError = {
+  name: "Error",
+  message: "Telegram button cleanup failed",
+};
+
+const eventCleanupError = {
+  name: "Error",
+  message: "Telegram event cleanup failed",
+};
 
 const settingsStorageError = {
   name: "Error",
@@ -341,6 +352,68 @@ test("Telegram button subscriptions are reference-counted in both removal orders
   assert.equal(fake.calls.filter((call) => call[0] === "settings" && call[1] === "hide").length, 1);
 });
 
+test("Telegram serializes a subscription arriving during button hide", async () => {
+  const fake = fakeTelegram();
+  const hideStarted = deferred();
+  const releaseHide = deferred();
+  fake.back.api.hide = async () => {
+    fake.calls.push(["back", "hide"]);
+    hideStarted.resolve();
+    await releaseHide.promise;
+  };
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  const removeFirst = await adapter.onBack(() => {});
+
+  const removingFirst = removeFirst();
+  await hideStarted.promise;
+  let secondSettled = false;
+  const secondSetup = adapter.onBack(() => {});
+  void secondSetup.then(() => {
+    secondSettled = true;
+  });
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.equal(secondSettled, false);
+  assert.equal(fake.back.listeners.size, 1);
+  releaseHide.resolve();
+  const removeSecond = await secondSetup;
+  await removingFirst;
+
+  assert.equal(fake.back.listeners.size, 1);
+  assert.equal(fake.calls.filter((call) => call[0] === "back" && call[1] === "hide").length, 1);
+  assert.equal(fake.calls.filter((call) => call[0] === "back" && call[1] === "show").length, 2);
+  await removeSecond();
+});
+
+test("Telegram retries rejected button hide without repeating offClick", async () => {
+  const fake = fakeTelegram();
+  const originalHide = fake.back.api.hide;
+  let hideAttempts = 0;
+  fake.back.api.hide = function hide() {
+    hideAttempts += 1;
+    if (hideAttempts === 1) {
+      return Promise.reject(new Error("private button hide failure"));
+    }
+    return originalHide.call(this);
+  };
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  const remove = await adapter.onBack(() => {});
+
+  const failed = remove();
+  assert.equal(remove(), failed);
+  await assert.rejects(failed, buttonCleanupError);
+  assert.equal(fake.back.listeners.size, 0);
+  assert.equal(fake.calls.filter((call) => call[0] === "back" && call[1] === "offClick").length, 1);
+
+  const retry = remove();
+  assert.notEqual(retry, failed);
+  assert.equal(remove(), retry);
+  await retry;
+  assert.equal(hideAttempts, 2);
+  assert.equal(fake.calls.filter((call) => call[0] === "back" && call[1] === "offClick").length, 1);
+  assert.equal(remove(), retry);
+});
+
 test("Telegram button cleanup contains failures and retries removal", async () => {
   const fake = fakeTelegram();
   const originalOffClick = fake.back.api.offClick;
@@ -357,7 +430,7 @@ test("Telegram button cleanup contains failures and retries removal", async () =
 
   const failed = remove();
   assert.equal(remove(), failed);
-  await assert.doesNotReject(() => failed);
+  await assert.rejects(failed, buttonCleanupError);
   assert.equal(fake.back.listeners.size, 1);
   assert.equal(fake.calls.filter((call) => call[0] === "back" && call[1] === "hide").length, 0);
 
@@ -387,7 +460,7 @@ test("Telegram event cleanup contains failures and retries removal", async () =>
 
   const failed = remove();
   assert.equal(remove(), failed);
-  await assert.doesNotReject(() => failed);
+  await assert.rejects(failed, eventCleanupError);
   assert.equal(fake.events.get("themeChanged").size, 1);
 
   const retry = remove();
@@ -397,6 +470,65 @@ test("Telegram event cleanup contains failures and retries removal", async () =>
   assert.equal(attempts, 2);
   assert.equal(fake.events.get("themeChanged").size, 0);
   assert.equal(remove(), retry);
+});
+
+test("mobile runtime retries failed Telegram lifecycle cleanup before restart", async () => {
+  const fake = fakeTelegram();
+  const originalOffEvent = fake.webApp.offEvent;
+  let activatedRemovalAttempts = 0;
+  fake.webApp.offEvent = function offEvent(name, listener) {
+    if (name === "activated") {
+      activatedRemovalAttempts += 1;
+      if (activatedRemovalAttempts === 1) {
+        return Promise.reject(new Error("private lifecycle removal failure"));
+      }
+    }
+    return originalOffEvent.call(this, name, listener);
+  };
+  const platform = createTelegramPlatform({
+    webApp: fake.webApp,
+    window: fake.window,
+    navigator: { onLine: true },
+  });
+  let activatedDeliveries = 0;
+  const runtime = createMobileRuntime({
+    platform,
+    snapshots: {
+      load: async () => null,
+      save: async () => {},
+    },
+    getState: () => ({}),
+    applySnapshot: async () => {},
+    onRestoreError: async () => {},
+    onNetwork: async () => {},
+    onDeepLink: async () => {},
+    onBack: async () => false,
+    pauseAudio: async () => {},
+    resumeAudio: async () => {
+      activatedDeliveries += 1;
+    },
+    onRuntimeError: async () => {},
+  });
+
+  await runtime.start();
+  await assert.rejects(runtime.stop(), (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(error.errors.map(({ name, message }) => ({ name, message })), [
+      eventCleanupError,
+    ]);
+    return true;
+  });
+  assert.equal(fake.events.get("activated").size, 1);
+
+  await runtime.start();
+  assert.equal(activatedRemovalAttempts, 2);
+  assert.equal(fake.events.get("activated").size, 1);
+  fake.emit("activated");
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.equal(activatedDeliveries, 1);
+
+  await runtime.stop();
+  assert.equal(fake.events.get("activated").size, 0);
 });
 
 test("Telegram lifecycle and theme events map and remove listeners", async () => {
