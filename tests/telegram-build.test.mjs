@@ -874,6 +874,73 @@ test("a durable lock owner write failure removes its candidate", async () => {
   }
 });
 
+test("a vanished durable-owner candidate preserves the write failure", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-owner-candidate-vanished-"));
+  const output = join(parent, "dist");
+  const failure = filesystemError("EACCES", "injected owner write denial");
+  let candidatePath;
+
+  try {
+    await withPublicationFsFault(
+      {
+        async open(real, path, ...args) {
+          if (basename(dirname(path)).startsWith(".dist.lock.candidate-")) {
+            candidatePath = dirname(path);
+            await real.rm(candidatePath, { recursive: true, force: true });
+            throw failure;
+          }
+          return real.open(path, ...args);
+        },
+      },
+      async ({ acquireBuildLock }) => {
+        await assert.rejects(
+          acquireBuildLock(output),
+          (error) => error === failure,
+        );
+      },
+    );
+    assert.equal(existsSync(candidatePath), false);
+    assertNoBuildDebris(output);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("durable-owner cleanup refuses a replacement candidate inode", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-owner-candidate-replaced-"));
+  const output = join(parent, "dist");
+  const failure = filesystemError("EACCES", "injected owner write denial");
+  let candidatePath;
+  let retiredPath;
+
+  try {
+    await withPublicationFsFault(
+      {
+        async open(real, path, ...args) {
+          if (basename(dirname(path)).startsWith(".dist.lock.candidate-")) {
+            candidatePath = dirname(path);
+            retiredPath = `${candidatePath}.retired`;
+            await real.rename(candidatePath, retiredPath);
+            await real.mkdir(candidatePath);
+            throw failure;
+          }
+          return real.open(path, ...args);
+        },
+      },
+      async ({ acquireBuildLock }) => {
+        await assert.rejects(
+          acquireBuildLock(output),
+          /Build lock candidate ownership changed before cleanup/,
+        );
+      },
+    );
+    assert.equal(existsSync(candidatePath), true);
+    assert.equal(existsSync(retiredPath), true);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
 test("stale recovery yields when the inspected lock disappears", async () => {
   const parent = mkdtempSync(join(tmpdir(), "salvo-lock-disappears-"));
   const output = join(parent, "dist");
