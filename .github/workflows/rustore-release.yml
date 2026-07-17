@@ -2,6 +2,16 @@ name: Build RuStore Release
 
 on:
   workflow_dispatch:
+    inputs:
+      submit_to_rustore:
+        description: Submit the verified APK to RuStore moderation at 5% rollout
+        required: true
+        type: boolean
+        default: false
+      release_notes:
+        description: Release notes for RuStore (required when submitting)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -121,6 +131,18 @@ jobs:
             android/app/build/outputs/bundle/release/app-release.aab.sha256
           if-no-files-found: error
           retention-days: 30
+
+      - name: Submit verified APK to RuStore
+        if: ${{ inputs.submit_to_rustore }}
+        env:
+          RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
+          RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
+          RUSTORE_DEVELOPER_EMAIL: ${{ secrets.RUSTORE_DEVELOPER_EMAIL }}
+          RUSTORE_RELEASE_NOTES: ${{ inputs.release_notes }}
+          RUSTORE_APK_PATH: android/app/build/outputs/apk/release/app-release.apk
+        run: |
+          set -euo pipefail
+          npm run rustore:api:submit | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Remove decoded keystore
         if: ${{ always() }}

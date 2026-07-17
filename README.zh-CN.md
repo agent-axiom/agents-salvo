@@ -88,8 +88,13 @@ Android debug APK 和 iOS Simulator 构建不需要 Google Play 或 Apple Develo
 - `RUSTORE_STORE_PASSWORD`
 - `RUSTORE_KEY_ALIAS`
 - `RUSTORE_KEY_PASSWORD`
+- `RUSTORE_KEY_ID`
+- `RUSTORE_PRIVATE_KEY`
+- `RUSTORE_DEVELOPER_EMAIL`
 
-切勿提交签名密钥或密码。请在仓库之外保存原始 keystore 和至少一个加密备份：`io.github.agentaxiom.salvo` 的所有后续更新必须使用同一密钥签名。运行 `npm run rustore:assets:verify` 可在本地验证商店素材。商店文案、截图、隐私声明和所有者检查清单位于 [`distribution/rustore`](distribution/rustore/)。
+切勿提交签名密钥、API 密钥或密码。请在仓库之外保存原始 keystore 和至少一个加密备份：`io.github.agentaxiom.salvo` 的所有后续更新必须使用同一签名密钥。运行 `npm run rustore:assets:verify` 可在本地验证商店素材。商店文案、截图、隐私声明和所有者检查清单位于 [`distribution/rustore`](distribution/rustore/)。
+
+RuStore 中出现首个已上线版本后，才可使用 API 发布。先运行只读的 `Check RuStore API Access` workflow。发布更新时，运行 `Build RuStore Release`，启用 `submit_to_rustore` 并填写更新说明；验证后的 APK 会提交审核，审核通过后自动向 5% 用户发布。随后使用受保护的 `Expand RuStore Rollout` workflow 和对应版本 ID，依次扩大到 25% 和 100%。停止发布或回滚仍需由所有者在 RuStore Console 中明确执行。
 
 ## GitHub Pages
 

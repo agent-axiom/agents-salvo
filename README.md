@@ -88,8 +88,13 @@ The manual `Build RuStore Release` workflow runs only from `main`, tests the pro
 - `RUSTORE_STORE_PASSWORD`
 - `RUSTORE_KEY_ALIAS`
 - `RUSTORE_KEY_PASSWORD`
+- `RUSTORE_KEY_ID`
+- `RUSTORE_PRIVATE_KEY`
+- `RUSTORE_DEVELOPER_EMAIL`
 
-Never commit the signing key or its passwords. Keep the original keystore and at least one encrypted backup outside the repository: every future update of `io.github.agentaxiom.salvo` must use the same key. Verify the store assets locally with `npm run rustore:assets:verify`. The listing copy, screenshots, privacy declaration, and owner checklist are in [`distribution/rustore`](distribution/rustore/).
+Never commit signing or API keys. Keep the original keystore and at least one encrypted backup outside the repository: every future update of `io.github.agentaxiom.salvo` must use the same signing key. Verify the store assets locally with `npm run rustore:assets:verify`. The listing copy, screenshots, privacy declaration, and owner checklist are in [`distribution/rustore`](distribution/rustore/).
+
+API publishing is available after RuStore has one active version. Run `Check RuStore API Access` first; it is read-only. For an update, run `Build RuStore Release` with `submit_to_rustore` enabled and non-empty release notes. The verified APK is submitted for moderation and, after approval, automatically reaches 5% of users. Use the protected `Expand RuStore Rollout` workflow with the returned version ID to move to 25% and then 100%. Stopping or rolling back a release remains an explicit owner action in the RuStore Console.
 
 ## GitHub Pages
 
