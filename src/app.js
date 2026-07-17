@@ -494,22 +494,14 @@ function startMobileApp() {
 }
 
 async function processTelegramMiniAppLaunch() {
-  if (!telegramLaunchRouteCaptured) {
-    telegramLaunchRouteCaptured = true;
-    try {
-      pendingTelegramLaunchRoute = parseTelegramStartParam(platform.getStartParam());
-    } catch {
-      pendingTelegramLaunchRoute = null;
-    }
-  }
+  const route = captureTelegramMiniAppLaunchRoute();
   if (
     telegramLaunchProcessed
-    || !pendingTelegramLaunchRoute
+    || !route
     || !state.auth.token
     || !state.auth.user
   ) return false;
 
-  const route = pendingTelegramLaunchRoute;
   pendingTelegramLaunchRoute = null;
   telegramLaunchProcessed = true;
   let replayHistoryMode = "push";
@@ -518,6 +510,18 @@ async function processTelegramMiniAppLaunch() {
   }
   await navigateToInternalRoute(route, { joinRoom: true, replayHistoryMode });
   return true;
+}
+
+function captureTelegramMiniAppLaunchRoute() {
+  if (!telegramLaunchRouteCaptured) {
+    telegramLaunchRouteCaptured = true;
+    try {
+      pendingTelegramLaunchRoute = parseTelegramStartParam(platform.getStartParam());
+    } catch {
+      pendingTelegramLaunchRoute = null;
+    }
+  }
+  return pendingTelegramLaunchRoute;
 }
 
 async function loadTelegramAuthCapability() {
@@ -1025,7 +1029,7 @@ function renderAuthControl() {
 }
 
 function renderTelegramMiniAppCommand({ action, errorKey, labelKey }) {
-  const command = telegramMainMiniAppLaunchUrl()
+  const command = telegramMiniAppLaunchUrl()
     ? `<button class="secondary-button auth-retry-button" data-action="${action}">${translate(labelKey)}</button>`
     : "";
   return `
@@ -1038,8 +1042,15 @@ function renderTelegramMiniAppCommand({ action, errorKey, labelKey }) {
   `;
 }
 
-function telegramMainMiniAppLaunchUrl() {
+function telegramMiniAppLaunchUrl() {
   try {
+    const route = captureTelegramMiniAppLaunchRoute();
+    if (route?.type === "room") {
+      return telegramRoomInviteUrl(state.auth.telegramBotUsername, route.roomCode);
+    }
+    if (route?.type === "replay") {
+      return telegramReplayUrl(state.auth.telegramBotUsername, route.replayId);
+    }
     return telegramMainMiniAppUrl(state.auth.telegramBotUsername);
   } catch {
     return "";
@@ -1047,7 +1058,7 @@ function telegramMainMiniAppLaunchUrl() {
 }
 
 async function openTelegramMainMiniApp() {
-  const url = telegramMainMiniAppLaunchUrl();
+  const url = telegramMiniAppLaunchUrl();
   if (!url) return false;
   try {
     await platform.openExternalUrl(url);
@@ -2520,7 +2531,11 @@ function renderResultModal({ winnerId, playerId = winnerId, log, newGameAction, 
         ${
           state.resultCopyStatus
             ? `<p class="result-share-status status-line" role="status">${translate(
-                state.resultCopyStatus === "copied" ? "result.copySuccess" : "share.failed",
+                state.resultCopyStatus === "copied"
+                  ? "result.copySuccess"
+                  : state.resultCopyStatus === "invite-copied"
+                    ? "online.inviteCopied"
+                    : state.resultCopyStatus === "link-copied" ? "share.linkCopied" : "share.failed",
               )}</p>`
             : ""
         }
@@ -3623,10 +3638,10 @@ async function copyArchivedReplayLink() {
     } catch {
       // Invalid launch configuration falls through to the existing error status.
     }
-    const shared = url
+    const outcome = url
       ? await shareWithTelegramFallback(translate("replayArchive.title"), url)
-      : false;
-    state.replayArchive.copyStatus = shared ? "" : "error";
+      : { shared: false, copied: false };
+    state.replayArchive.copyStatus = outcome.shared ? "" : outcome.copied ? "copied" : "error";
     render();
     return;
   }
@@ -4296,8 +4311,8 @@ async function shareBattleSummary() {
   }
   const report = buildBattleReport(context.log, context.winnerId, context.playerId);
   const summaryText = buildBattleSummaryText(report, context);
-  const shared = await shareWithTelegramFallback(summaryText, canonicalReplayBaseUrl);
-  state.resultCopyStatus = shared ? "" : "share-failed";
+  const outcome = await shareWithTelegramFallback(summaryText, canonicalReplayBaseUrl);
+  state.resultCopyStatus = outcome.shared ? "" : outcome.copied ? "link-copied" : "share-failed";
   render();
 }
 
@@ -4316,9 +4331,17 @@ async function shareRoom() {
       url = "";
     }
   }
-  const shared = url ? await shareWithTelegramFallback(text, url) : false;
-  state.online.error = shared ? "" : translate("share.failed");
-  if (showingResult) state.resultCopyStatus = shared ? "" : "share-failed";
+  const outcome = url
+    ? await shareWithTelegramFallback(text, url)
+    : { shared: false, copied: false };
+  const succeeded = outcome.shared || outcome.copied;
+  state.online.status = outcome.copied ? "invite-copied" : "";
+  state.online.error = succeeded ? "" : translate("share.failed");
+  if (showingResult) {
+    state.resultCopyStatus = outcome.shared
+      ? ""
+      : outcome.copied ? "invite-copied" : "share-failed";
+  }
   render();
 }
 
@@ -4329,15 +4352,16 @@ async function shareWithTelegramFallback(text, url) {
       text: text,
       url: url,
     });
-    if (result.shared) return true;
-    if (isTelegramMiniApp) return false;
+    if (result.shared) return { shared: true, copied: false };
+    if (result.copied) return { shared: false, copied: true };
+    if (isTelegramMiniApp) return { shared: false, copied: false };
     const telegramUrl = new URL("https://t.me/share/url");
     telegramUrl.searchParams.set("url", url);
     telegramUrl.searchParams.set("text", text);
     await platform.openExternalUrl(telegramUrl.toString());
-    return true;
+    return { shared: true, copied: false };
   } catch {
-    return false;
+    return { shared: false, copied: false };
   }
 }
 
@@ -5633,6 +5657,7 @@ function onlineStatusText(status) {
     connecting: "online.connecting",
     connected: "online.connected",
     copied: "online.copied",
+    "invite-copied": "online.inviteCopied",
     disconnected: "online.disconnected",
   };
   return translate(keys[status] ?? "online.waiting");

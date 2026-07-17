@@ -355,7 +355,7 @@ export function createTelegramPlatform({
     },
     async share(payload) {
       if (typeof payload?.url !== "string" || payload.url.length === 0) {
-        return { shared: false };
+        return { shared: false, copied: false };
       }
 
       const shareUrl = new URL("https://t.me/share/url");
@@ -364,14 +364,14 @@ export function createTelegramPlatform({
         shareUrl.searchParams.set("text", payload.text);
       }
       if (await callOptionalAsync(webApp, "openTelegramLink", shareUrl.toString())) {
-        return { shared: true };
+        return { shared: true, copied: false };
       }
 
       const clipboard = readOr(() => nav?.clipboard, null);
       if (await callOptionalAsync(clipboard, "writeText", payload.url)) {
-        return { shared: true };
+        return { shared: false, copied: true };
       }
-      return { shared: false };
+      return { shared: false, copied: false };
     },
     async haptic(event) {
       const feedback = readOr(() => webApp?.HapticFeedback, null);

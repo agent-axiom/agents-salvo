@@ -344,8 +344,9 @@ test("result modal can copy and share a battle summary through the platform", ()
   assert.match(app, /platform\.openExternalUrl\(telegramUrl\.toString\(\)\)/);
   assert.match(app, /resultCopyStatus:\s*""/);
   assert.match(app, /state\.resultCopyStatus = "copied"/);
-  assert.match(app, /state\.resultCopyStatus = shared \? "" : "share-failed"/);
+  assert.match(app, /state\.resultCopyStatus = outcome\.shared \? "" : outcome\.copied \? "link-copied" : "share-failed"/);
   assert.match(app, /class="result-share-status status-line"/);
+  assert.match(i18n, /"share\.linkCopied"/);
   assert.match(i18n, /"result\.copySummary"/);
   assert.match(i18n, /"result\.copySuccess"/);
   assert.match(i18n, /"result\.shareSummary"/);
@@ -831,10 +832,13 @@ test("room and summary sharing await platform share with Telegram fallback", () 
   assert.match(app, /async function shareRoom/);
   assert.match(app, /async function shareBattleSummary/);
   assert.match(app, /const result = await platform\.share\(\{/);
-  assert.match(app, /if \(result\.shared\) return true/);
+  assert.match(app, /if \(result\.shared\) return \{ shared: true, copied: false \}/);
+  assert.match(app, /if \(result\.copied\) return \{ shared: false, copied: true \}/);
   assert.match(app, /await platform\.openExternalUrl\(telegramUrl\.toString\(\)\)/);
   assert.match(app, /translate\("share\.failed"\)/);
-  assert.match(app, /state\.online\.error = shared \? "" : translate\("share\.failed"\)/);
+  assert.match(app, /state\.online\.status = outcome\.copied \? "invite-copied" : ""/);
+  assert.match(app, /state\.online\.error = succeeded \? "" : translate\("share\.failed"\)/);
+  assert.match(i18n, /"online\.inviteCopied"/);
   assert.match(app, /if \(action === "share-battle-summary"\) await shareBattleSummary\(\)/);
   assert.match(app, /if \(action === "share-telegram"\) await shareRoom\(\)/);
 });

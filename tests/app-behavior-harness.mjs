@@ -1037,6 +1037,8 @@ async function runTelegramLaunchSharingScenario() {
     text: "Join my Salvo room: ABCD",
     url: "https://t.me/salvo_test_bot?startapp=room_ABCD",
   });
+  assert.equal(telegramApp.getState().online.status, "");
+  assert.doesNotMatch(telegram.root.innerHTML, /invite link copied/i);
 
   const telegramReplay = createAppHarness({
     platformName: "telegram",
@@ -1065,6 +1067,27 @@ async function runTelegramLaunchSharingScenario() {
   assert.equal(telegramReplay.calls.sharePayloads[0].text, "Battle replay");
   assert.equal(telegramReplayApp.getState().replayArchive.copyStatus, "");
   assert.doesNotMatch(telegramReplay.root.innerHTML, /Replay link copied/);
+
+  const copiedTelegramReplay = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-copied-replay-share-init-data",
+    startParam: "replay_replay-copied",
+    shareResult: { shared: false, copied: true },
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      if (url.endsWith("/replays/replay-copied")) {
+        return response({ replay: archivedReplayFixture("replay-copied") });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const copiedTelegramReplayApp = bootSalvoApp(copiedTelegramReplay.dependencies);
+  await copiedTelegramReplayApp.startup.done;
+  await copiedTelegramReplay.root.click("replay-copy-link");
+  assert.equal(copiedTelegramReplayApp.getState().replayArchive.copyStatus, "copied");
+  assert.match(copiedTelegramReplay.root.innerHTML, /Replay link copied/);
+  assert.doesNotMatch(copiedTelegramReplay.root.innerHTML, /Could not share/);
 
   const failedTelegramReplay = createAppHarness({
     platformName: "telegram",
@@ -1112,6 +1135,32 @@ async function runTelegramLaunchSharingScenario() {
   assert.equal(failedApp.getState().online.error, "Could not share.");
   assert.match(failed.root.innerHTML, /Could not share\./);
   assert.deepEqual(failed.calls.openedUrls, [], "failed Telegram sharing must remain failed");
+
+  const copiedRoom = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-copied-room-share-init-data",
+    startParam: "room_COPY",
+    shareResult: { shared: false, copied: true },
+    createRemoteClient() {
+      return remoteClientHarness({
+        async joinRoom(roomCode) {
+          return { roomCode, playerId: "p2", playerToken: "private-token", presetId: "classic" };
+        },
+      });
+    },
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const copiedRoomApp = bootSalvoApp(copiedRoom.dependencies);
+  await copiedRoomApp.startup.done;
+  await copiedRoom.root.click("share-telegram");
+  assert.equal(copiedRoomApp.getState().online.status, "invite-copied");
+  assert.equal(copiedRoomApp.getState().online.error, "");
+  assert.match(copiedRoom.root.innerHTML, /Room invite link copied/);
+  assert.doesNotMatch(copiedRoom.root.innerHTML, /Could not share/);
 
   const web = createAppHarness({
     secureSession: resolvedDeferred("web-session-token"),
@@ -1169,8 +1218,10 @@ async function runTelegramLaunchSharingScenario() {
   await Promise.all([
     telegramApp.stop(),
     telegramReplayApp.stop(),
+    copiedTelegramReplayApp.stop(),
     failedTelegramReplayApp.stop(),
     failedApp.stop(),
+    copiedRoomApp.stop(),
     webApp.stop(),
     webReplayApp.stop(),
   ]);
@@ -1248,6 +1299,28 @@ async function runTelegramAuthRecoveryScenario() {
     assert.match(expired.root.innerHTML, /data-action="auth-miniapp-reopen"/, name);
     await expired.root.click("auth-miniapp-reopen");
     assert.deepEqual(expired.calls.openedUrls, ["https://t.me/salvo_test_bot?startapp"], name);
+  }
+
+  for (const [name, startParam, expectedUrl] of [
+    ["room launch", "room_REOPEN", "https://t.me/salvo_test_bot?startapp=room_REOPEN"],
+    ["replay launch", "replay_reopen-123", "https://t.me/salvo_test_bot?startapp=replay_reopen-123"],
+    ["invalid launch", "room_reopen", "https://t.me/salvo_test_bot?startapp"],
+  ]) {
+    const expired = createAppHarness({
+      platformName: "telegram",
+      launchData: `expired-${name}`,
+      startParam,
+      miniAppResponse: new Response(JSON.stringify(authenticationFailure), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      }),
+    });
+    const expiredApp = bootSalvoApp(expired.dependencies);
+    expiredApps.push(expiredApp);
+    await expiredApp.startup.done;
+    assert.equal(expiredApp.getState().auth.method, "miniapp-expired", name);
+    await expired.root.click("auth-miniapp-reopen");
+    assert.deepEqual(expired.calls.openedUrls, [expectedUrl], name);
   }
 
   const serviceFailureApps = [];

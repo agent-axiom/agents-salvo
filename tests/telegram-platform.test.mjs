@@ -909,7 +909,7 @@ test("Telegram shares natively, copies on failure, and routes external links", a
     url: "https://t.me/agents_salvo_bot?startapp=room_ABCD",
   };
 
-  assert.deepEqual(await adapter.share(payload), { shared: true });
+  assert.deepEqual(await adapter.share(payload), { shared: true, copied: false });
   const shareCall = fake.calls.find(([name, url]) => (
     name === "telegram-link" && new URL(url).pathname === "/share/url"
   ));
@@ -934,10 +934,10 @@ test("Telegram shares natively, copies on failure, and routes external links", a
   fake.webApp.openTelegramLink = () => {
     throw new Error("unsupported");
   };
-  assert.deepEqual(await adapter.share(payload), { shared: true });
+  assert.deepEqual(await adapter.share(payload), { shared: false, copied: true });
   assert.deepEqual(clipboard, [payload.url]);
   navigator.clipboard.writeText = async () => Promise.reject(new Error("denied"));
-  assert.deepEqual(await adapter.share(payload), { shared: false });
+  assert.deepEqual(await adapter.share(payload), { shared: false, copied: false });
 });
 
 test("Telegram preferences are prefixed while secure sessions stay in memory", async () => {
@@ -1105,6 +1105,7 @@ test("Telegram unavailable and throwing provider APIs remain safe", async () => 
   await assert.doesNotReject(() => throwing.openExternalUrl("https://example.com"));
   assert.deepEqual(await throwing.share({ text: "x", url: "https://t.me/test" }), {
     shared: false,
+    copied: false,
   });
   await assert.rejects(throwing.settings.get("theme"), settingsStorageError);
   await assert.rejects(throwing.settings.set("theme", "dark"), settingsStorageError);
