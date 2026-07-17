@@ -61,6 +61,11 @@ export function buildStatePaths(output) {
       `${lockPath}.recovery-candidate-`,
       "Build recovery candidate path",
     ),
+    lockRecoveryQuarantinePrefix: anchoredStatePath(
+      parentPath,
+      `${lockPath}.recovery-quarantine-`,
+      "Build recovery quarantine path",
+    ),
     parentPath,
     stagePrefix: anchoredStatePath(
       parentPath,
@@ -83,6 +88,7 @@ export async function acquireBuildLock(
     timeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
     onCandidateReady,
     onRecoveryCandidateReady,
+    onRecoveryClaimPublished,
   } = {},
 ) {
   if (onCandidateReady !== undefined && typeof onCandidateReady !== "function") {
@@ -96,6 +102,14 @@ export async function acquireBuildLock(
       "onRecoveryCandidateReady must be a function when provided.",
     );
   }
+  if (
+    onRecoveryClaimPublished !== undefined
+    && typeof onRecoveryClaimPublished !== "function"
+  ) {
+    throw new TypeError(
+      "onRecoveryClaimPublished must be a function when provided.",
+    );
+  }
   const paths = buildStatePaths(output);
   const deadline = Date.now() + timeoutMs;
   while (true) {
@@ -104,7 +118,9 @@ export async function acquireBuildLock(
       await waitForExistingLock(paths, inspection, {
         deadline,
         onRecoveryCandidateReady,
+        onRecoveryClaimPublished,
         retryMs,
+        staleMs,
       });
       continue;
     }
@@ -130,7 +146,9 @@ export async function acquireBuildLock(
         await waitForExistingLock(paths, current, {
           deadline,
           onRecoveryCandidateReady,
+          onRecoveryClaimPublished,
           retryMs,
+          staleMs,
         });
         continue;
       }
@@ -151,7 +169,9 @@ export async function acquireBuildLock(
         await waitForExistingLock(paths, winner, {
           deadline,
           onRecoveryCandidateReady,
+          onRecoveryClaimPublished,
           retryMs,
+          staleMs,
         });
       }
     } finally {
@@ -419,14 +439,20 @@ async function inspectLock(lockPath, staleMs) {
 async function waitForExistingLock(
   paths,
   inspection,
-  { deadline, onRecoveryCandidateReady, retryMs },
+  {
+    deadline,
+    onRecoveryCandidateReady,
+    onRecoveryClaimPublished,
+    retryMs,
+    staleMs,
+  },
 ) {
   if (inspection.recoverable) {
-    const recovered = await recoverStaleLock(
-      paths,
-      inspection,
+    const recovered = await recoverStaleLock(paths, inspection, {
       onRecoveryCandidateReady,
-    );
+      onRecoveryClaimPublished,
+      staleMs,
+    });
     if (recovered) {
       return;
     }
@@ -444,7 +470,11 @@ function isLockContentionError(error) {
 async function acquireRecoveryClaim(
   paths,
   inspection,
-  onRecoveryCandidateReady,
+  {
+    onRecoveryCandidateReady,
+    onRecoveryClaimPublished,
+    staleMs,
+  },
 ) {
   const lockStats = await inspectRealDirectory(
     paths.lockPath,
@@ -460,13 +490,19 @@ async function acquireRecoveryClaim(
   ) {
     return false;
   }
-  const existingRecovery = await inspectRealDirectory(
-    paths.lockRecoveryPath,
-    "Build lock recovery path",
-    { allowMissing: true },
-  );
-  if (existingRecovery) {
-    return null;
+  const existingRecovery = await inspectRecoveryClaim(paths, staleMs);
+  if (existingRecovery.exists) {
+    if (!existingRecovery.recoverable) {
+      return null;
+    }
+    const removed = await removeAbandonedRecoveryClaim(
+      paths,
+      existingRecovery,
+      staleMs,
+    );
+    if (!removed) {
+      return null;
+    }
   }
 
   const candidate = await prepareRecoveryCandidate(paths);
@@ -496,12 +532,8 @@ async function acquireRecoveryClaim(
     ) {
       return null;
     }
-    const currentRecovery = await inspectRealDirectory(
-      paths.lockRecoveryPath,
-      "Build lock recovery path",
-      { allowMissing: true },
-    );
-    if (currentRecovery) {
+    const currentRecovery = await inspectRecoveryClaim(paths, staleMs);
+    if (currentRecovery.exists) {
       return null;
     }
 
@@ -516,12 +548,8 @@ async function acquireRecoveryClaim(
       if (!isLockContentionError(error)) {
         throw error;
       }
-      const winner = await inspectRealDirectory(
-        paths.lockRecoveryPath,
-        "Build lock recovery path",
-        { allowMissing: true },
-      );
-      if (!winner) {
+      const winner = await inspectRecoveryClaim(paths, staleMs);
+      if (!winner.exists) {
         throw error;
       }
       return null;
@@ -536,6 +564,11 @@ async function acquireRecoveryClaim(
       ),
       path: paths.lockRecoveryPath,
     };
+    await onRecoveryClaimPublished?.({
+      claimPath: claim.path,
+      owner: claim.owner,
+      ownerPath: claim.ownerPath,
+    });
     const publishedLock = await inspectRealDirectory(
       paths.lockPath,
       "Build lock path",
@@ -553,6 +586,112 @@ async function acquireRecoveryClaim(
   } finally {
     await removeCandidate();
   }
+}
+
+async function inspectRecoveryClaim(
+  paths,
+  staleMs,
+  {
+    directoryLabel = "Build lock recovery path",
+    ownerLabel = "Build recovery claim owner path",
+    path = paths.lockRecoveryPath,
+  } = {},
+) {
+  const stats = await inspectRealDirectory(path, directoryLabel, {
+    allowMissing: true,
+  });
+  if (!stats) {
+    return { exists: false, recoverable: false };
+  }
+  const owner = await readLockOwner(path, {
+    directoryLabel,
+    ownerLabel,
+  });
+  return {
+    device: stats.dev,
+    exists: true,
+    inode: stats.ino,
+    mtimeMs: stats.mtimeMs,
+    owner,
+    recoverable: owner
+      ? !processIsAlive(owner.pid)
+      : Date.now() - stats.mtimeMs >= staleMs,
+  };
+}
+
+async function removeAbandonedRecoveryClaim(paths, inspection, staleMs) {
+  let quarantinePath;
+  while (true) {
+    quarantinePath = anchoredStatePath(
+      paths.parentPath,
+      `${paths.lockRecoveryQuarantinePrefix}${randomUUID()}`,
+      "Build recovery quarantine path",
+    );
+    try {
+      await rename(paths.lockRecoveryPath, quarantinePath);
+      break;
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return false;
+      }
+      if (error.code === "EEXIST") {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  const quarantined = await inspectRecoveryClaim(paths, staleMs, {
+    directoryLabel: "Build recovery quarantine path",
+    ownerLabel: "Build recovery quarantine owner path",
+    path: quarantinePath,
+  });
+  if (
+    !sameDirectoryIdentity(quarantined, inspection)
+    || !sameInspectedOwner(quarantined.owner, inspection.owner)
+    || !quarantined.recoverable
+  ) {
+    await restoreRecoveryClaim(paths, quarantinePath);
+    return false;
+  }
+
+  await rm(quarantinePath, { recursive: true, force: true });
+  return true;
+}
+
+async function restoreRecoveryClaim(paths, quarantinePath) {
+  const current = await inspectRealDirectory(
+    paths.lockRecoveryPath,
+    "Build lock recovery path",
+    { allowMissing: true },
+  );
+  if (current) {
+    return false;
+  }
+  try {
+    await rename(quarantinePath, paths.lockRecoveryPath);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT" || isLockContentionError(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function sameDirectoryIdentity(first, second) {
+  return (
+    (first.device === undefined
+      || second.device === undefined
+      || first.device === second.device)
+    && (first.inode === undefined
+      || second.inode === undefined
+      || first.inode === second.inode)
+  );
+}
+
+function sameInspectedOwner(first, second) {
+  return second ? sameOwner(first, second) : first === null;
 }
 
 async function releaseRecoveryClaim(claim) {
@@ -579,13 +718,17 @@ async function releaseRecoveryClaim(claim) {
 async function recoverStaleLock(
   paths,
   inspection,
-  onRecoveryCandidateReady,
-) {
-  const claim = await acquireRecoveryClaim(
-    paths,
-    inspection,
+  {
     onRecoveryCandidateReady,
-  );
+    onRecoveryClaimPublished,
+    staleMs,
+  },
+) {
+  const claim = await acquireRecoveryClaim(paths, inspection, {
+    onRecoveryCandidateReady,
+    onRecoveryClaimPublished,
+    staleMs,
+  });
   if (!claim) {
     return false;
   }
