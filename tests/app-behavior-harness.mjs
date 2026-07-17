@@ -678,6 +678,7 @@ async function runTelegramAuthRecoveryScenario() {
   for (const [name, options] of [
     ["missing SDK", { platformAvailable: false, launchData: "signed-init-data" }],
     ["missing initData", { platformAvailable: true, launchData: "" }],
+    ["missing client", { platformAvailable: true, launchData: "signed-init-data", workerUrl: "" }],
   ]) {
     const harness = createAppHarness({
       platformName: "telegram",
@@ -688,7 +689,11 @@ async function runTelegramAuthRecoveryScenario() {
     assert.equal(app.getState().auth.method, "miniapp-unavailable", name);
     assert.equal(app.getState().auth.token, "", name);
     assert.equal(app.getState().auth.user, null, name);
-    assert.match(harness.root.innerHTML, /Telegram login is unavailable/, name);
+    assert.match(harness.root.innerHTML, /Open Salvo in Telegram to sign in/, name);
+    assert.match(harness.root.innerHTML, /data-action="auth-miniapp-open"/, name);
+    assert.doesNotMatch(harness.root.innerHTML, /data-action="auth-telegram-retry"/, name);
+    await harness.root.click("auth-miniapp-open");
+    assert.deepEqual(harness.calls.openedUrls, ["https://t.me/salvo_test_bot?startapp"], name);
     assert.equal(
       harness.fetchCalls.some(({ url }) => url.endsWith("/auth/telegram/miniapp")),
       false,
@@ -703,6 +708,36 @@ async function runTelegramAuthRecoveryScenario() {
     assert.match(harness.root.innerHTML, /data-action="online-join"[^>]*disabled/, name);
     await app.stop();
   }
+
+  const invalidBot = createAppHarness({
+    platformName: "telegram",
+    platformAvailable: false,
+    telegramBotUsername: "bad/name",
+  });
+  const invalidBotApp = bootSalvoApp(invalidBot.dependencies);
+  await invalidBotApp.startup.done;
+  assert.match(invalidBot.root.innerHTML, /Open Salvo in Telegram to sign in/);
+  assert.doesNotMatch(invalidBot.root.innerHTML, /auth-miniapp-open|https:\/\/t\.me/);
+  assert.deepEqual(invalidBot.calls.openedUrls, []);
+
+  const expired = createAppHarness({
+    platformName: "telegram",
+    launchData: "expired-init-data",
+    miniAppResponse: new Response(JSON.stringify({ error: "invalid initData" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    }),
+  });
+  const expiredApp = bootSalvoApp(expired.dependencies);
+  await expiredApp.startup.done;
+  assert.equal(expiredApp.getState().auth.method, "miniapp-expired");
+  assert.equal(expiredApp.getState().auth.token, "");
+  assert.equal(expiredApp.getState().auth.user, null);
+  assert.match(expired.root.innerHTML, /Telegram Mini App session expired/);
+  assert.doesNotMatch(expired.root.innerHTML, /invalid initData|auth-telegram-retry/);
+  assert.match(expired.root.innerHTML, /data-action="auth-miniapp-reopen"/);
+  await expired.root.click("auth-miniapp-reopen");
+  assert.deepEqual(expired.calls.openedUrls, ["https://t.me/salvo_test_bot?startapp"]);
 
   let attempts = 0;
   const retryToken = "r".repeat(43);
@@ -773,7 +808,13 @@ async function runTelegramAuthRecoveryScenario() {
   assert.match(persistence.root.innerHTML, /Secure login could not be saved/);
   assert.doesNotMatch(persistence.root.innerHTML, /memory write failed/);
 
-  await Promise.all([retryApp.stop(), staleApp.stop(), persistenceApp.stop()]);
+  await Promise.all([
+    invalidBotApp.stop(),
+    expiredApp.stop(),
+    retryApp.stop(),
+    staleApp.stop(),
+    persistenceApp.stop(),
+  ]);
 }
 
 async function runTelegramRuntimeScenario() {
@@ -786,6 +827,7 @@ async function runTelegramRuntimeScenario() {
   await app.startup.done;
 
   assert.equal(harness.calls.ready, 1);
+  assert.deepEqual(harness.calls.backButtonVisibility, [false]);
   assert.deepEqual(harness.activePlatformHandlers(), {
     back: true,
     deepLink: true,
@@ -799,15 +841,52 @@ async function runTelegramRuntimeScenario() {
 
   await harness.emitSettings();
   assert.equal(app.getState().settingsOpen, true);
+  assert.equal(harness.calls.backButtonVisibility.at(-1), true);
+  await harness.emitBack();
+  assert.equal(app.getState().settingsOpen, false);
+  assert.equal(harness.calls.backButtonVisibility.at(-1), false);
+
+  await harness.root.click("start-agent");
+  assert.equal(harness.calls.backButtonVisibility.at(-1), true);
+  assert.equal(harness.calls.closingConfirmations.at(-1), true);
+  await harness.root.click("toggle-leaderboard");
+  await harness.root.click("menu");
+  assert.equal(app.getState().leaveBattleDialog, true);
+  assert.equal(app.getState().leaderboardOpen, true);
+
+  await harness.emitBack();
+  assert.equal(app.getState().leaveBattleDialog, false, "active leave dialog closes first");
+  assert.equal(app.getState().leaderboardOpen, true, "overlapped leaderboard remains open");
+  await harness.emitBack();
+  assert.equal(app.getState().leaderboardOpen, false);
+
+  await harness.root.click("ready");
+  assert.equal(app.getState().screen, "playing");
+  await harness.root.click("menu");
+  assert.equal(app.getState().leaveBattleDialog, true);
+  app.getState().game.phase = "finished";
+  app.getState().game.winnerId = "p1";
+  await harness.root.click("toggle-settings");
+  assert.match(harness.root.innerHTML, /data-action="close-result"/);
+  assert.equal(app.getState().settingsOpen, true);
+
+  await harness.emitBack();
+  assert.equal(app.getState().leaveBattleDialog, false, "leave dialog closes before result");
+  assert.equal(app.getState().resultModalDismissed, null, "overlapped result remains open");
+  assert.equal(app.getState().settingsOpen, true, "overlapped settings remain open");
+  await harness.emitBack();
+  assert.notEqual(app.getState().resultModalDismissed, null, "result closes before settings");
+  assert.equal(app.getState().settingsOpen, true, "overlapped settings remain open");
   await harness.emitBack();
   assert.equal(app.getState().settingsOpen, false);
 
-  await harness.root.click("start-agent");
-  assert.equal(harness.calls.closingConfirmations.at(-1), true);
+  assert.equal(app.getState().tacticalAdvisorOpen, true);
   await harness.emitBack();
-  assert.equal(app.getState().leaveBattleDialog, true);
-  await harness.root.click("confirm-leave-battle");
+  assert.equal(app.getState().tacticalAdvisorOpen, false, "visible tactical coaching collapses");
+  assert.equal(app.getState().screen, "playing");
+  await harness.emitBack();
   assert.equal(app.getState().screen, "menu");
+  assert.equal(harness.calls.backButtonVisibility.at(-1), false);
   assert.equal(harness.calls.closingConfirmations.at(-1), false);
 
   await harness.emitLifecycle({ active: false });
@@ -829,6 +908,26 @@ async function runTelegramRuntimeScenario() {
     theme: false,
     viewport: false,
   });
+
+  let visibilityAttempts = 0;
+  const retryVisibility = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-init-data",
+    onSetBackButtonVisible: async () => {
+      visibilityAttempts += 1;
+      if (visibilityAttempts === 1) {
+        throw new Error("Telegram button visibility update failed");
+      }
+    },
+  });
+  const retryVisibilityApp = bootSalvoApp(retryVisibility.dependencies);
+  await retryVisibilityApp.startup.done;
+  await flushMicrotasks();
+  await retryVisibility.root.click("theme-toggle");
+  await flushMicrotasks();
+  assert.deepEqual(retryVisibility.calls.backButtonVisibility, [false, false]);
+  assert.doesNotMatch(retryVisibility.root.innerHTML, /provider|visibility update failed/);
+  await retryVisibilityApp.stop();
 }
 
 async function runTelegramThemeBuildScenario() {
@@ -947,6 +1046,7 @@ function createAppHarness({
   platformAvailable = Boolean(launchData),
   platformTheme = null,
   workerUrl = "https://worker.example.test",
+  telegramBotUsername = "salvo_test_bot",
   buildId,
   initialUrl = "https://agent-axiom.github.io/agents-salvo/",
   capability = { method: "oidc" },
@@ -963,6 +1063,7 @@ function createAppHarness({
   onSecureSet = () => Promise.resolve(),
   onOpenExternalUrl = () => Promise.resolve(),
   onCloseExternalUrl = () => Promise.resolve(),
+  onSetBackButtonVisible = () => Promise.resolve(),
   onSettingWrite = () => Promise.resolve(),
   createRemoteClient = () => {
     throw new Error("Remote client was not expected");
@@ -988,6 +1089,7 @@ function createAppHarness({
     historyReplacements: 0,
     settingWrites: [],
     ready: 0,
+    backButtonVisibility: [],
     closingConfirmations: [],
     audioPauses: 0,
     audioResumes: 0,
@@ -1089,6 +1191,10 @@ function createAppHarness({
     async ready() {
       calls.ready += 1;
     },
+    async setBackButtonVisible(enabled) {
+      calls.backButtonVisibility.push(Boolean(enabled));
+      await onSetBackButtonVisible(Boolean(enabled));
+    },
     async setClosingConfirmation(enabled) {
       calls.closingConfirmations.push(Boolean(enabled));
     },
@@ -1105,7 +1211,13 @@ function createAppHarness({
       await onCloseExternalUrl();
     },
   };
-  const window = createWindowHarness({ initialUrl, workerUrl, buildId, calls });
+  const window = createWindowHarness({
+    initialUrl,
+    workerUrl,
+    telegramBotUsername,
+    buildId,
+    calls,
+  });
   const navigator = {
     onLine: true,
     clipboard: { async writeText() {} },
@@ -1358,6 +1470,7 @@ function createRootHarness(document) {
 function createWindowHarness({
   initialUrl = "https://agent-axiom.github.io/agents-salvo/",
   workerUrl = "https://worker.example.test",
+  telegramBotUsername = "salvo_test_bot",
   buildId,
   calls,
 } = {}) {
@@ -1383,7 +1496,7 @@ function createWindowHarness({
   return {
     SALVO_CONFIG: {
       workerUrl,
-      telegramBotUsername: "salvo_test_bot",
+      telegramBotUsername,
       ...(buildId === undefined ? {} : { buildId }),
     },
     location,
@@ -1427,6 +1540,7 @@ async function clientResult(result) {
   const pending = typeof result === "function" ? result() : result;
   const value = await pending;
   if (value instanceof Error) throw value;
+  if (value instanceof Response) return value;
   return new Response(JSON.stringify(value), {
     status: 200,
     headers: { "Content-Type": "application/json" },

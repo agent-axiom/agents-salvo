@@ -9,6 +9,11 @@ const buttonCleanupError = {
   message: "Telegram button cleanup failed",
 };
 
+const buttonVisibilityError = {
+  name: "Error",
+  message: "Telegram button visibility update failed",
+};
+
 const eventCleanupError = {
   name: "Error",
   message: "Telegram event cleanup failed",
@@ -222,7 +227,7 @@ test("Telegram adapter exposes launch and network contract", async () => {
   assert.equal(fake.windowEvents.size, 0);
 });
 
-test("Telegram BackButton and SettingsButton show, deliver, and clean up", async () => {
+test("Telegram BackButton visibility is explicit while SettingsButton stays visible", async () => {
   const fake = fakeTelegram();
   const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
   let backs = 0;
@@ -234,10 +239,19 @@ test("Telegram BackButton and SettingsButton show, deliver, and clean up", async
   const removeSettings = await adapter.onSettings(() => {
     settings += 1;
   });
+  assert.equal(fake.calls.some((call) => call[0] === "back" && call[1] === "show"), false);
+  assert.equal(fake.calls.filter((call) => call[0] === "settings" && call[1] === "show").length, 1);
   for (const listener of fake.back.listeners) listener();
   for (const listener of fake.settings.listeners) listener();
   assert.equal(backs, 1);
   assert.equal(settings, 1);
+
+  await adapter.setBackButtonVisible(true);
+  await adapter.setBackButtonVisible(false);
+  assert.equal(fake.back.listeners.size, 1, "hiding does not remove the listener");
+  for (const listener of fake.back.listeners) listener();
+  assert.equal(backs, 2);
+  await adapter.setBackButtonVisible(true);
 
   await removeBack();
   await removeSettings();
@@ -245,6 +259,8 @@ test("Telegram BackButton and SettingsButton show, deliver, and clean up", async
   assert.equal(fake.settings.listeners.size, 0);
   assert.deepEqual(fake.calls.filter(([scope]) => scope === "back"), [
     ["back", "onClick"],
+    ["back", "show"],
+    ["back", "hide"],
     ["back", "show"],
     ["back", "offClick"],
     ["back", "hide"],
@@ -317,6 +333,7 @@ test("Telegram rolls back a partial multi-event registration failure", async () 
 test("Telegram button subscriptions are reference-counted in both removal orders", async () => {
   const fake = fakeTelegram();
   const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  await adapter.setBackButtonVisible(true);
   const removeBackFirst = await adapter.onBack(() => {});
   const removeBackSecond = await adapter.onBack(() => {});
   const removeSettingsFirst = await adapter.onSettings(() => {});
@@ -362,6 +379,7 @@ test("Telegram serializes a subscription arriving during button hide", async () 
     await releaseHide.promise;
   };
   const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  await adapter.setBackButtonVisible(true);
   const removeFirst = await adapter.onBack(() => {});
 
   const removingFirst = removeFirst();
@@ -397,6 +415,7 @@ test("Telegram retries rejected button hide without repeating offClick", async (
     return originalHide.call(this);
   };
   const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  await adapter.setBackButtonVisible(true);
   const remove = await adapter.onBack(() => {});
 
   const failed = remove();
@@ -426,6 +445,7 @@ test("Telegram button cleanup contains failures and retries removal", async () =
     return originalOffClick.call(this, listener);
   };
   const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  await adapter.setBackButtonVisible(true);
   const remove = await adapter.onBack(() => {});
 
   const failed = remove();
@@ -442,6 +462,85 @@ test("Telegram button cleanup contains failures and retries removal", async () =
   assert.equal(fake.back.listeners.size, 0);
   assert.equal(fake.calls.filter((call) => call[0] === "back" && call[1] === "hide").length, 1);
   assert.equal(remove(), retry);
+});
+
+test("Telegram BackButton visibility failures are redacted and retryable", async () => {
+  const fake = fakeTelegram();
+  const originalShow = fake.back.api.show;
+  let showAttempts = 0;
+  fake.back.api.show = function show() {
+    showAttempts += 1;
+    if (showAttempts === 1) {
+      return Promise.reject(new Error("private BackButton provider detail"));
+    }
+    return originalShow.call(this);
+  };
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  const remove = await adapter.onBack(() => {});
+
+  await assert.rejects(adapter.setBackButtonVisible(true), buttonVisibilityError);
+  assert.equal(showAttempts, 1);
+  await assert.doesNotReject(() => adapter.setBackButtonVisible(true));
+  assert.equal(showAttempts, 2);
+
+  await remove();
+});
+
+test("Telegram retries visibility requested before BackButton subscription", async () => {
+  const fake = fakeTelegram();
+  const originalShow = fake.back.api.show;
+  let showAttempts = 0;
+  fake.back.api.show = function show() {
+    showAttempts += 1;
+    if (showAttempts === 1) {
+      return Promise.reject(new Error("private deferred show failure"));
+    }
+    return originalShow.call(this);
+  };
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+
+  await adapter.setBackButtonVisible(true);
+  const remove = await adapter.onBack(() => {});
+  assert.equal(fake.back.listeners.size, 1);
+  assert.equal(showAttempts, 1);
+  await assert.doesNotReject(() => adapter.setBackButtonVisible(true));
+  assert.equal(showAttempts, 2);
+
+  await remove();
+  assert.equal(fake.back.listeners.size, 0);
+});
+
+test("mobile runtime keeps Telegram BackButton subscribed while home is hidden", async () => {
+  const fake = fakeTelegram();
+  const platform = createTelegramPlatform({
+    webApp: fake.webApp,
+    window: fake.window,
+    navigator: { onLine: true },
+  });
+  const runtime = createMobileRuntime({
+    platform,
+    snapshots: { load: async () => null, save: async () => {} },
+    getState: () => ({}),
+    applySnapshot: async () => {},
+    onRestoreError: async () => {},
+    onNetwork: async () => {},
+    onDeepLink: async () => {},
+    onBack: async () => true,
+    pauseAudio: async () => {},
+    resumeAudio: async () => {},
+    onRuntimeError: async () => {},
+  });
+
+  await runtime.start();
+  assert.equal(fake.back.listeners.size, 1);
+  assert.equal(fake.calls.some((call) => call[0] === "back" && call[1] === "show"), false);
+  await platform.setBackButtonVisible(true);
+  assert.equal(fake.back.listeners.size, 1);
+  assert.equal(fake.calls.filter((call) => call[0] === "back" && call[1] === "show").length, 1);
+
+  await runtime.stop();
+  assert.equal(fake.back.listeners.size, 0);
+  assert.equal(fake.calls.filter((call) => call[0] === "back" && call[1] === "hide").length, 1);
 });
 
 test("Telegram event cleanup contains failures and retries removal", async () => {
@@ -911,6 +1010,8 @@ test("Telegram unavailable and throwing provider APIs remain safe", async () => 
   assert.equal(throwing.getTheme(), null);
   assert.doesNotThrow(() => throwing.getNetworkStatus());
   await assert.doesNotReject(() => throwing.ready());
+  await assert.doesNotReject(() => throwing.setBackButtonVisible(true));
+  await assert.doesNotReject(() => throwing.setBackButtonVisible(false));
   await assert.doesNotReject(() => throwing.setClosingConfirmation(true));
   await assert.doesNotReject(() => throwing.setClosingConfirmation(false));
   await assert.doesNotReject(() => throwing.haptic("hit"));

@@ -40,6 +40,12 @@ test("Telegram Mini App auth is isolated from legacy Telegram login startup", ()
   assert.match(app, /miniapp-unavailable/);
   assert.match(app, /telegramMiniAppClient\.authenticate\(launchData/);
   assert.match(app, /establishAuthSession\(/);
+  assert.match(app, /telegramMainMiniAppUrl/);
+  assert.match(app, /miniapp-expired/);
+  assert.match(app, /auth\.miniAppOpenInTelegram/);
+  assert.match(app, /auth\.miniAppReopen/);
+  assert.match(app, /action: "auth-miniapp-open"/);
+  assert.match(app, /action: "auth-miniapp-reopen"/);
 });
 
 test("runtime settings metadata validates and escapes the shared build identifier", () => {

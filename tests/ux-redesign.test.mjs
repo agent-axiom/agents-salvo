@@ -744,14 +744,31 @@ test("network state renders an offline banner and guards remote work", () => {
   assert.ok(offlineGuard >= 0 && offlineGuard < scriptRequest, "Telegram widget must stop before its offline script request");
 });
 
-test("native back navigation uses ordered overlays and a destructive-leave dialog", () => {
+test("platform back navigation uses ordered dialogs, overlays, and destructive leave", () => {
   const back = sourceBetween("async function handlePlatformBack", "async function requestLeaveBattle");
+  const leaveDialog = back.indexOf("state.leaveBattleDialog");
+  const resultDialog = back.indexOf("isResultModalVisible()");
   const settings = back.indexOf("state.settingsOpen");
   const profile = back.indexOf("state.profileOpen");
   const leaderboard = back.indexOf("state.leaderboardOpen");
-  const detail = back.indexOf('["archive", "replay"]');
+  const coaching = back.indexOf("isTacticalAdvisorVisible()");
+  const replay = back.indexOf('state.screen === "replay"');
+  const archive = back.indexOf('state.screen === "archive"');
   const battle = back.indexOf('["setup", "playing", "pass", "training", "online"]');
-  assert.ok(settings >= 0 && settings < profile && profile < leaderboard && leaderboard < detail && detail < battle);
+  assert.ok(
+    leaveDialog >= 0
+    && leaveDialog < resultDialog
+    && resultDialog < settings
+    && settings < profile
+    && profile < leaderboard
+    && leaderboard < coaching
+    && coaching < replay
+    && replay < archive
+    && archive < battle,
+  );
+  assert.match(back, /cancelLeaveBattle\(\)/);
+  assert.match(back, /closeResultModal\(\)/);
+  assert.match(back, /backToReplayArchive\(\)/);
   assert.match(back, /return false/);
   assert.match(app, /leaveBattleDialog:\s*false/);
   assert.match(app, /function renderLeaveBattleDialog/);

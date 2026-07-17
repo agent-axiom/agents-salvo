@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   parseTelegramStartParam,
+  telegramMainMiniAppUrl,
   telegramReplayUrl,
   telegramRoomInviteUrl,
 } from "../src/telegram-launch.js";
@@ -62,6 +63,10 @@ test("parseTelegramStartParam returns null for unknown, malformed, and hostile v
 
 test("canonical Telegram room and replay links use encoded startapp parameters", () => {
   assert.equal(
+    telegramMainMiniAppUrl("agents_salvo_bot"),
+    "https://t.me/agents_salvo_bot?startapp",
+  );
+  assert.equal(
     telegramRoomInviteUrl("agents_salvo_bot", "ABCD"),
     "https://t.me/agents_salvo_bot?startapp=room_ABCD",
   );
@@ -91,6 +96,7 @@ test("launch links reject invalid bot usernames including URL and credential syn
   ];
 
   for (const botUsername of invalidUsernames) {
+    assert.throws(() => telegramMainMiniAppUrl(botUsername), { name: "TypeError" });
     assert.throws(() => telegramRoomInviteUrl(botUsername, "ABCD"), { name: "TypeError" });
     assert.throws(() => telegramReplayUrl(botUsername, "replay-123"), { name: "TypeError" });
   }

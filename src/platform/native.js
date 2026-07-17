@@ -189,6 +189,7 @@ export function createNativePlatform(plugins = defaultPlugins) {
     )),
     onSettings: async () => () => {},
     ready: async () => {},
+    setBackButtonVisible: async () => {},
     setClosingConfirmation: async () => {},
     getTheme: () => null,
     onThemeChange: async () => () => {},

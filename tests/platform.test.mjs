@@ -823,6 +823,7 @@ test("platform selection is explicit and safe during Node import", () => {
       "onLifecycleChange",
       "onSettings",
       "ready",
+      "setBackButtonVisible",
       "setClosingConfirmation",
       "getTheme",
       "onThemeChange",
@@ -855,6 +856,8 @@ test("web and native expose safe no-op Telegram capabilities", async () => {
     const removeTheme = await adapter.onThemeChange(() => {});
     const removeViewport = await adapter.onViewportChange(() => {});
     await adapter.ready();
+    await adapter.setBackButtonVisible(true);
+    await adapter.setBackButtonVisible(false);
     await adapter.setClosingConfirmation(true);
     removeSettings();
     removeTheme();

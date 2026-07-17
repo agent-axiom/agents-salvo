@@ -68,6 +68,7 @@ import { platform } from "./platform/index.js";
 import { RemoteClient } from "./remote.js";
 import { createTelegramAuthClient } from "./telegram-auth.js";
 import { createTelegramMiniAppAuthClient } from "./telegram-mini-app-auth.js";
+import { telegramMainMiniAppUrl } from "./telegram-launch.js";
 
 export { assetUrl };
 export { menuMusicTracks } from "./core/audio.js";
@@ -106,6 +107,8 @@ let telegramWidgetScheduled = false;
 let platformHydrationRenderScheduled = false;
 let hasExplicitThemePreference = false;
 let closingConfirmationEnabled = null;
+let backButtonVisibility = null;
+let backButtonVisibilityGeneration = 0;
 let leaveDialogReturnFocus = null;
 let pendingLeaveTransition = null;
 const initialRequestedReplayId = replayIdFromSearch(window.location.search);
@@ -453,6 +456,13 @@ function startMobileApp() {
     refreshLeaderboard,
     onError: reportRuntimeError,
   });
+  if (isTelegramMiniApp) {
+    void services.runtimeReady.then(() => {
+      if (backButtonVisibility !== true) return;
+      backButtonVisibility = null;
+      syncBackButtonVisibility();
+    });
+  }
   const capabilityReady = isTelegramMiniApp
     ? services.runtimeReady
     : services.runtimeReady.then(loadTelegramAuthCapability);
@@ -526,7 +536,7 @@ async function authenticateTelegramMiniApp() {
   }
   if (!available || !launchData || !telegramMiniAppClient) {
     state.auth.method = "miniapp-unavailable";
-    state.auth.error = translate("auth.unavailable");
+    state.auth.error = translate("auth.miniAppOpenInTelegram");
     state.auth.loading = false;
     render();
     return false;
@@ -566,9 +576,13 @@ async function authenticateTelegramMiniApp() {
     if (isAbortError(error) || !authOperationIsCurrent(request, controller)) {
       return false;
     }
+    const expired = error?.status === 401;
+    state.auth.method = expired ? "miniapp-expired" : "miniapp";
     const errorKey = error?.authKey === "auth.secureStorageFailed"
       ? "auth.secureStorageFailed"
-      : "auth.unavailable";
+      : expired
+        ? "auth.miniAppReopen"
+        : "auth.unavailable";
     await invalidateAuthSession({
       error: translate(errorKey),
       preserveRequestedId: true,
@@ -696,6 +710,7 @@ function render() {
   } else {
     leaveDialogFocus.deactivate();
   }
+  syncBackButtonVisibility();
   syncClosingConfirmation();
   mountTelegramLoginWidget();
   syncMenuMusic();
@@ -939,6 +954,22 @@ function renderAuthControl() {
     `;
   }
 
+  if (state.auth.method === "miniapp-unavailable") {
+    return renderTelegramMiniAppCommand({
+      action: "auth-miniapp-open",
+      errorKey: "auth.miniAppOpenInTelegram",
+      labelKey: "auth.miniAppOpenCommand",
+    });
+  }
+
+  if (state.auth.method === "miniapp-expired") {
+    return renderTelegramMiniAppCommand({
+      action: "auth-miniapp-reopen",
+      errorKey: "auth.miniAppReopen",
+      labelKey: "auth.miniAppReopenCommand",
+    });
+  }
+
   return `
     <div class="auth-control">
       <span>${translate("auth.label")}</span>
@@ -947,6 +978,40 @@ function renderAuthControl() {
       ${renderTelegramAuthNotices()}
     </div>
   `;
+}
+
+function renderTelegramMiniAppCommand({ action, errorKey, labelKey }) {
+  const command = telegramMainMiniAppLaunchUrl()
+    ? `<button class="secondary-button auth-retry-button" data-action="${action}">${translate(labelKey)}</button>`
+    : "";
+  return `
+    <div class="auth-control">
+      <span>${translate("auth.label")}</span>
+      <p class="status-line auth-unavailable">${escapeHtml(translate(errorKey))}</p>
+      ${command}
+      ${renderTelegramAuthNotices()}
+    </div>
+  `;
+}
+
+function telegramMainMiniAppLaunchUrl() {
+  try {
+    return telegramMainMiniAppUrl(state.auth.telegramBotUsername);
+  } catch {
+    return "";
+  }
+}
+
+async function openTelegramMainMiniApp() {
+  const url = telegramMainMiniAppLaunchUrl();
+  if (!url) return false;
+  try {
+    await platform.openExternalUrl(url);
+    return true;
+  } catch (error) {
+    reportRuntimeError(error);
+    return false;
+  }
 }
 
 function renderTelegramAuthNotices() {
@@ -3034,6 +3099,9 @@ root.addEventListener("click", async (event) => {
   if (action === "auth-telegram-retry") {
     await (isTelegramMiniApp ? authenticateTelegramMiniApp() : loadTelegramAuthCapability());
   }
+  if (action === "auth-miniapp-open" || action === "auth-miniapp-reopen") {
+    await openTelegramMainMiniApp();
+  }
   if (action === "auth-logout") await logoutAuth();
   if (action === "refresh-profile") await refreshProfile();
   if (action === "refresh-leaderboard") await refreshLeaderboard();
@@ -3131,6 +3199,14 @@ function startTraining(scenarioId = state.training.scenarioId) {
 }
 
 async function handlePlatformBack() {
+  if (state.leaveBattleDialog) {
+    cancelLeaveBattle();
+    return true;
+  }
+  if (isResultModalVisible()) {
+    closeResultModal();
+    return true;
+  }
   if (state.settingsOpen) {
     state.settingsOpen = false;
     render();
@@ -3146,7 +3222,16 @@ async function handlePlatformBack() {
     render();
     return true;
   }
-  if (["archive", "replay"].includes(state.screen)) {
+  if (isTacticalAdvisorVisible()) {
+    state.tacticalAdvisorOpen = false;
+    render();
+    return true;
+  }
+  if (state.screen === "replay") {
+    await backToReplayArchive();
+    return true;
+  }
+  if (state.screen === "archive") {
     await goToMenu();
     return true;
   }
@@ -3154,6 +3239,21 @@ async function handlePlatformBack() {
     return requestLeaveBattle();
   }
   return false;
+}
+
+function isResultModalVisible() {
+  const resultKey = currentResultKey();
+  return Boolean(resultKey && state.resultModalDismissed !== resultKey);
+}
+
+function isTacticalAdvisorVisible() {
+  return Boolean(
+    state.tacticalAdvisorOpen
+    && (
+      state.screen === "playing"
+      || (state.screen === "online" && state.online.snapshot)
+    )
+  );
 }
 
 async function requestLeaveBattle(transition = null) {
@@ -3189,6 +3289,35 @@ function syncClosingConfirmation() {
   if (closingConfirmationEnabled === enabled) return;
   closingConfirmationEnabled = enabled;
   observePlatformWrite(platform.setClosingConfirmation(enabled));
+}
+
+function syncBackButtonVisibility() {
+  if (!isTelegramMiniApp || typeof platform.setBackButtonVisible !== "function") return;
+  const enabled = Boolean(
+    state.screen !== "menu"
+    || state.leaveBattleDialog
+    || isResultModalVisible()
+    || state.settingsOpen
+    || state.profileOpen
+    || state.leaderboardOpen
+    || isTacticalAdvisorVisible()
+  );
+  if (backButtonVisibility === enabled) return;
+
+  backButtonVisibility = enabled;
+  const generation = ++backButtonVisibilityGeneration;
+  let operation;
+  try {
+    operation = platform.setBackButtonVisible(enabled);
+  } catch (error) {
+    if (generation === backButtonVisibilityGeneration) backButtonVisibility = null;
+    reportRuntimeError(error);
+    return;
+  }
+  void Promise.resolve(operation).catch((error) => {
+    if (generation === backButtonVisibilityGeneration) backButtonVisibility = null;
+    reportRuntimeError(error);
+  });
 }
 
 function cancelLeaveBattle() {

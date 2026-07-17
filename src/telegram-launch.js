@@ -35,6 +35,14 @@ export function telegramReplayUrl(botUsername, replayId) {
   return telegramLaunchUrl(botUsername, ["replay", replayId].join("_"));
 }
 
+export function telegramMainMiniAppUrl(botUsername) {
+  requireBotUsername(botUsername);
+  const url = new URL("https://t.me/");
+  url.pathname = botUsername;
+  url.search = "?startapp";
+  return url.toString();
+}
+
 function requireBotUsername(botUsername) {
   if (typeof botUsername !== "string" || !botUsernamePattern.test(botUsername)) {
     throw new TypeError("Invalid Telegram bot username");

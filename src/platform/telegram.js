@@ -17,6 +17,7 @@ const colorsByTheme = {
 
 const insetSides = ["top", "right", "bottom", "left"];
 const buttonCleanupErrorMessage = "Telegram button cleanup failed";
+const buttonVisibilityErrorMessage = "Telegram button visibility update failed";
 const eventCleanupErrorMessage = "Telegram event cleanup failed";
 const settingsStorageErrorMessage = "Settings storage unavailable";
 const resolvedCleanup = Promise.resolve();
@@ -144,9 +145,10 @@ async function subscribeEvents(webApp, registrations) {
   return createRetryableCleanup(active, remove, eventCleanupErrorMessage);
 }
 
-function createButtonSubscriptions(getButton) {
+function createButtonController(getButton, { visibilityControlled = false } = {}) {
   let button = null;
   let activeCount = 0;
+  let requestedVisible = !visibilityControlled;
   let visibility = "hidden";
   let visibilityTail = Promise.resolve();
 
@@ -156,29 +158,23 @@ function createButtonSubscriptions(getButton) {
     return button;
   };
 
-  const reconcileVisibility = () => {
+  const reconcileVisibility = (errorMessage) => {
     const transition = visibilityTail.then(async () => {
-      const desiredVisibility = activeCount > 0 ? "visible" : "hidden";
+      const desiredVisibility = activeCount > 0 && requestedVisible ? "visible" : "hidden";
       if (visibility === desiredVisibility) return;
 
-      if (desiredVisibility === "visible") {
-        visibility = await callOptionalAsync(button, "show")
-          ? "visible"
-          : "unknown";
-        return;
-      }
-
-      if (!(await callOptionalAsync(button, "hide"))) {
+      const method = desiredVisibility === "visible" ? "show" : "hide";
+      if (!(await callOptionalAsync(button, method))) {
         visibility = "unknown";
-        throw new Error(buttonCleanupErrorMessage);
+        throw new Error(errorMessage);
       }
-      visibility = "hidden";
+      visibility = desiredVisibility;
     });
     visibilityTail = transition.catch(noOp);
     return transition;
   };
 
-  return async (listener) => {
+  const subscribe = async (listener) => {
     const providerButton = resolveButton();
     const callback = () => invokeListener(listener);
     if (!(await callOptionalAsync(providerButton, "onClick", callback))) {
@@ -186,7 +182,11 @@ function createButtonSubscriptions(getButton) {
     }
 
     activeCount += 1;
-    await reconcileVisibility();
+    try {
+      await reconcileVisibility(buttonVisibilityErrorMessage);
+    } catch {
+      // Keep the listener registered; a later visibility request retries the provider.
+    }
     let listenerRegistered = true;
     let inFlight = null;
     let completed = null;
@@ -204,7 +204,7 @@ function createButtonSubscriptions(getButton) {
           listenerRegistered = false;
           activeCount -= 1;
         }
-        await reconcileVisibility();
+        await reconcileVisibility(buttonCleanupErrorMessage);
         succeeded = true;
       })();
       let tracked;
@@ -216,6 +216,13 @@ function createButtonSubscriptions(getButton) {
       return tracked;
     };
   };
+
+  const setVisible = (enabled) => {
+    requestedVisible = Boolean(enabled);
+    return reconcileVisibility(buttonVisibilityErrorMessage);
+  };
+
+  return { setVisible, subscribe };
 }
 
 export function createTelegramPlatform({
@@ -301,10 +308,11 @@ export function createTelegramPlatform({
     }
   };
 
-  const backButtonSubscriptions = createButtonSubscriptions(
+  const backButtonController = createButtonController(
     () => webApp?.BackButton,
+    { visibilityControlled: true },
   );
-  const settingsButtonSubscriptions = createButtonSubscriptions(
+  const settingsButtonController = createButtonController(
     () => webApp?.SettingsButton,
   );
 
@@ -384,7 +392,7 @@ export function createTelegramPlatform({
     closeExternalUrl: async () => {},
     onDeepLink: async () => noOpCleanup,
     async onBack(listener) {
-      return backButtonSubscriptions(listener);
+      return backButtonController.subscribe(listener);
     },
     async onLifecycleChange(listener) {
       if (!supportsVersion8()) return noOpCleanup;
@@ -394,7 +402,7 @@ export function createTelegramPlatform({
       ]);
     },
     async onSettings(listener) {
-      return settingsButtonSubscriptions(listener);
+      return settingsButtonController.subscribe(listener);
     },
     async ready() {
       await callOptionalAsync(webApp, "ready");
@@ -405,6 +413,9 @@ export function createTelegramPlatform({
       const safeAreaSupported = supportsVersion8();
       updateViewportCss(safeAreaSupported);
       if (safeAreaSupported) await callOptionalAsync(webApp, "requestFullscreen");
+    },
+    async setBackButtonVisible(enabled) {
+      await backButtonController.setVisible(enabled);
     },
     async setClosingConfirmation(enabled) {
       await callOptionalAsync(

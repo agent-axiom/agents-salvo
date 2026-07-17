@@ -50,6 +50,7 @@ export function createWebPlatform({
     onLifecycleChange: async () => () => {},
     onSettings: async () => () => {},
     ready: async () => {},
+    setBackButtonVisible: async () => {},
     setClosingConfirmation: async () => {},
     getTheme: () => null,
     onThemeChange: async () => () => {},
