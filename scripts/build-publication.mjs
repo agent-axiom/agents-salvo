@@ -699,7 +699,11 @@ async function releaseRecoveryClaim(claim) {
   const stats = await inspectRealDirectory(
     claim.path,
     "Build recovery claim path",
+    { allowMissing: true },
   );
+  if (!stats) {
+    return;
+  }
   const owner = await readLockOwner(claim.path, {
     directoryLabel: "Build recovery claim path",
     ownerLabel: "Build recovery claim owner path",

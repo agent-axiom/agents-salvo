@@ -18,6 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { registerHooks } from "node:module";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -164,6 +165,9 @@ function assertNoBuildDebris(output) {
   assert.deepEqual(debris, []);
 }
 
+const publicationFsFault = { current: null };
+let publicationModulePromise;
+
 async function loadPublicationModule() {
   const path = join(root, "scripts/build-publication.mjs");
   assert.equal(
@@ -171,7 +175,104 @@ async function loadPublicationModule() {
     true,
     "build publication recovery module is missing",
   );
-  return import(pathToFileURL(path).href);
+  publicationModulePromise ??= importWithFsFault(path, publicationFsFault);
+  return publicationModulePromise;
+}
+
+let faultingImportSequence = 0;
+
+async function importWithFsFault(path, fault) {
+  faultingImportSequence += 1;
+  const faultKey = `__salvoBuildFsFault${faultingImportSequence}`;
+  const targetUrl = new URL(pathToFileURL(path));
+  globalThis[faultKey] = fault;
+
+  const wrapperSource = `
+    import * as real from "node:fs/promises";
+    const fault = globalThis[${JSON.stringify(faultKey)}];
+    const call = (name, args) => typeof (fault.current ?? fault)[name] === "function"
+      ? (fault.current ?? fault)[name](real, ...args)
+      : real[name](...args);
+    export const cp = (...args) => call("cp", args);
+    export const lstat = (...args) => call("lstat", args);
+    export const mkdir = (...args) => call("mkdir", args);
+    export const mkdtemp = (...args) => call("mkdtemp", args);
+    export const open = (...args) => call("open", args);
+    export const readFile = (...args) => call("readFile", args);
+    export const readdir = (...args) => call("readdir", args);
+    export const realpath = (...args) => call("realpath", args);
+    export const rename = (...args) => call("rename", args);
+    export const rm = (...args) => call("rm", args);
+    export const writeFile = (...args) => call("writeFile", args);
+  `;
+  const wrapperUrl = `data:text/javascript;base64,${Buffer.from(wrapperSource).toString("base64")}`;
+  const hooks = registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (
+        specifier === "node:fs/promises"
+        && context.parentURL === targetUrl.href
+      ) {
+        return { shortCircuit: true, url: wrapperUrl };
+      }
+      return nextResolve(specifier, context);
+    },
+  });
+
+  try {
+    return await import(targetUrl.href);
+  } finally {
+    hooks.deregister();
+    delete globalThis[faultKey];
+  }
+}
+
+async function withPublicationFsFault(fault, callback) {
+  const publication = await loadPublicationModule();
+  assert.equal(publicationFsFault.current, null);
+  publicationFsFault.current = fault;
+  try {
+    return await callback(publication);
+  } finally {
+    publicationFsFault.current = null;
+  }
+}
+
+function filesystemError(code, message = `injected ${code} filesystem failure`) {
+  return Object.assign(new Error(message), { code });
+}
+
+function writeOwner(path, owner) {
+  writeFileSync(path, `${JSON.stringify(owner)}\n`, "utf8");
+}
+
+function deadOwner(token) {
+  return {
+    pid: 2_147_483_647,
+    timestamp: Date.now(),
+    token,
+  };
+}
+
+function liveOwner(token) {
+  return {
+    pid: process.pid,
+    timestamp: Date.now(),
+    token,
+  };
+}
+
+function createDeadLock(paths, token) {
+  mkdirSync(paths.lockPath);
+  const owner = deadOwner(token);
+  writeOwner(paths.lockOwnerPath, owner);
+  return owner;
+}
+
+function createDeadRecoveryClaim(paths, token) {
+  mkdirSync(paths.lockRecoveryPath);
+  const owner = deadOwner(token);
+  writeOwner(join(paths.lockRecoveryPath, "owner.json"), owner);
+  return owner;
 }
 
 test("build emits web and Telegram shells with one shared hashed app and stylesheet", () => {
@@ -451,6 +552,66 @@ test("build rejects a temporary symlink destination that resolves outside temp",
   }
 });
 
+test("build rejects a cyclic destination symlink without creating state", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "salvo-cyclic-build-"));
+  const output = join(temporaryRoot, "loop");
+  symlinkSync("loop", output);
+
+  try {
+    const { result } = build({ output });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /ELOOP|too many symbolic links/i);
+    assert.deepEqual(readdirSync(temporaryRoot), ["loop"]);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("a shell validation failure removes its stage and preserves prior output", async () => {
+  const output = join(root, "dist");
+  const outputExisted = existsSync(output);
+  if (!outputExisted) {
+    mkdirSync(output);
+    writeFileSync(join(output, "prior.txt"), "prior", "utf8");
+  }
+  const before = snapshotDirectory(output);
+  const previousBuildDir = process.env.SALVO_BUILD_DIR;
+  delete process.env.SALVO_BUILD_DIR;
+
+  try {
+    await loadPublicationModule();
+    await assert.rejects(
+      importWithFsFault(join(root, "scripts/build.mjs"), {
+        async readFile(real, path, options) {
+          const source = await real.readFile(path, options);
+          if (
+            basename(path) === "index.html"
+            && basename(dirname(path)).startsWith(".dist.stage-")
+          ) {
+            return source.replace(
+              '<script type="module" src="./app.js"></script>',
+              '<script type="module" src="./missing.js"></script>',
+            );
+          }
+          return source;
+        },
+      }),
+      /application reference must have exactly one occurrence/i,
+    );
+    assert.deepEqual(snapshotDirectory(output), before);
+    assertNoBuildDebris(output);
+  } finally {
+    if (previousBuildDir === undefined) {
+      delete process.env.SALVO_BUILD_DIR;
+    } else {
+      process.env.SALVO_BUILD_DIR = previousBuildDir;
+    }
+    if (!outputExisted) {
+      rmSync(output, { recursive: true, force: true });
+    }
+  }
+});
+
 test("build rejects a symlinked lock without touching its external target", () => {
   const temporaryRoot = mkdtempSync(join(tmpdir(), "salvo-lock-symlink-"));
   const externalRoot = mkdtempSync(join(root, ".salvo-external-lock-"));
@@ -679,6 +840,550 @@ test("an interrupted rename gap restores prior output before replacement", () =>
     assertNoBuildDebris(output);
   } finally {
     rmSync(isolatedRoot, { recursive: true, force: true });
+  }
+});
+
+test("a durable lock owner write failure removes its candidate", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-owner-write-failure-"));
+  const output = join(parent, "dist");
+  const failure = filesystemError("EACCES", "injected owner write denial");
+  let candidatePath;
+
+  try {
+    await withPublicationFsFault(
+      {
+        open(real, path, ...args) {
+          if (basename(dirname(path)).startsWith(".dist.lock.candidate-")) {
+            candidatePath = dirname(path);
+            throw failure;
+          }
+          return real.open(path, ...args);
+        },
+      },
+      async ({ acquireBuildLock }) => {
+        await assert.rejects(
+          acquireBuildLock(output),
+          (error) => error === failure,
+        );
+      },
+    );
+    assert.equal(existsSync(candidatePath), false);
+    assertNoBuildDebris(output);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("stale recovery yields when the inspected lock disappears", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-lock-disappears-"));
+  const output = join(parent, "dist");
+  let lock;
+
+  try {
+    await withPublicationFsFault(
+      {
+        removed: false,
+        async readFile(real, path, ...args) {
+          const source = await real.readFile(path, ...args);
+          if (!this.removed && path === this.ownerPath) {
+            this.removed = true;
+            await real.rm(this.lockPath, { recursive: true, force: true });
+          }
+          return source;
+        },
+      },
+      async (publication) => {
+        const paths = publication.buildStatePaths(output);
+        createDeadLock(paths, "dead-lock-before-disappearance");
+        publicationFsFault.current.lockPath = paths.lockPath;
+        publicationFsFault.current.ownerPath = paths.lockOwnerPath;
+        lock = await publication.acquireBuildLock(output, {
+          retryMs: 5,
+          timeoutMs: 250,
+        });
+        assert.notEqual(lock.owner.token, "dead-lock-before-disappearance");
+        await publication.releaseBuildLock(lock);
+        lock = null;
+      },
+    );
+    assertNoBuildDebris(output);
+  } finally {
+    if (lock) {
+      const { releaseBuildLock } = await loadPublicationModule();
+      await releaseBuildLock(lock).catch(() => {});
+    }
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("stale recovery preserves a replacement lock found after inspection", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-lock-replaced-after-read-"));
+  const output = join(parent, "dist");
+  const replacement = liveOwner("replacement-after-stale-inspection");
+
+  try {
+    await withPublicationFsFault(
+      {
+        replaced: false,
+        async readFile(real, path, ...args) {
+          const source = await real.readFile(path, ...args);
+          if (!this.replaced && path === this.ownerPath) {
+            this.replaced = true;
+            await real.rename(this.lockPath, this.retiredPath);
+            await real.mkdir(this.lockPath);
+            await real.writeFile(this.ownerPath, JSON.stringify(replacement));
+          }
+          return source;
+        },
+      },
+      async (publication) => {
+        const paths = publication.buildStatePaths(output);
+        createDeadLock(paths, "dead-lock-before-replacement");
+        publicationFsFault.current.lockPath = paths.lockPath;
+        publicationFsFault.current.ownerPath = paths.lockOwnerPath;
+        publicationFsFault.current.retiredPath = `${paths.lockPath}.retired`;
+        await assert.rejects(
+          publication.acquireBuildLock(output, {
+            retryMs: 5,
+            timeoutMs: 75,
+          }),
+          /Timed out waiting for build lock/,
+        );
+        assert.deepEqual(
+          JSON.parse(readFileSync(paths.lockOwnerPath, "utf8")),
+          replacement,
+        );
+      },
+    );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("recovery retries when its prepared candidate disappears", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-recovery-candidate-missing-"));
+  const output = join(parent, "dist");
+  let lock;
+
+  try {
+    await withPublicationFsFault(
+      {
+        injected: false,
+        async rename(real, from, to) {
+          if (!this.injected && from.startsWith(this.candidatePrefix)) {
+            this.injected = true;
+            await real.rm(from, { recursive: true, force: true });
+            throw filesystemError("ENOENT");
+          }
+          return real.rename(from, to);
+        },
+      },
+      async (publication) => {
+        const paths = publication.buildStatePaths(output);
+        createDeadLock(paths, "dead-lock-before-candidate-loss");
+        publicationFsFault.current.candidatePrefix =
+          paths.lockRecoveryCandidatePrefix;
+        lock = await publication.acquireBuildLock(output, {
+          retryMs: 5,
+          timeoutMs: 250,
+        });
+        await publication.releaseBuildLock(lock);
+        lock = null;
+      },
+    );
+    assertNoBuildDebris(output);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("recovery propagates a non-contention candidate publication failure", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-recovery-publish-denied-"));
+  const output = join(parent, "dist");
+  const failure = filesystemError("EACCES", "injected recovery publication denial");
+
+  try {
+    await withPublicationFsFault(
+      {
+        rename(real, from, to) {
+          if (from.startsWith(this.candidatePrefix)) {
+            throw failure;
+          }
+          return real.rename(from, to);
+        },
+      },
+      async (publication) => {
+        const paths = publication.buildStatePaths(output);
+        createDeadLock(paths, "dead-lock-before-recovery-denial");
+        publicationFsFault.current.candidatePrefix =
+          paths.lockRecoveryCandidatePrefix;
+        await assert.rejects(
+          publication.acquireBuildLock(output),
+          (error) => error === failure,
+        );
+        assert.equal(existsSync(paths.lockRecoveryPath), false);
+        assert.equal(
+          readdirSync(parent).some((entry) =>
+            entry.startsWith(".dist.lock.recovery-candidate-")),
+          false,
+        );
+      },
+    );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("recovery yields to a winner after candidate rename contention", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-recovery-rename-winner-"));
+  const output = join(parent, "dist");
+  const winner = liveOwner("recovery-rename-winner");
+
+  try {
+    await withPublicationFsFault(
+      {
+        injected: false,
+        async rename(real, from, to) {
+          if (!this.injected && from.startsWith(this.candidatePrefix)) {
+            this.injected = true;
+            await real.mkdir(to);
+            await real.writeFile(join(to, "owner.json"), JSON.stringify(winner));
+            throw filesystemError("EEXIST");
+          }
+          return real.rename(from, to);
+        },
+      },
+      async (publication) => {
+        const paths = publication.buildStatePaths(output);
+        createDeadLock(paths, "dead-lock-before-recovery-winner");
+        publicationFsFault.current.candidatePrefix =
+          paths.lockRecoveryCandidatePrefix;
+        await assert.rejects(
+          publication.acquireBuildLock(output, {
+            retryMs: 5,
+            timeoutMs: 75,
+          }),
+          /Timed out waiting for build lock/,
+        );
+        assert.deepEqual(
+          JSON.parse(
+            readFileSync(join(paths.lockRecoveryPath, "owner.json"), "utf8"),
+          ),
+          winner,
+        );
+      },
+    );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("abandoned recovery quarantine retries a generated-name collision", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-quarantine-collision-"));
+  const output = join(parent, "dist");
+  let lock;
+
+  try {
+    await withPublicationFsFault(
+      {
+        injected: false,
+        rename(real, from, to) {
+          if (
+            !this.injected
+            && from === this.recoveryPath
+            && to.startsWith(this.quarantinePrefix)
+          ) {
+            this.injected = true;
+            throw filesystemError("EEXIST");
+          }
+          return real.rename(from, to);
+        },
+      },
+      async (publication) => {
+        const paths = publication.buildStatePaths(output);
+        createDeadLock(paths, "dead-lock-with-colliding-quarantine");
+        createDeadRecoveryClaim(paths, "dead-recovery-with-name-collision");
+        publicationFsFault.current.recoveryPath = paths.lockRecoveryPath;
+        publicationFsFault.current.quarantinePrefix =
+          paths.lockRecoveryQuarantinePrefix;
+        lock = await publication.acquireBuildLock(output, {
+          retryMs: 5,
+          timeoutMs: 250,
+        });
+        await publication.releaseBuildLock(lock);
+        lock = null;
+      },
+    );
+    assertNoBuildDebris(output);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("abandoned recovery quarantine propagates an unexpected rename failure", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-quarantine-denied-"));
+  const output = join(parent, "dist");
+  const failure = filesystemError("EACCES", "injected quarantine rename denial");
+
+  try {
+    await withPublicationFsFault(
+      {
+        rename(real, from, to) {
+          if (
+            from === this.recoveryPath
+            && to.startsWith(this.quarantinePrefix)
+          ) {
+            throw failure;
+          }
+          return real.rename(from, to);
+        },
+      },
+      async (publication) => {
+        const paths = publication.buildStatePaths(output);
+        createDeadLock(paths, "dead-lock-before-quarantine-denial");
+        createDeadRecoveryClaim(paths, "dead-recovery-before-quarantine-denial");
+        publicationFsFault.current.recoveryPath = paths.lockRecoveryPath;
+        publicationFsFault.current.quarantinePrefix =
+          paths.lockRecoveryQuarantinePrefix;
+        await assert.rejects(
+          publication.acquireBuildLock(output),
+          (error) => error === failure,
+        );
+        assert.equal(existsSync(paths.lockRecoveryPath), true);
+      },
+    );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("a recovery claim refreshed during quarantine is restored", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-quarantine-refresh-"));
+  const output = join(parent, "dist");
+  const refreshed = liveOwner("refreshed-during-quarantine");
+
+  try {
+    await withPublicationFsFault(
+      {
+        async rename(real, from, to) {
+          await real.rename(from, to);
+          if (
+            from === this.recoveryPath
+            && to.startsWith(this.quarantinePrefix)
+          ) {
+            await real.writeFile(join(to, "owner.json"), JSON.stringify(refreshed));
+          }
+        },
+      },
+      async (publication) => {
+        const paths = publication.buildStatePaths(output);
+        createDeadLock(paths, "dead-lock-before-claim-refresh");
+        createDeadRecoveryClaim(paths, "dead-recovery-before-refresh");
+        publicationFsFault.current.recoveryPath = paths.lockRecoveryPath;
+        publicationFsFault.current.quarantinePrefix =
+          paths.lockRecoveryQuarantinePrefix;
+        await assert.rejects(
+          publication.acquireBuildLock(output, {
+            retryMs: 5,
+            timeoutMs: 75,
+          }),
+          /Timed out waiting for build lock/,
+        );
+        assert.deepEqual(
+          JSON.parse(
+            readFileSync(join(paths.lockRecoveryPath, "owner.json"), "utf8"),
+          ),
+          refreshed,
+        );
+      },
+    );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("recovery continues when a refreshed quarantine disappears before restore", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-quarantine-restore-missing-"));
+  const output = join(parent, "dist");
+  let lock;
+
+  try {
+    await withPublicationFsFault(
+      {
+        async rename(real, from, to) {
+          if (
+            from === this.recoveryPath
+            && to.startsWith(this.quarantinePrefix)
+          ) {
+            await real.rename(from, to);
+            await real.writeFile(
+              join(to, "owner.json"),
+              JSON.stringify(liveOwner("refresh-before-disappearance")),
+            );
+            return;
+          }
+          if (
+            from.startsWith(this.quarantinePrefix)
+            && to === this.recoveryPath
+          ) {
+            await real.rm(from, { recursive: true, force: true });
+            throw filesystemError("ENOENT");
+          }
+          return real.rename(from, to);
+        },
+      },
+      async (publication) => {
+        const paths = publication.buildStatePaths(output);
+        createDeadLock(paths, "dead-lock-before-missing-restore");
+        createDeadRecoveryClaim(paths, "dead-recovery-before-missing-restore");
+        publicationFsFault.current.recoveryPath = paths.lockRecoveryPath;
+        publicationFsFault.current.quarantinePrefix =
+          paths.lockRecoveryQuarantinePrefix;
+        lock = await publication.acquireBuildLock(output, {
+          retryMs: 5,
+          timeoutMs: 250,
+        });
+        await publication.releaseBuildLock(lock);
+        lock = null;
+      },
+    );
+    assertNoBuildDebris(output);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("stale recovery preserves a replacement lock installed after its claim", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-lock-replaced-after-claim-"));
+  const output = join(parent, "dist");
+  const replacement = liveOwner("replacement-after-recovery-claim");
+
+  try {
+    await withPublicationFsFault(
+      {
+        claimPublished: false,
+        replaced: false,
+        async lstat(real, path, ...args) {
+          const stats = await real.lstat(path, ...args);
+          if (this.claimPublished && !this.replaced && path === this.lockPath) {
+            this.replaced = true;
+            await real.rename(this.lockPath, this.retiredPath);
+            await real.mkdir(this.lockPath);
+            await real.writeFile(this.ownerPath, JSON.stringify(replacement));
+          }
+          return stats;
+        },
+        async rename(real, from, to) {
+          await real.rename(from, to);
+          if (from.startsWith(this.candidatePrefix) && to === this.recoveryPath) {
+            this.claimPublished = true;
+          }
+        },
+      },
+      async (publication) => {
+        const paths = publication.buildStatePaths(output);
+        createDeadLock(paths, "dead-lock-before-post-claim-replacement");
+        Object.assign(publicationFsFault.current, {
+          candidatePrefix: paths.lockRecoveryCandidatePrefix,
+          lockPath: paths.lockPath,
+          ownerPath: paths.lockOwnerPath,
+          recoveryPath: paths.lockRecoveryPath,
+          retiredPath: `${paths.lockPath}.retired`,
+        });
+        await assert.rejects(
+          publication.acquireBuildLock(output, {
+            retryMs: 5,
+            timeoutMs: 75,
+          }),
+          /Timed out waiting for build lock/,
+        );
+        assert.deepEqual(
+          JSON.parse(readFileSync(paths.lockOwnerPath, "utf8")),
+          replacement,
+        );
+        assert.equal(existsSync(paths.lockRecoveryPath), false);
+      },
+    );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("stale recovery tolerates a lock removed after its claim", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-lock-removed-after-claim-"));
+  const output = join(parent, "dist");
+  let lock;
+
+  try {
+    await withPublicationFsFault(
+      {
+        claimPublished: false,
+        removed: false,
+        async lstat(real, path, ...args) {
+          const stats = await real.lstat(path, ...args);
+          if (this.claimPublished && !this.removed && path === this.lockPath) {
+            this.removed = true;
+            await real.rm(this.lockPath, { recursive: true, force: true });
+          }
+          return stats;
+        },
+        async rename(real, from, to) {
+          await real.rename(from, to);
+          if (from.startsWith(this.candidatePrefix) && to === this.recoveryPath) {
+            this.claimPublished = true;
+          }
+        },
+      },
+      async (publication) => {
+        const paths = publication.buildStatePaths(output);
+        createDeadLock(paths, "dead-lock-before-post-claim-removal");
+        Object.assign(publicationFsFault.current, {
+          candidatePrefix: paths.lockRecoveryCandidatePrefix,
+          lockPath: paths.lockPath,
+          recoveryPath: paths.lockRecoveryPath,
+        });
+        lock = await publication.acquireBuildLock(output, {
+          retryMs: 5,
+          timeoutMs: 250,
+        });
+        await publication.releaseBuildLock(lock);
+        lock = null;
+      },
+    );
+    assertNoBuildDebris(output);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("lock inspection fails closed when owner metadata cannot be read", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "salvo-owner-read-failure-"));
+  const output = join(parent, "dist");
+  const failure = filesystemError("EIO", "injected owner metadata read failure");
+
+  try {
+    await withPublicationFsFault(
+      {
+        readFile(real, path, ...args) {
+          if (path === this.ownerPath) {
+            throw failure;
+          }
+          return real.readFile(path, ...args);
+        },
+      },
+      async (publication) => {
+        const paths = publication.buildStatePaths(output);
+        createDeadLock(paths, "unreadable-dead-lock-owner");
+        publicationFsFault.current.ownerPath = paths.lockOwnerPath;
+        await assert.rejects(
+          publication.acquireBuildLock(output),
+          (error) => error === failure,
+        );
+        assert.equal(existsSync(paths.lockPath), true);
+      },
+    );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
   }
 });
 
