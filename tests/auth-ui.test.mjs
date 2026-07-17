@@ -54,13 +54,15 @@ test("Telegram runtime consumes content safe areas and the stable viewport", () 
   assert.match(styles, /html\[data-runtime="telegram"\] \.modal-backdrop\s*\{[\s\S]*?var\(--salvo-safe-top\)[\s\S]*?var\(--salvo-safe-right\)[\s\S]*?var\(--salvo-safe-bottom\)[\s\S]*?var\(--salvo-safe-left\)/);
 });
 
-test("phone boards fit without horizontal page or board scrolling", () => {
+test("Telegram phone boards fit without changing web and native replay overflow", () => {
   const phoneStyles = styles.slice(styles.indexOf("@media (max-width: 720px)"));
-  assert.match(phoneStyles, /body\s*\{[^}]*overflow-x:\s*clip/);
+  assert.doesNotMatch(phoneStyles, /(?:^|\n)  body\s*\{/);
   assert.match(phoneStyles, /\.board-scroll\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;[^}]*overflow-x:\s*clip/);
   assert.match(phoneStyles, /\.column-headers,[\s\S]*?\.board-grid\s*\{[^}]*minmax\(0,\s*1fr\)/);
-  assert.match(phoneStyles, /\.replay-board-view\s*\{[^}]*overflow-x:\s*clip/);
-  assert.match(phoneStyles, /\.replay-board-view \.board-panel\s*\{[^}]*width:\s*100%/);
+  assert.match(phoneStyles, /html\[data-runtime="telegram"\] \.replay-board-view\s*\{[^}]*overflow-x:\s*clip/);
+  assert.match(phoneStyles, /html\[data-runtime="telegram"\] \.replay-board-view \.board-panel\s*\{[^}]*width:\s*100%/);
+  assert.doesNotMatch(phoneStyles, /(?:^|\n)  \.replay-board-view\s*\{/);
+  assert.doesNotMatch(phoneStyles, /html\[data-runtime="telegram"\] \.replay-board-view \.column-headers,[^}]*font-size/);
 });
 
 test("frontend config exposes the public Telegram bot username only", () => {

@@ -94,6 +94,8 @@ const platform = appPlatform;
 const audio = appAudio;
 const fetch = appFetch;
 const isTelegramMiniApp = platform.getPlatform() === "telegram";
+const telegramUnavailableRoomErrorPattern =
+  /^room (?:(?:is )?full|(?:(?:is|was) )?not found|(?:(?:is|was) )?closed|(?:(?:is|was) )?unavailable)$/i;
 const buildId = validateBuildId(window.SALVO_CONFIG?.buildId);
 const telegramAuthBootstrap = platform.isNative()
   ? { type: "none" }
@@ -2126,7 +2128,9 @@ function renderOnlineLobby() {
         <div class="section-heading">
           <span>${translate("mode.online")}</span>
           <h2>${translate("online.title")}</h2>
-          <p>${isOnlineAuthReady() ? translate("online.authReady") : translate("online.authHint")}</p>
+          <p>${isOnlineAuthReady()
+            ? translate(isTelegramMiniApp ? "auth.miniAppAccountStatus" : "online.authReady")
+            : translate("online.authHint")}</p>
         </div>
         <p class="status-line">${translate(`preset.${state.presetId}.name`)}</p>
         <div class="setup-primary-actions">
@@ -4219,7 +4223,7 @@ async function onlineJoin() {
       state.setupSelectedShipId = firstUnplacedShipId(board);
       render();
     },
-    onError: handleOnlineConnectionError,
+    onError: handleOnlineJoinError,
   });
 }
 
@@ -4239,6 +4243,15 @@ function handleOnlineConnectionError(error) {
   state.online.shareStatus = "";
   state.online.error = error.message;
   render();
+}
+
+function handleOnlineJoinError(error) {
+  const message = String(error?.message ?? "");
+  if (isTelegramMiniApp && telegramUnavailableRoomErrorPattern.test(message.trim())) {
+    handleOnlineConnectionError(new Error(translate("online.roomUnavailable")));
+    return;
+  }
+  handleOnlineConnectionError(error);
 }
 
 async function onlineRematch() {

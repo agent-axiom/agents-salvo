@@ -790,11 +790,26 @@ async function runTelegramLaunchRoutingScenario() {
     await invalidApp.stop();
   }
 
-  for (const failureMessage of ["Room is full", "Room was not found"]) {
+  const roomUnavailableCopy = {
+    ru: "Комната заполнена, закрыта или недоступна. Вернитесь в онлайн-лобби и выберите другую комнату.",
+    "zh-CN": "此房间已满、已关闭或不可用。请返回在线大厅并尝试其他房间。",
+  };
+  const miniAppAccountCopy = {
+    ru: "Аккаунт Telegram Mini App подтверждён. Ваш существующий профиль и онлайн-прогресс доступны.",
+    "zh-CN": "Telegram Mini App 账号已确认。您可以继续使用现有档案和在线进度。",
+  };
+  for (const [language, failureMessage, expectedMessage] of [
+    ["ru", "Room is full", roomUnavailableCopy.ru],
+    ["zh-CN", "Room not found", roomUnavailableCopy["zh-CN"]],
+    ["ru", "Room is closed", roomUnavailableCopy.ru],
+    ["zh-CN", "Room is unavailable", roomUnavailableCopy["zh-CN"]],
+    ["ru", "Room connection unavailable", "Room connection unavailable"],
+  ]) {
     const failedJoin = createAppHarness({
       platformName: "telegram",
       launchData: "signed-failed-room-init-data",
       startParam: "room_ABCD",
+      preferences: resolvedDeferred(language),
       createRemoteClient() {
         return remoteClientHarness({
           async joinRoom() {
@@ -811,12 +826,46 @@ async function runTelegramLaunchRoutingScenario() {
     const failedJoinApp = bootSalvoApp(failedJoin.dependencies);
     await failedJoinApp.startup.done;
     assert.equal(failedJoinApp.getState().screen, "online", failureMessage);
+    assert.equal(failedJoinApp.getState().language, language, failureMessage);
     assert.equal(failedJoinApp.getState().online.roomCodeInput, "ABCD", failureMessage);
     assert.equal(failedJoinApp.getState().online.session, null, failureMessage);
-    assert.equal(failedJoinApp.getState().online.error, failureMessage, failureMessage);
-    assert.match(failedJoin.root.innerHTML, new RegExp(failureMessage), failureMessage);
+    assert.equal(failedJoinApp.getState().online.error, expectedMessage, failureMessage);
+    assert.ok(failedJoin.root.innerHTML.includes(expectedMessage), failureMessage);
+    assert.ok(failedJoin.root.innerHTML.includes(miniAppAccountCopy[language]), failureMessage);
+    if (expectedMessage !== failureMessage) {
+      assert.equal(failedJoin.root.innerHTML.includes(failureMessage), false, failureMessage);
+    }
     await failedJoinApp.stop();
   }
+
+  const webFailureMessage = "Room is full";
+  const webFailure = createAppHarness({
+    secureSession: resolvedDeferred("web-session-token"),
+    createRemoteClient() {
+      return remoteClientHarness({
+        async joinRoom() {
+          throw new Error(webFailureMessage);
+        },
+      });
+    },
+    fetchResponse(url) {
+      if (url.endsWith("/auth/me")) {
+        return response({ user: telegramUser("web-room-user", "Web Room Captain") });
+      }
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const webFailureApp = bootSalvoApp(webFailure.dependencies);
+  await webFailureApp.startup.done;
+  await webFailure.root.click("show-online");
+  await webFailure.root.change("room-code", { value: "ABCD" });
+  await webFailure.root.click("online-join");
+  assert.equal(webFailureApp.getState().online.error, webFailureMessage);
+  assert.match(webFailure.root.innerHTML, /Telegram confirmed\. Online results are saved to your profile\./);
+  assert.doesNotMatch(webFailure.root.innerHTML, /Telegram Mini App account confirmed/);
+  await webFailureApp.stop();
 
   const guardedAuth = deferred();
   const guardedJoins = [];

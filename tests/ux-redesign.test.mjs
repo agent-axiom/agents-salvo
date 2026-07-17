@@ -619,9 +619,7 @@ test("archived replay board chooser is a valid focus-preserving segmented contro
   assert.doesNotMatch(archiveRow, /aria-label="\$\{translate\("archive\.watchReplay"\)\}"/);
 });
 
-test("archived boards stay fluid on phones while desktop contains oversized replays", () => {
-  const phoneCss = css.slice(css.indexOf("@media (max-width: 720px)"));
-
+test("16x16 archived boards scroll inside the replay at 320px while 10x10 stays fluid", () => {
   assert.match(app, /archivedReplayBoardMinWidth\(frame\.boards\[viewerPlayerId\]\.size\)/);
   assert.match(app, /archivedReplayBoardMinWidth\(frame\.boards\[opponentPlayerId\]\.size\)/);
   assert.match(app, /--replay-board-min-width:/);
@@ -629,9 +627,6 @@ test("archived boards stay fluid on phones while desktop contains oversized repl
   assert.match(cssRule(".replay-board-view"), /overflow-x:\s*auto/);
   assert.match(cssRule(".replay-board-view"), /overscroll-behavior-inline:\s*contain/);
   assert.match(cssRule(".replay-board-view .board-panel"), /width:\s*max\(100%,\s*var\(--replay-board-min-width,\s*0px\)\)/);
-  assert.match(phoneCss, /\.replay-board-view\s*\{[^}]*overflow-x:\s*clip/);
-  assert.match(phoneCss, /\.replay-board-view \.board-panel\s*\{[^}]*width:\s*100%/);
-  assert.doesNotMatch(phoneCss, /\.replay-board-view \.column-headers,[\s\S]*?font-size/);
   assert.match(css, /@media \(max-width:\s*360px\)[\s\S]*?\.archive-screen,[\s\S]*?\.archived-replay-screen\s*\{[\s\S]*?padding:\s*8px;/);
   assert.match(cssRule(".archived-replay-screen"), /overflow-x:\s*clip/);
 });

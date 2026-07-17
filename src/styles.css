@@ -4485,10 +4485,6 @@ html[data-runtime="telegram"] .modal-backdrop {
 }
 
 @media (max-width: 720px) {
-  body {
-    overflow-x: clip;
-  }
-
   button,
   select,
   input,
@@ -4827,12 +4823,12 @@ html[data-runtime="telegram"] .modal-backdrop {
     grid-template-columns: 1fr;
   }
 
-  .replay-board-view {
+  html[data-runtime="telegram"] .replay-board-view {
     overflow-x: clip;
     scrollbar-gutter: auto;
   }
 
-  .replay-board-view .board-panel {
+  html[data-runtime="telegram"] .replay-board-view .board-panel {
     width: 100%;
     max-width: 100%;
   }
