@@ -59,7 +59,12 @@ function layoutHtml() {
         <script>
           const rect = (selector) => { const node = document.querySelector(selector); const box = node.getBoundingClientRect(); return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width, height: box.height, scrollWidth: node.scrollWidth, clientWidth: node.clientWidth, overflowX: getComputedStyle(node).overflowX }; };
           const measure = () => ({
-            document: { scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth },
+            document: {
+              width: window.innerWidth,
+              height: window.innerHeight,
+              scrollWidth: document.documentElement.scrollWidth,
+              clientWidth: document.documentElement.clientWidth,
+            },
             setup: rect("#setup-10 .board-scroll"),
             replay: rect("#replay-16"),
             board: rect("#inside-replay-16 .board-scroll"),
@@ -75,55 +80,80 @@ function layoutHtml() {
     </html>`;
 }
 
-async function dumpDom(executable, args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const timeout = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        child.kill("SIGKILL");
-        reject(new Error(`Chrome did not dump layout DOM within 30 seconds: ${stderr}`));
-      }
-    }, 30_000);
-    const settle = (callback) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      callback();
-    };
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-      if (stdout.includes("data-layout=")) {
-        settle(() => {
-          child.kill("SIGTERM");
-          resolve(stdout);
-        });
-      }
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.once("error", (error) => settle(() => reject(error)));
-    child.once("close", (code, signal) => {
-      if (!settled) {
-        settle(() => reject(new Error(`Chrome exited before dumping layout DOM (code ${code}, signal ${signal}): ${stderr}`)));
-      }
-    });
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForDevToolsPort(profile) {
+  const activePortFile = join(profile, "DevToolsActivePort");
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (existsSync(activePortFile)) {
+      const [port] = readFileSync(activePortFile, "utf8").trim().split("\n");
+      if (/^\d+$/.test(port)) return Number(port);
+    }
+    await delay(50);
+  }
+  throw new Error("Chrome did not expose a DevTools port");
+}
+
+async function openCdp(port) {
+  const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
+  const target = targets.find((candidate) => candidate.type === "page");
+  assert.ok(target?.webSocketDebuggerUrl, "Chrome did not expose a page DevTools target");
+
+  const socket = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve, { once: true });
+    socket.addEventListener("error", reject, { once: true });
   });
+
+  let nextId = 1;
+  const requests = new Map();
+  const events = new Map();
+  socket.addEventListener("message", ({ data }) => {
+    const message = JSON.parse(data);
+    if (message.id) {
+      const request = requests.get(message.id);
+      if (!request) return;
+      requests.delete(message.id);
+      if (message.error) request.reject(new Error(`${message.error.message} (${request.method})`));
+      else request.resolve(message.result);
+      return;
+    }
+    const listeners = events.get(message.method) ?? [];
+    events.delete(message.method);
+    listeners.forEach((listener) => listener(message.params));
+  });
+
+  return {
+    call(method, params = {}) {
+      return new Promise((resolve, reject) => {
+        const id = nextId;
+        nextId += 1;
+        requests.set(id, { method, resolve, reject });
+        socket.send(JSON.stringify({ id, method, params }));
+      });
+    },
+    waitFor(method) {
+      return new Promise((resolve) => {
+        events.set(method, [...(events.get(method) ?? []), resolve]);
+      });
+    },
+    close() {
+      socket.close();
+    },
+  };
 }
 
 async function measure() {
   const directory = mkdtempSync(join(tmpdir(), "salvo-layout-"));
   const file = join(directory, "layout.html");
   const profile = join(directory, "chrome-profile");
+  let child = null;
+  let cdp = null;
   try {
     writeFileSync(file, layoutHtml());
-    const output = await dumpDom(chromeBinary(), [
+    child = spawn(chromeBinary(), [
       "--headless=new",
       "--no-sandbox",
       "--disable-gpu",
@@ -136,15 +166,33 @@ async function measure() {
       "--password-store=basic",
       "--use-mock-keychain",
       `--user-data-dir=${profile}`,
-      "--window-size=360,800",
-      "--virtual-time-budget=100",
-      "--dump-dom",
-      pathToFileURL(file).href,
-    ], { encoding: "utf8", maxBuffer: 2 * 1024 * 1024 });
-    const match = output.match(/data-layout="([^"]+)"/);
-    assert.ok(match, "Chrome did not return layout data");
-    return JSON.parse(Buffer.from(match[1], "base64").toString("utf8"));
+      "--remote-debugging-port=0",
+      "--remote-allow-origins=*",
+      "about:blank",
+    ], { stdio: "ignore" });
+    const cdpPort = await waitForDevToolsPort(profile);
+    cdp = await openCdp(cdpPort);
+    await cdp.call("Page.enable");
+    await cdp.call("Emulation.setDeviceMetricsOverride", {
+      width: 360,
+      height: 800,
+      deviceScaleFactor: 1,
+      mobile: false,
+      screenWidth: 360,
+      screenHeight: 800,
+    });
+    const loaded = cdp.waitFor("Page.loadEventFired");
+    await cdp.call("Page.navigate", { url: pathToFileURL(file).href });
+    await loaded;
+    const { result } = await cdp.call("Runtime.evaluate", {
+      expression: "document.documentElement.dataset.layout",
+      returnByValue: true,
+    });
+    assert.equal(typeof result.value, "string", "Chrome did not return layout data");
+    return JSON.parse(Buffer.from(result.value, "base64").toString("utf8"));
   } finally {
+    cdp?.close();
+    child?.kill("SIGTERM");
     rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
@@ -153,6 +201,8 @@ test("phone layout uses computed Telegram board and safe-modal geometry without 
   const { telegram, web, android: native } = await measure();
 
   for (const layout of [telegram, web, native]) {
+    assert.equal(layout.document.width, 360, "layout test must use a 360px CSS viewport");
+    assert.equal(layout.document.height, 800, "layout test must use an 800px CSS viewport");
     assert.ok(layout.setup.scrollWidth <= layout.setup.clientWidth, "10x10 setup board must fit its phone container");
   }
   assert.ok(telegram.document.scrollWidth <= telegram.document.clientWidth, "Telegram page must not overflow horizontally");
