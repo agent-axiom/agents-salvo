@@ -16,8 +16,14 @@ const colorsByTheme = {
 };
 
 const insetSides = ["top", "right", "bottom", "left"];
+const settingsStorageErrorMessage = "Settings storage unavailable";
+const resolvedCleanup = Promise.resolve();
 
 function noOp() {}
+
+function noOpCleanup() {
+  return resolvedCleanup;
+}
 
 function readOr(getValue, fallback) {
   try {
@@ -70,46 +76,120 @@ function readInsets(webApp, name) {
   ]));
 }
 
-function isTelegramUrl(value) {
+function normalizeTelegramUrl(value) {
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && (
-      url.hostname === "t.me" || url.hostname === "telegram.me"
-    );
+    if (url.protocol !== "https:") return null;
+    if (url.hostname === "telegram.me") url.hostname = "t.me";
+    if (url.hostname !== "t.me") return null;
+    return url.toString();
   } catch {
-    return false;
+    return null;
   }
 }
 
-function subscribeEvents(webApp, registrations) {
-  const active = [];
-  for (const [name, listener] of registrations) {
-    if (callOptional(webApp, "onEvent", name, listener)) {
-      active.push([name, listener]);
-    }
-  }
+function createRetryableCleanup(entries, remove) {
+  let active = [...entries];
+  let inFlight = null;
+  let completed = null;
 
-  let removed = false;
   return () => {
-    if (removed) return;
-    removed = true;
-    for (const [name, listener] of active) {
-      callOptional(webApp, "offEvent", name, listener);
-    }
+    if (completed) return completed;
+    if (inFlight) return inFlight;
+
+    const attempt = (async () => {
+      const failed = [];
+      for (const entry of active) {
+        if (!(await remove(entry))) failed.push(entry);
+      }
+      active = failed;
+    })();
+    let tracked;
+    tracked = attempt.finally(() => {
+      inFlight = null;
+      if (active.length === 0) completed = tracked;
+    });
+    inFlight = tracked;
+    return tracked;
   };
 }
 
-function subscribeButton(button, listener) {
-  const callback = () => invokeListener(listener);
-  if (!callOptional(button, "onClick", callback)) return noOp;
-  callOptional(button, "show");
+async function subscribeEvents(webApp, registrations) {
+  const active = [];
+  const remove = ([name, listener]) => (
+    callOptionalAsync(webApp, "offEvent", name, listener)
+  );
+  for (const [name, listener] of registrations) {
+    if (!(await callOptionalAsync(webApp, "onEvent", name, listener))) {
+      if (active.length === 0) return noOpCleanup;
+      const cleanup = createRetryableCleanup(active, remove);
+      await cleanup();
+      return cleanup;
+    }
+    active.push([name, listener]);
+  }
+  if (active.length === 0) return noOpCleanup;
 
-  let removed = false;
-  return () => {
-    if (removed) return;
-    removed = true;
-    callOptional(button, "offClick", callback);
-    callOptional(button, "hide");
+  return createRetryableCleanup(active, remove);
+}
+
+function createButtonSubscriptions(getButton) {
+  let button = null;
+  let activeCount = 0;
+  let visible = false;
+  let showInFlight = null;
+
+  const resolveButton = () => {
+    if (button) return button;
+    button = readOr(getButton, null);
+    return button;
+  };
+
+  const ensureShown = async () => {
+    if (visible) return;
+    if (!showInFlight) {
+      showInFlight = callOptionalAsync(button, "show").then((shown) => {
+        if (shown) visible = true;
+      }).finally(() => {
+        showInFlight = null;
+      });
+    }
+    await showInFlight;
+  };
+
+  return async (listener) => {
+    const providerButton = resolveButton();
+    const callback = () => invokeListener(listener);
+    if (!(await callOptionalAsync(providerButton, "onClick", callback))) {
+      return noOpCleanup;
+    }
+
+    activeCount += 1;
+    await ensureShown();
+    let active = true;
+    let inFlight = null;
+    let completed = null;
+
+    return () => {
+      if (completed) return completed;
+      if (inFlight) return inFlight;
+
+      const attempt = (async () => {
+        if (!(await callOptionalAsync(providerButton, "offClick", callback))) return;
+        active = false;
+        activeCount -= 1;
+        if (activeCount === 0 && visible) {
+          if (await callOptionalAsync(providerButton, "hide")) visible = false;
+        }
+      })();
+      let tracked;
+      tracked = attempt.finally(() => {
+        inFlight = null;
+        if (!active) completed = tracked;
+      });
+      inFlight = tracked;
+      return tracked;
+    };
   };
 }
 
@@ -188,6 +268,21 @@ export function createTelegramPlatform({
     };
   };
 
+  const useSettingsStorage = async (operation) => {
+    try {
+      return await operation(settingsStorage);
+    } catch {
+      throw new Error(settingsStorageErrorMessage);
+    }
+  };
+
+  const backButtonSubscriptions = createButtonSubscriptions(
+    () => webApp?.BackButton,
+  );
+  const settingsButtonSubscriptions = createButtonSubscriptions(
+    () => webApp?.SettingsButton,
+  );
+
   return {
     isNative: () => false,
     getPlatform: () => "telegram",
@@ -256,24 +351,25 @@ export function createTelegramPlatform({
       }
     },
     async openExternalUrl(url) {
-      const method = isTelegramUrl(url) ? "openTelegramLink" : "openLink";
-      if (await callOptionalAsync(webApp, method, url)) return;
+      const telegramUrl = normalizeTelegramUrl(url);
+      const method = telegramUrl ? "openTelegramLink" : "openLink";
+      if (await callOptionalAsync(webApp, method, telegramUrl ?? url)) return;
       await callOptionalAsync(host, "open", url, "_blank", "noopener,noreferrer");
     },
     closeExternalUrl: async () => {},
-    onDeepLink: async () => noOp,
+    onDeepLink: async () => noOpCleanup,
     async onBack(listener) {
-      return subscribeButton(readOr(() => webApp?.BackButton, null), listener);
+      return backButtonSubscriptions(listener);
     },
     async onLifecycleChange(listener) {
-      if (!supportsVersion8()) return noOp;
+      if (!supportsVersion8()) return noOpCleanup;
       return subscribeEvents(webApp, [
         ["activated", () => invokeListener(listener, { active: true })],
         ["deactivated", () => invokeListener(listener, { active: false })],
       ]);
     },
     async onSettings(listener) {
-      return subscribeButton(readOr(() => webApp?.SettingsButton, null), listener);
+      return settingsButtonSubscriptions(listener);
     },
     async ready() {
       await callOptionalAsync(webApp, "ready");
@@ -321,16 +417,29 @@ export function createTelegramPlatform({
     configureSystemBars: async () => {},
     settings: {
       async get(key) {
-        const value = readOr(() => settingsStorage?.getItem(`salvo.${key}`), null);
-        return typeof value === "string" ? value : null;
+        return useSettingsStorage(async (provider) => {
+          if (typeof provider?.getItem !== "function") {
+            throw new Error(settingsStorageErrorMessage);
+          }
+          const value = await provider.getItem(`salvo.${key}`);
+          return typeof value === "string" ? value : null;
+        });
       },
       async set(key, value) {
-        const storageKey = `salvo.${key}`;
-        if (value === null) {
-          callOptional(settingsStorage, "removeItem", storageKey);
-          return;
-        }
-        callOptional(settingsStorage, "setItem", storageKey, String(value));
+        return useSettingsStorage(async (provider) => {
+          const storageKey = `salvo.${key}`;
+          if (value === null) {
+            if (typeof provider?.removeItem !== "function") {
+              throw new Error(settingsStorageErrorMessage);
+            }
+            await provider.removeItem(storageKey);
+            return;
+          }
+          if (typeof provider?.setItem !== "function") {
+            throw new Error(settingsStorageErrorMessage);
+          }
+          await provider.setItem(storageKey, String(value));
+        });
       },
     },
     secureSession: {

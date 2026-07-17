@@ -1,6 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createLocalBattleSnapshotStore } from "../src/core/local-battle-snapshot.js";
 import { createTelegramPlatform } from "../src/platform/telegram.js";
+
+const settingsStorageError = {
+  name: "Error",
+  message: "Settings storage unavailable",
+};
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
 
 function storageHarness() {
   const calls = [];
@@ -212,8 +228,8 @@ test("Telegram BackButton and SettingsButton show, deliver, and clean up", async
   assert.equal(backs, 1);
   assert.equal(settings, 1);
 
-  removeBack();
-  removeSettings();
+  await removeBack();
+  await removeSettings();
   assert.equal(fake.back.listeners.size, 0);
   assert.equal(fake.settings.listeners.size, 0);
   assert.deepEqual(fake.calls.filter(([scope]) => scope === "back"), [
@@ -228,6 +244,159 @@ test("Telegram BackButton and SettingsButton show, deliver, and clean up", async
     ["settings", "offClick"],
     ["settings", "hide"],
   ]);
+});
+
+test("Telegram awaits rejected event and button registrations", async () => {
+  const fake = fakeTelegram();
+  const eventRegistration = deferred();
+  const buttonRegistration = deferred();
+  fake.webApp.onEvent = () => eventRegistration.promise;
+  fake.back.api.onClick = () => buttonRegistration.promise;
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  let eventSettled = false;
+  let buttonSettled = false;
+
+  const eventSetup = adapter.onThemeChange(() => {});
+  const buttonSetup = adapter.onBack(() => {});
+  void eventSetup.then(() => {
+    eventSettled = true;
+  });
+  void buttonSetup.then(() => {
+    buttonSettled = true;
+  });
+  await Promise.resolve();
+  assert.equal(eventSettled, false);
+  assert.equal(buttonSettled, false);
+  assert.equal(fake.calls.some((call) => call[0] === "back" && call[1] === "show"), false);
+
+  eventRegistration.reject(new Error("private event registration failure"));
+  buttonRegistration.reject(new Error("private button registration failure"));
+  const removeEvent = await eventSetup;
+  const removeButton = await buttonSetup;
+  await assert.doesNotReject(() => removeEvent());
+  await assert.doesNotReject(() => removeButton());
+  assert.equal(fake.back.listeners.size, 0);
+  assert.equal(fake.calls.some((call) => call[0] === "back" && call[1] === "show"), false);
+  assert.equal(fake.calls.some((call) => call[0] === "offEvent"), false);
+});
+
+test("Telegram rolls back a partial multi-event registration failure", async () => {
+  const fake = fakeTelegram();
+  const originalOnEvent = fake.webApp.onEvent;
+  fake.webApp.onEvent = function onEvent(name, listener) {
+    if (name === "deactivated") {
+      return Promise.reject(new Error("private second registration failure"));
+    }
+    return originalOnEvent.call(this, name, listener);
+  };
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  const lifecycle = [];
+
+  const remove = await adapter.onLifecycleChange((state) => lifecycle.push(state));
+  assert.equal(fake.events.get("activated").size, 0);
+  assert.equal(fake.events.has("deactivated"), false);
+  fake.emit("activated");
+  assert.deepEqual(lifecycle, []);
+  await assert.doesNotReject(() => remove());
+  assert.equal(fake.calls.filter((call) => (
+    call[0] === "offEvent" && call[1] === "activated"
+  )).length, 1);
+});
+
+test("Telegram button subscriptions are reference-counted in both removal orders", async () => {
+  const fake = fakeTelegram();
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  const removeBackFirst = await adapter.onBack(() => {});
+  const removeBackSecond = await adapter.onBack(() => {});
+  const removeSettingsFirst = await adapter.onSettings(() => {});
+  const removeSettingsSecond = await adapter.onSettings(() => {});
+
+  assert.equal(fake.back.listeners.size, 2);
+  assert.equal(fake.settings.listeners.size, 2);
+  assert.equal(fake.calls.filter((call) => call[0] === "back" && call[1] === "show").length, 1);
+  assert.equal(fake.calls.filter((call) => call[0] === "settings" && call[1] === "show").length, 1);
+
+  const backFirst = removeBackFirst();
+  assert.equal(removeBackFirst(), backFirst);
+  await backFirst;
+  assert.equal(fake.back.listeners.size, 1);
+  assert.equal(fake.calls.filter((call) => call[0] === "back" && call[1] === "hide").length, 0);
+  const backSecond = removeBackSecond();
+  assert.equal(removeBackSecond(), backSecond);
+  await backSecond;
+  assert.equal(fake.back.listeners.size, 0);
+  assert.equal(fake.calls.filter((call) => call[0] === "back" && call[1] === "hide").length, 1);
+  assert.equal(removeBackFirst(), backFirst);
+  assert.equal(removeBackSecond(), backSecond);
+
+  const settingsSecond = removeSettingsSecond();
+  assert.equal(removeSettingsSecond(), settingsSecond);
+  await settingsSecond;
+  assert.equal(fake.settings.listeners.size, 1);
+  assert.equal(fake.calls.filter((call) => call[0] === "settings" && call[1] === "hide").length, 0);
+  const settingsFirst = removeSettingsFirst();
+  assert.equal(removeSettingsFirst(), settingsFirst);
+  await settingsFirst;
+  assert.equal(fake.settings.listeners.size, 0);
+  assert.equal(fake.calls.filter((call) => call[0] === "settings" && call[1] === "hide").length, 1);
+});
+
+test("Telegram button cleanup contains failures and retries removal", async () => {
+  const fake = fakeTelegram();
+  const originalOffClick = fake.back.api.offClick;
+  let attempts = 0;
+  fake.back.api.offClick = function offClick(listener) {
+    attempts += 1;
+    if (attempts === 1) {
+      return Promise.reject(new Error("private button removal failure"));
+    }
+    return originalOffClick.call(this, listener);
+  };
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  const remove = await adapter.onBack(() => {});
+
+  const failed = remove();
+  assert.equal(remove(), failed);
+  await assert.doesNotReject(() => failed);
+  assert.equal(fake.back.listeners.size, 1);
+  assert.equal(fake.calls.filter((call) => call[0] === "back" && call[1] === "hide").length, 0);
+
+  const retry = remove();
+  assert.notEqual(retry, failed);
+  assert.equal(remove(), retry);
+  await retry;
+  assert.equal(attempts, 2);
+  assert.equal(fake.back.listeners.size, 0);
+  assert.equal(fake.calls.filter((call) => call[0] === "back" && call[1] === "hide").length, 1);
+  assert.equal(remove(), retry);
+});
+
+test("Telegram event cleanup contains failures and retries removal", async () => {
+  const fake = fakeTelegram();
+  const originalOffEvent = fake.webApp.offEvent;
+  let attempts = 0;
+  fake.webApp.offEvent = function offEvent(name, listener) {
+    attempts += 1;
+    if (attempts === 1) {
+      return Promise.reject(new Error("private event removal failure"));
+    }
+    return originalOffEvent.call(this, name, listener);
+  };
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  const remove = await adapter.onThemeChange(() => {});
+
+  const failed = remove();
+  assert.equal(remove(), failed);
+  await assert.doesNotReject(() => failed);
+  assert.equal(fake.events.get("themeChanged").size, 1);
+
+  const retry = remove();
+  assert.notEqual(retry, failed);
+  assert.equal(remove(), retry);
+  await retry;
+  assert.equal(attempts, 2);
+  assert.equal(fake.events.get("themeChanged").size, 0);
+  assert.equal(remove(), retry);
 });
 
 test("Telegram lifecycle and theme events map and remove listeners", async () => {
@@ -246,8 +415,8 @@ test("Telegram lifecycle and theme events map and remove listeners", async () =>
   assert.deepEqual(lifecycle, [{ active: false }, { active: true }]);
   assert.deepEqual(themes, ["light"]);
 
-  removeLifecycle();
-  removeTheme();
+  await removeLifecycle();
+  await removeTheme();
   assert.equal(fake.events.get("activated").size, 0);
   assert.equal(fake.events.get("deactivated").size, 0);
   assert.equal(fake.events.get("themeChanged").size, 0);
@@ -265,7 +434,7 @@ test("Telegram gates lifecycle events below version 8.0", async () => {
   fake.emit("activated");
   fake.emit("deactivated");
   assert.deepEqual(lifecycle, []);
-  assert.doesNotThrow(remove);
+  await assert.doesNotReject(() => remove());
 });
 
 test("Telegram viewport events expose state and update safe-area CSS variables", async () => {
@@ -313,7 +482,7 @@ test("Telegram viewport events expose state and update safe-area CSS variables",
     contentSafeAreaInset: { top: 30, right: 31, bottom: 32, left: 33 },
   });
 
-  remove();
+  await remove();
   for (const name of [
     "viewportChanged",
     "safeAreaChanged",
@@ -379,7 +548,7 @@ test("Telegram gates fullscreen and safe-area APIs below version 8.0", async () 
   assert.equal(safeAreaReads, 0);
   assert.equal(fake.css.has("--tg-safe-area-inset-top"), false);
   assert.equal(fake.css.get("--tg-viewport-height"), "640px");
-  remove();
+  await remove();
 });
 
 test("Telegram maps semantic haptics and ignores unsupported feedback", async () => {
@@ -438,12 +607,17 @@ test("Telegram shares natively, copies on failure, and routes external links", a
   assert.equal(shareUrl.searchParams.get("text"), payload.text);
 
   await adapter.openExternalUrl("https://t.me/agents_salvo_bot");
+  await adapter.openExternalUrl("https://telegram.me/agents_salvo_bot?startapp=room_ABCD");
   await adapter.openExternalUrl("https://salvo.test/privacy");
   assert.ok(fake.calls.some((call) => (
     call[0] === "telegram-link" && call[1] === "https://t.me/agents_salvo_bot"
   )));
   assert.ok(fake.calls.some((call) => (
     call[0] === "link" && call[1] === "https://salvo.test/privacy"
+  )));
+  assert.ok(fake.calls.some((call) => (
+    call[0] === "telegram-link"
+    && call[1] === "https://t.me/agents_salvo_bot?startapp=room_ABCD"
   )));
 
   fake.webApp.openTelegramLink = () => {
@@ -487,7 +661,37 @@ test("Telegram preferences are prefixed while secure sessions stay in memory", a
   assert.equal(await nextLaunch.secureSession.get(), "");
 });
 
-test("Telegram creation tolerates inaccessible global localStorage", (t) => {
+test("Telegram settings reject blocked and quota storage with a stable error", async () => {
+  const fake = fakeTelegram();
+  const adapter = createTelegramPlatform({
+    webApp: fake.webApp,
+    window: fake.window,
+    storage: {
+      getItem() {
+        throw new Error("private blocked-storage detail");
+      },
+      setItem() {
+        return Promise.reject(new DOMException(
+          "private quota detail",
+          "QuotaExceededError",
+        ));
+      },
+      removeItem() {
+        throw new Error("private removal detail");
+      },
+    },
+  });
+
+  await assert.rejects(adapter.settings.get("theme"), settingsStorageError);
+  await assert.rejects(adapter.settings.set("theme", "dark"), settingsStorageError);
+  await assert.rejects(adapter.settings.set("theme", null), settingsStorageError);
+
+  const snapshots = createLocalBattleSnapshotStore(adapter.settings);
+  await assert.rejects(snapshots.load(), settingsStorageError);
+  await assert.rejects(snapshots.clear(), settingsStorageError);
+});
+
+test("Telegram creation tolerates inaccessible global localStorage", async (t) => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   t.after(() => {
     if (previous) {
@@ -503,7 +707,13 @@ test("Telegram creation tolerates inaccessible global localStorage", (t) => {
     },
   });
 
-  assert.doesNotThrow(() => createTelegramPlatform({ webApp: {} }));
+  let adapter;
+  assert.doesNotThrow(() => {
+    adapter = createTelegramPlatform({ webApp: {} });
+  });
+  await assert.rejects(adapter.settings.get("theme"), settingsStorageError);
+  await assert.rejects(adapter.settings.set("theme", "dark"), settingsStorageError);
+  await assert.rejects(adapter.settings.set("theme", null), settingsStorageError);
 });
 
 test("Telegram unavailable and throwing provider APIs remain safe", async () => {
@@ -577,8 +787,9 @@ test("Telegram unavailable and throwing provider APIs remain safe", async () => 
   assert.deepEqual(await throwing.share({ text: "x", url: "https://t.me/test" }), {
     shared: false,
   });
-  assert.equal(await throwing.settings.get("theme"), null);
-  await assert.doesNotReject(() => throwing.settings.set("theme", "dark"));
+  await assert.rejects(throwing.settings.get("theme"), settingsStorageError);
+  await assert.rejects(throwing.settings.set("theme", "dark"), settingsStorageError);
+  await assert.rejects(throwing.settings.set("theme", null), settingsStorageError);
 
   for (const subscribe of [
     throwing.onNetworkChange,
@@ -590,6 +801,6 @@ test("Telegram unavailable and throwing provider APIs remain safe", async () => 
     throwing.onViewportChange,
   ]) {
     const remove = await subscribe(() => {});
-    assert.doesNotThrow(remove);
+    await assert.doesNotReject(async () => remove());
   }
 });
