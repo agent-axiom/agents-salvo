@@ -113,7 +113,57 @@ test("Telegram OIDC start requires configuration and strict platform JSON", asyn
   );
   assert.equal(oversized.status, 400);
   assert.deepEqual(await oversized.json(), { error: "Invalid request" });
+
+  const strictBodyCases = [
+    new Request("https://worker.test/auth/telegram/mobile/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": "2048" },
+      body: JSON.stringify({ platform: "web" }),
+    }),
+    new Request("https://worker.test/auth/telegram/mobile/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    }),
+    new Request("https://worker.test/auth/telegram/mobile/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "[]",
+    }),
+  ];
+  for (const request of strictBodyCases) {
+    const response = await worker.fetch(request, env);
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "Invalid request" });
+  }
   assert.equal(db.queryOne("SELECT COUNT(*) AS count FROM telegram_oidc_flows").count, 0);
+});
+
+test("Telegram OIDC start and callback redact unavailable service state", async () => {
+  const storageSecret = "sensitive-d1-failure";
+  const start = await postJson(
+    "/auth/telegram/mobile/start",
+    { platform: "web" },
+    oidcEnv({
+      prepare() {
+        throw new Error(storageSecret);
+      },
+    }),
+  );
+  const startBody = await start.text();
+  assert.equal(start.status, 503);
+  assert.deepEqual(JSON.parse(startBody), { error: "Telegram OIDC unavailable" });
+  assertRedacted(startBody, [storageSecret, clientSecret]);
+
+  const state = "s".repeat(43);
+  const code = "sensitive-callback-code";
+  const callback = await worker.fetch(
+    new Request(`https://worker.test/auth/telegram/mobile/callback?state=${state}&code=${code}`),
+    {},
+  );
+  const location = callback.headers.get("Location");
+  assert.equal(callback.status, 302);
+  assert.equal(location, `${canonicalWebTarget}?auth_error=telegram`);
+  assertRedacted(location, [state, code]);
 });
 
 test("Telegram OIDC start persists only the state hash and schedules bounded cleanup", async (t) => {
@@ -237,6 +287,28 @@ test("Telegram OIDC callback rejects expired, missing, and malformed flow inputs
   const expired = await startFlow(db, "android");
   db.execute("UPDATE telegram_oidc_flows SET expires_at = ?", epochSeconds() - 1);
   const sensitiveCode = "callback-secret-code";
+
+  const missingCode = await startFlow(db, "web");
+  const missingCodeResponse = await worker.fetch(
+    new Request(`https://worker.test/auth/telegram/mobile/callback?state=${missingCode.state}`),
+    oidcEnv(db),
+  );
+  assert.equal(missingCodeResponse.status, 302);
+  assert.equal(missingCodeResponse.headers.get("Location"), `${canonicalWebTarget}?auth_error=telegram`);
+  assertRedacted(missingCodeResponse.headers.get("Location"), [missingCode.state, clientSecret]);
+
+  const oversizedCode = await startFlow(db, "ios");
+  const oversizedCodeValue = "x".repeat(4_097);
+  const oversizedCodeResponse = await worker.fetch(
+    new Request(
+      `https://worker.test/auth/telegram/mobile/callback?state=${oversizedCode.state}&code=${oversizedCodeValue}`,
+    ),
+    oidcEnv(db),
+  );
+  assert.equal(oversizedCodeResponse.status, 302);
+  assert.equal(oversizedCodeResponse.headers.get("Location"), "salvo://open/auth/error");
+  assertRedacted(oversizedCodeResponse.headers.get("Location"), [oversizedCode.state, oversizedCodeValue, clientSecret]);
+
   const cases = [
     `/auth/telegram/mobile/callback?state=${expired.state}&code=${sensitiveCode}`,
     `/auth/telegram/mobile/callback?state=malformed.state&code=${sensitiveCode}`,
@@ -251,6 +323,39 @@ test("Telegram OIDC callback rejects expired, missing, and malformed flow inputs
     assertRedacted(response.headers.get("Location"), [expired.state, sensitiveCode, clientSecret]);
   }
   assert.equal(db.queryOne("SELECT COUNT(*) AS count FROM telegram_login_tickets").count, 0);
+});
+
+test("Telegram OIDC redeem rejects unavailable storage and corrupt stored identities generically", async (t) => {
+  const ticket = base64Url(Uint8Array.from({ length: 32 }, (_, index) => index + 1));
+  const unavailable = await postJson("/auth/telegram/mobile/redeem", { ticket }, {});
+  const unavailableBody = await unavailable.text();
+  assert.equal(unavailable.status, 401);
+  assert.deepEqual(JSON.parse(unavailableBody), { error: "Telegram authentication failed" });
+  assertRedacted(unavailableBody, [ticket]);
+
+  const db = memoryD1(t);
+  const identitySecret = "corrupt-stored-identity";
+  const now = epochSeconds();
+  db.execute(
+    `INSERT INTO telegram_login_tickets
+      (ticket_hash, user_json, created_at, expires_at, consumed_at)
+    VALUES (?, ?, ?, ?, NULL)`,
+    await sha256Base64Url(ticket),
+    JSON.stringify({ ...telegramUser(), id: "", identitySecret }),
+    now,
+    now + 300,
+  );
+
+  const corrupt = await postJson("/auth/telegram/mobile/redeem", { ticket }, oidcEnv(db));
+  const corruptBody = await corrupt.text();
+  assert.equal(corrupt.status, 401);
+  assert.deepEqual(JSON.parse(corruptBody), { error: "Telegram authentication failed" });
+  assertRedacted(corruptBody, [ticket, identitySecret, clientSecret]);
+  assert.notEqual(
+    db.queryOne("SELECT consumed_at FROM telegram_login_tickets WHERE ticket_hash = ?", await sha256Base64Url(ticket))
+      .consumed_at,
+    null,
+  );
 });
 
 test("Telegram OIDC redeem returns a hashed opaque session and consumes the ticket once", async (t) => {

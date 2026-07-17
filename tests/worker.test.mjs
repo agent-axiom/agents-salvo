@@ -238,6 +238,13 @@ test("worker handles CORS, not found, and room routing", async () => {
   assert.equal(notFoundResponse.status, 404);
   assert.deepEqual(await notFoundResponse.json(), { error: "Not found" });
 
+  const invalidRoomRoute = await worker.fetch(
+    new Request("https://worker.test/rooms/x/join", { method: "POST" }),
+    {},
+  );
+  assert.equal(invalidRoomRoute.status, 400);
+  assert.deepEqual(await invalidRoomRoute.json(), { error: "Invalid room code" });
+
   const namespace = new FakeBattleRoomNamespace();
   const joinResponse = await worker.fetch(
     new Request("https://worker.test/rooms/ab12/join", { method: "POST" }),
@@ -372,6 +379,39 @@ test("worker returns auth errors for invalid Telegram login payloads", async () 
 
   assert.equal(response.status, 401);
   assert.deepEqual(await response.json(), { error: "Telegram payload is incomplete" });
+});
+
+test("worker redacts Telegram session persistence failures", async () => {
+  const botToken = "123456:sensitive-bot-token";
+  const payload = {
+    id: "42",
+    first_name: "Ivan",
+    username: "ivan",
+    auth_date: String(Math.floor(Date.now() / 1000)),
+  };
+  payload.hash = await signTelegramPayload(payload, botToken);
+
+  const response = await worker.fetch(
+    new Request("https://worker.test/auth/telegram", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+    { TELEGRAM_BOT_TOKEN: botToken, DB: new FailingD1() },
+  );
+
+  const body = await response.text();
+  assert.equal(response.status, 401);
+  assert.deepEqual(JSON.parse(body), { error: "Telegram authentication failed" });
+  assert.equal(body.includes(botToken), false);
+  assert.equal(body.includes(payload.hash), false);
+});
+
+test("worker handles unavailable leaderboard storage as a bounded route error", async () => {
+  const response = await worker.fetch(new Request("https://worker.test/leaderboard"), {});
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Profile storage is not configured" });
 });
 
 test("BattleRoom rejects invalid room auth tokens as unauthorized responses", async () => {
@@ -632,6 +672,16 @@ test("BattleRoom accepts WebSocket connections and removes closed sessions", asy
 
     FakeSocketPair.last.server.dispatch("close", {});
     assert.equal(room.sessions.size, 0);
+
+    const errorResponse = await room.fetch(
+      new Request("https://worker.test/rooms/SOCKET/socket?playerId=p1&token=p1-token", {
+        headers: { Upgrade: "websocket" },
+      }),
+    );
+    assert.equal(errorResponse.status, 101);
+    assert.equal(room.sessions.size, 1);
+    FakeSocketPair.last.server.dispatch("error", {});
+    assert.equal(room.sessions.size, 0);
   } finally {
     restore();
   }
@@ -694,6 +744,10 @@ test("BattleRoom places fleets, starts games, and reports setup message errors",
     await errorRoom.handleMessage("session", JSON.stringify({ type: "placeFleet", board: p1Board, presetId: "quick" }));
     await errorRoom.handleMessage("session", "{bad-json");
     await errorRoom.handleMessage("session", JSON.stringify({ type: "fire", coordinate: { row: 0, col: 0 } }));
+    await errorRoom.handleMessage(
+      "session",
+      JSON.stringify({ type: "requestRematch", board: p1Board, presetId: "quick" }),
+    );
   } finally {
     globalThis.WebSocket = previousErrorWebSocket;
   }
@@ -701,6 +755,7 @@ test("BattleRoom places fleets, starts games, and reports setup message errors",
   assert.equal(errorSent[0].message, "Room uses a different battle format");
   assert.match(errorSent[1].message, /Expected property name or '\}' in JSON at position 1/);
   assert.equal(errorSent[2].message, "Game has not started");
+  assert.equal(errorSent[3].message, "Rematch is available after a finished game");
 });
 
 test("BattleRoom canonically rebuilds setup boards and fire coordinates", async () => {
@@ -748,6 +803,84 @@ test("BattleRoom canonically rebuilds setup boards and fire coordinates", async 
     JSON.stringify({ outbox: await archiveOutboxEntries(storage), deadLetters: await archiveDeadLetterEntries(storage) }),
     /p1-token|roomToken|clientState/,
   );
+});
+
+test("BattleRoom rejects malformed setup state and canonically rebuilds marker-enabled boards", async () => {
+  const validQuickBoard = randomlyPlaceSetup(gamePresets.quick, () => 0.24);
+  const wrongSize = structuredClone(validQuickBoard);
+  wrongSize.size -= 1;
+  const missingArrays = structuredClone(validQuickBoard);
+  delete missingArrays.markers;
+  const incompleteFleet = structuredClone(validQuickBoard);
+  incompleteFleet.ships.pop();
+  const wrongShipIdentity = structuredClone(validQuickBoard);
+  wrongShipIdentity.ships[0].id = "unexpected-ship";
+  const missingShipCells = structuredClone(validQuickBoard);
+  missingShipCells.ships[0].cells = [];
+  const noncanonicalShip = structuredClone(validQuickBoard);
+  noncanonicalShip.ships[0].cells.reverse();
+  const invalidCoordinate = structuredClone(validQuickBoard);
+  invalidCoordinate.ships[0].cells[0].row = 0.5;
+  const cases = [
+    [wrongSize, "Invalid board size"],
+    [missingArrays, "Invalid board setup"],
+    [incompleteFleet, "A complete legal setup is required"],
+    [wrongShipIdentity, "A complete legal setup is required"],
+    [missingShipCells, "Ship cells are invalid"],
+    [noncanonicalShip, "Ship cells must be contiguous and canonical"],
+    [invalidCoordinate, "Invalid coordinate"],
+  ];
+  const storage = new MemoryStorage({
+    room: {
+      code: "MALFORMED",
+      players: { p1: { token: "p1-token", board: null, user: null }, p2: null },
+      presetId: "quick",
+      game: null,
+    },
+  });
+  const room = new BattleRoom({ storage });
+  const errors = [];
+  const previousWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = { OPEN: 1 };
+  try {
+    room.sessions.set("p1", { playerId: "p1", socket: recordingSocket(errors) });
+    for (const [board, expectedMessage] of cases) {
+      await room.handleMessage("p1", JSON.stringify({ type: "placeFleet", board, presetId: "quick" }));
+      assert.equal(errors.at(-1).message, expectedMessage);
+      assert.equal((await storage.get("room")).players.p1.board, null);
+    }
+
+    const validPerelmanBoard = randomlyPlaceSetup(gamePresets.perelman, () => 0.48);
+    const invalidMarker = structuredClone(validPerelmanBoard);
+    invalidMarker.markers[0].type = "sweeper";
+    const markerStorage = new MemoryStorage({
+      room: {
+        code: "MARKERS",
+        players: { p1: { token: "p1-token", board: null, user: null }, p2: null },
+        presetId: "perelman",
+        game: null,
+      },
+    });
+    const markerRoom = new BattleRoom({ storage: markerStorage });
+    markerRoom.sessions.set("p1", { playerId: "p1", socket: recordingSocket(errors) });
+
+    await markerRoom.handleMessage(
+      "p1",
+      JSON.stringify({ type: "placeFleet", board: invalidMarker, presetId: "perelman" }),
+    );
+    assert.equal(errors.at(-1).message, "A complete legal setup is required");
+    assert.equal((await markerStorage.get("room")).players.p1.board, null);
+
+    await markerRoom.handleMessage(
+      "p1",
+      JSON.stringify({ type: "placeFleet", board: validPerelmanBoard, presetId: "perelman" }),
+    );
+    const savedMarkers = (await markerStorage.get("room")).players.p1.board.markers;
+    assert.deepEqual(savedMarkers, validPerelmanBoard.markers);
+    assert.notEqual(savedMarkers, validPerelmanBoard.markers);
+  } finally {
+    globalThis.WebSocket = previousWebSocket;
+  }
 });
 
 test("BattleRoom restarts a finished online room when both players request a rematch", async () => {
@@ -1098,6 +1231,32 @@ test("BattleRoom schedules an alarm before atomically persisting a finished room
   assert.ok(scheduleIndex < transactionEnd);
 });
 
+test("BattleRoom reuses an existing archive outbox job without replacing it", async () => {
+  const state = finishedOnlineRoom();
+  const existingDueAt = 900_000;
+  const existingJob = archiveJobFixture(state.replayId);
+  existingJob.retry.nextAttemptAt = existingDueAt;
+  const outboxKey = `replayArchiveOutbox:${state.replayId}`;
+  const scheduleKey = archiveScheduleKey(existingDueAt, state.replayId);
+  const storage = new MemoryStorage({
+    room: state,
+    [outboxKey]: existingJob,
+    [scheduleKey]: { replayId: state.replayId, dueAt: existingDueAt },
+  });
+  const db = new RecordingD1();
+  const room = new BattleRoom({ storage }, { DB: db });
+  storage.operations.length = 0;
+
+  await room.recordFinishedOnlineBattle(state);
+
+  assert.equal(db.replays.length, 1);
+  assert.equal(db.matches.length, 2);
+  assert.equal((await storage.get("room")).replayRecordedAt, state.finishedAt);
+  assert.equal(storage.operations.includes(`put:${outboxKey}`), false);
+  assert.equal(await storage.get(outboxKey), undefined);
+  assert.equal(await storage.get(scheduleKey), undefined);
+});
+
 test("BattleRoom alarm recovers a finished unrecorded room without a schedule job", async () => {
   const state = finishedOnlineRoom();
   const storage = new MemoryStorage({ room: state });
@@ -1113,11 +1272,38 @@ test("BattleRoom alarm recovers a finished unrecorded room without a schedule jo
   assert.equal(await archiveScheduleEntries(storage), 0);
 });
 
+test("BattleRoom alarm removes orphaned due schedules and clears the alarm", async () => {
+  const dueAt = 1_000_000;
+  const replayId = "00000000-0000-4000-8000-000000000404";
+  const scheduleKey = archiveScheduleKey(dueAt, replayId);
+  const storage = new MemoryStorage({
+    [scheduleKey]: { replayId, dueAt },
+  });
+  const room = new BattleRoom({ storage }, { DB: new RecordingD1() });
+  const originalNow = Date.now;
+  Date.now = () => dueAt;
+  try {
+    await room.alarm();
+  } finally {
+    Date.now = originalNow;
+  }
+
+  assert.equal(await storage.get(scheduleKey), undefined);
+  assert.equal(await archiveScheduleEntries(storage), 0);
+  assert.equal(storage.alarmAt, undefined);
+  assert.equal(storage.operations.includes(`delete:${scheduleKey}`), true);
+});
+
 test("BattleRoom terminal payload errors preserve and broadcast the finished result without retrying", async () => {
   const state = finishedOnlineRoom();
   state.players.p1.user.sessionSecret = "must-not-survive";
   state.players.p2.user.accessToken = "must-not-survive-either";
   state.game.players.p1.board.ships[0].cells[0].sessionSecret = "nested-terminal-secret";
+  state.game.players.p1.board.markers.push({
+    id: "mine-1",
+    type: "mine",
+    cell: { row: 0, col: 1, sessionSecret: "marker-terminal-secret" },
+  });
   state.game = { ...state.game, phase: "playing", winnerId: null, presetId: "" };
   state.replayId = undefined;
   state.finishedAt = undefined;
@@ -1147,12 +1333,43 @@ test("BattleRoom terminal payload errors preserve and broadcast the finished res
   assert.equal(deadLetter.classification, "invalid_payload");
   assert.equal(deadLetter.terminalData.players.p1.user.id, "1");
   assert.equal(deadLetter.terminalData.game.players.p1.board.size, 2);
+  assert.deepEqual(deadLetter.terminalData.game.players.p1.board.markers, [
+    { id: "mine-1", type: "mine", cell: { row: 0, col: 1 } },
+  ]);
   assert.ok(Array.isArray(deadLetter.terminalData.game.log));
   const serializedDeadLetter = JSON.stringify(deadLetter);
-  assert.doesNotMatch(serializedDeadLetter, /sessionSecret|accessToken|must-not-survive|nested-terminal-secret/);
+  assert.doesNotMatch(
+    serializedDeadLetter,
+    /sessionSecret|accessToken|must-not-survive|nested-terminal-secret|marker-terminal-secret/,
+  );
   assert.doesNotMatch(serializedDeadLetter, /p1-token|p2-token/);
   assert.equal(await archiveScheduleEntries(storage), 0);
   assert.equal(storage.alarmAt, undefined);
+});
+
+test("BattleRoom terminal recovery preserves a missing game as null", async () => {
+  const replayId = "00000000-0000-4000-8000-000000000405";
+  const storage = new MemoryStorage();
+  const room = new BattleRoom({ storage });
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    await room.persistTerminalPayloadFailure(
+      {
+        replayId,
+        finishedAt: "2026-07-11T12:00:00.000Z",
+        players: { p1: null, p2: null },
+        game: null,
+      },
+      new Error("Malformed durable room state"),
+    );
+  } finally {
+    console.error = originalError;
+  }
+
+  const [deadLetter] = await archiveDeadLetterEntries(storage);
+  assert.equal(deadLetter.classification, "invalid_payload");
+  assert.equal(deadLetter.terminalData.game, null);
 });
 
 test("BattleRoom can validate and requeue a repaired invalid-payload dead letter", async () => {
@@ -1170,10 +1387,31 @@ test("BattleRoom can validate and requeue a repaired invalid-payload dead letter
   }
 
   const repairedEnvelope = archiveJobFixture(state.replayId).envelope;
-  await assert.rejects(
-    room.requeueArchiveDeadLetter(state.replayId, { ...repairedEnvelope, playerMatches: [] }),
-    /invalid/i,
-  );
+  const duplicateSide = structuredClone(repairedEnvelope);
+  duplicateSide.playerMatches[1].playerId = "p1";
+  const mismatchedIdentity = structuredClone(repairedEnvelope);
+  mismatchedIdentity.playerMatches[0].user.id = "mismatched-user";
+  const invalidMatchLink = structuredClone(repairedEnvelope);
+  invalidMatchLink.playerMatches[0].payload.id = "wrong-match-id";
+  const negativeStats = structuredClone(repairedEnvelope);
+  negativeStats.playerMatches[0].payload.playerShots = -1;
+  const excessiveAccuracy = structuredClone(repairedEnvelope);
+  excessiveAccuracy.playerMatches[0].payload.accuracy = 101;
+  const invalidRepairs = [
+    {},
+    { ...repairedEnvelope, playerMatches: [] },
+    duplicateSide,
+    mismatchedIdentity,
+    invalidMatchLink,
+    negativeStats,
+    excessiveAccuracy,
+  ];
+  for (const invalidRepair of invalidRepairs) {
+    await assert.rejects(
+      room.requeueArchiveDeadLetter(state.replayId, invalidRepair),
+      /Repaired replay envelope is invalid/,
+    );
+  }
   assert.equal(await room.requeueArchiveDeadLetter(state.replayId, repairedEnvelope), true);
   await room.drainArchiveOutbox();
   assert.equal(db.replays.length, 1);
@@ -1182,6 +1420,42 @@ test("BattleRoom can validate and requeue a repaired invalid-payload dead letter
   await room.drainArchiveOutbox();
   assert.equal(db.replays.length, 1);
   assert.equal(db.matches.length, 2);
+});
+
+test("BattleRoom rejects incompatible dead-letter requeue modes without mutation", async () => {
+  const invalidPayloadId = "00000000-0000-4000-8000-000000000406";
+  const repairForbiddenId = "00000000-0000-4000-8000-000000000407";
+  const missingEnvelopeId = "00000000-0000-4000-8000-000000000408";
+  const storage = new MemoryStorage({
+    [`replayArchiveDeadLetter:${invalidPayloadId}`]: {
+      replayId: invalidPayloadId,
+      classification: "invalid_payload",
+      envelope: null,
+    },
+    [`replayArchiveDeadLetter:${repairForbiddenId}`]: {
+      replayId: repairForbiddenId,
+      classification: "retry_exhausted",
+      envelope: archiveJobFixture(repairForbiddenId).envelope,
+    },
+    [`replayArchiveDeadLetter:${missingEnvelopeId}`]: {
+      replayId: missingEnvelopeId,
+      classification: "configuration",
+      envelope: null,
+    },
+  });
+  const room = new BattleRoom({ storage });
+
+  assert.equal(await room.requeueArchiveDeadLetter(invalidPayloadId), false);
+  await assert.rejects(
+    room.requeueArchiveDeadLetter(repairForbiddenId, archiveJobFixture(repairForbiddenId).envelope),
+    /repaired envelope is only valid for invalid payload dead letters/i,
+  );
+  assert.equal(await room.requeueArchiveDeadLetter(missingEnvelopeId), false);
+
+  assert.equal((await archiveDeadLetterEntries(storage)).length, 3);
+  assert.deepEqual(await archiveOutboxEntries(storage), []);
+  assert.equal(await archiveScheduleEntries(storage), 0);
+  assert.equal(storage.alarmAt, undefined);
 });
 
 test("BattleRoom missing replay participants are terminal without retry", async () => {
