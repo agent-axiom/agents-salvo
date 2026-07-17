@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = resolve(import.meta.dirname, "..");
@@ -717,6 +718,203 @@ test("a dead lock owner is recovered and replaced with owner metadata", async ()
     await releaseBuildLock(lock);
     assert.equal(existsSync(lockPath), false);
   } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("a paused lock candidate cannot overlap another published lock", async () => {
+  const {
+    acquireBuildLock,
+    buildStatePaths,
+    releaseBuildLock,
+  } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-candidate-lock-"));
+  const output = join(parent, "dist");
+  const { lockPath } = buildStatePaths(output);
+  let resumeCandidate;
+  const candidateGate = new Promise((resolveGate) => {
+    resumeCandidate = resolveGate;
+  });
+  let reportCandidateReady;
+  const candidateReady = new Promise((resolveReady) => {
+    reportCandidateReady = resolveReady;
+  });
+  let firstLock = null;
+  let secondLock = null;
+  const firstLockPromise = acquireBuildLock(output, {
+    async onCandidateReady({ candidatePath, owner, ownerPath }) {
+      assert.equal(existsSync(lockPath), false);
+      assert.equal(candidatePath.startsWith(`${lockPath}.candidate-`), true);
+      assert.deepEqual(JSON.parse(readFileSync(ownerPath, "utf8")), owner);
+      reportCandidateReady();
+      await candidateGate;
+    },
+    retryMs: 5,
+    timeoutMs: 500,
+  }).then((lock) => {
+    firstLock = lock;
+    return lock;
+  });
+
+  try {
+    await Promise.race([
+      candidateReady,
+      firstLockPromise.then(() => {
+        throw new Error("first lock published before its candidate resumed");
+      }),
+      delay(250).then(() => {
+        throw new Error("lock candidate was not reported ready");
+      }),
+    ]);
+
+    secondLock = await acquireBuildLock(output, {
+      retryMs: 5,
+      timeoutMs: 500,
+    });
+    resumeCandidate();
+    await delay(40);
+    assert.equal(firstLock, null, "both lock owners became active");
+
+    await releaseBuildLock(secondLock);
+    secondLock = null;
+    firstLock = await firstLockPromise;
+    await releaseBuildLock(firstLock);
+    firstLock = null;
+    assertNoBuildDebris(output);
+  } finally {
+    resumeCandidate();
+    if (secondLock) {
+      await releaseBuildLock(secondLock).catch(() => {});
+    }
+    if (!firstLock) {
+      firstLock = await Promise.race([
+        firstLockPromise.catch(() => null),
+        delay(300).then(() => null),
+      ]);
+    }
+    if (firstLock) {
+      await releaseBuildLock(firstLock).catch(() => {});
+    }
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("a paused recovery candidate cannot claim a replacement lock", async () => {
+  const {
+    acquireBuildLock,
+    buildStatePaths,
+    releaseBuildLock,
+  } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-recovery-candidate-"));
+  const output = join(parent, "dist");
+  const { lockOwnerPath, lockPath, lockRecoveryPath } = buildStatePaths(output);
+  mkdirSync(lockPath);
+  writeFileSync(
+    lockOwnerPath,
+    JSON.stringify({
+      pid: 2_147_483_647,
+      timestamp: Date.now(),
+      token: "dead-recovery-owner",
+    }),
+    "utf8",
+  );
+  let resumeCandidate;
+  const candidateGate = new Promise((resolveGate) => {
+    resumeCandidate = resolveGate;
+  });
+  let reportCandidateReady;
+  const candidateReady = new Promise((resolveReady) => {
+    reportCandidateReady = resolveReady;
+  });
+  let firstLock = null;
+  let secondLock = null;
+  const firstLockPromise = acquireBuildLock(output, {
+    async onRecoveryCandidateReady({ candidatePath, owner, ownerPath }) {
+      assert.equal(existsSync(lockRecoveryPath), false);
+      assert.equal(
+        candidatePath.startsWith(`${lockPath}.recovery-candidate-`),
+        true,
+      );
+      assert.deepEqual(JSON.parse(readFileSync(ownerPath, "utf8")), owner);
+      reportCandidateReady();
+      await candidateGate;
+    },
+    retryMs: 5,
+    timeoutMs: 500,
+  }).then((lock) => {
+    firstLock = lock;
+    return lock;
+  });
+
+  try {
+    await Promise.race([
+      candidateReady,
+      firstLockPromise.then(() => {
+        throw new Error("stale lock recovered before its candidate resumed");
+      }),
+      delay(250).then(() => {
+        throw new Error("recovery candidate was not reported ready");
+      }),
+    ]);
+
+    secondLock = await acquireBuildLock(output, {
+      retryMs: 5,
+      timeoutMs: 500,
+    });
+    resumeCandidate();
+    await delay(40);
+    assert.equal(firstLock, null, "both recovery owners became active");
+
+    await releaseBuildLock(secondLock);
+    secondLock = null;
+    firstLock = await firstLockPromise;
+    await releaseBuildLock(firstLock);
+    firstLock = null;
+    assertNoBuildDebris(output);
+  } finally {
+    resumeCandidate();
+    if (secondLock) {
+      await releaseBuildLock(secondLock).catch(() => {});
+    }
+    if (!firstLock) {
+      firstLock = await Promise.race([
+        firstLockPromise.catch(() => null),
+        delay(300).then(() => null),
+      ]);
+    }
+    if (firstLock) {
+      await releaseBuildLock(firstLock).catch(() => {});
+    }
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("an old owner cannot release a replacement lock", async () => {
+  const {
+    acquireBuildLock,
+    buildStatePaths,
+    releaseBuildLock,
+  } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-replaced-lock-"));
+  const output = join(parent, "dist");
+  const { lockOwnerPath, lockPath } = buildStatePaths(output);
+  const oldLock = await acquireBuildLock(output);
+  const retiredPath = `${lockPath}.retired-${oldLock.owner.token}`;
+  renameSync(lockPath, retiredPath);
+  let replacementLock = null;
+  try {
+    replacementLock = await acquireBuildLock(output);
+    await assert.rejects(
+      releaseBuildLock(oldLock),
+      /Build lock ownership changed before release/,
+    );
+    const currentOwner = JSON.parse(readFileSync(lockOwnerPath, "utf8"));
+    assert.equal(currentOwner.token, replacementLock.owner.token);
+  } finally {
+    if (replacementLock) {
+      await releaseBuildLock(replacementLock);
+    }
+    rmSync(retiredPath, { recursive: true, force: true });
     rmSync(parent, { recursive: true, force: true });
   }
 });
