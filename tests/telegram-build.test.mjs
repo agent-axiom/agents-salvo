@@ -11,8 +11,10 @@ import {
   readFileSync,
   realpathSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -114,6 +116,13 @@ function makeIsolatedProject() {
     join(root, "scripts/build.mjs"),
     join(isolatedRoot, "scripts/build.mjs"),
   );
+  const publicationModule = join(root, "scripts/build-publication.mjs");
+  if (existsSync(publicationModule)) {
+    copyFileSync(
+      publicationModule,
+      join(isolatedRoot, "scripts/build-publication.mjs"),
+    );
+  }
   symlinkSync(
     join(root, "node_modules"),
     join(isolatedRoot, "node_modules"),
@@ -146,10 +155,22 @@ function assertNoBuildDebris(output) {
   const debris = readdirSync(dirname(output)).filter(
     (entry) =>
       entry === `.${name}.lock`
+      || entry.startsWith(`.${name}.lock.`)
       || entry.startsWith(`.${name}.stage-`)
+      || entry === `.${name}.backup`
       || entry.startsWith(`.${name}.backup-`),
   );
   assert.deepEqual(debris, []);
+}
+
+async function loadPublicationModule() {
+  const path = join(root, "scripts/build-publication.mjs");
+  assert.equal(
+    existsSync(path),
+    true,
+    "build publication recovery module is missing",
+  );
+  return import(pathToFileURL(path).href);
 }
 
 test("build emits web and Telegram shells with one shared hashed app and stylesheet", () => {
@@ -452,6 +473,270 @@ test("a failed staged build preserves the previously published output", () => {
     assertNoBuildDebris(output);
   } finally {
     rmSync(isolatedRoot, { recursive: true, force: true });
+  }
+});
+
+test("an interrupted rename gap restores prior output before replacement", () => {
+  const isolatedRoot = makeIsolatedProject();
+  const output = join(isolatedRoot, "dist");
+  const backup = join(isolatedRoot, ".dist.backup");
+  const lock = join(isolatedRoot, ".dist.lock");
+  const indexPath = join(isolatedRoot, "src/index.html");
+  try {
+    const first = build({
+      buildId: "before-interruption",
+      cwd: isolatedRoot,
+      output,
+    });
+    assertBuildSucceeded(first.result);
+    const before = snapshotDirectory(output);
+
+    const publicationModule = pathToFileURL(
+      join(isolatedRoot, "scripts/build-publication.mjs"),
+    ).href;
+    const interrupted = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+          import { mkdir, rename, writeFile } from "node:fs/promises";
+          import { join } from "node:path";
+          import {
+            acquireBuildLock,
+            buildStatePaths,
+            publishBuild,
+            reconcileBuildState,
+          } from ${JSON.stringify(publicationModule)};
+
+          const output = ${JSON.stringify(output)};
+          const stage = ${JSON.stringify(join(isolatedRoot, ".dist.stage-interrupted"))};
+          const lock = await acquireBuildLock(output);
+          await reconcileBuildState(output, lock);
+          await mkdir(stage);
+          await writeFile(join(stage, "partial.txt"), "partial");
+          const { backupPath } = buildStatePaths(output);
+          await publishBuild(stage, output, {
+            async renamePath(from, to) {
+              await rename(from, to);
+              if (from === output && to === backupPath) {
+                process.exit(73);
+              }
+            },
+          });
+        `,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(interrupted.status, 73, interrupted.stderr);
+    assert.equal(existsSync(output), false);
+    assert.equal(existsSync(backup), true);
+    assert.equal(existsSync(lock), true);
+
+    const validIndex = readFileSync(indexPath, "utf8");
+    writeFileSync(
+      indexPath,
+      validIndex.replace(
+        '<script type="module" src="./app.js"></script>',
+        '<script type="module" src="./missing.js"></script>',
+      ),
+    );
+
+    // Consumers wait for the command result; a failed recovery build must leave
+    // the previous complete output restored and observable.
+    const recoveryBuild = build({ cwd: isolatedRoot, output });
+    assert.notEqual(recoveryBuild.result.status, 0);
+    assert.match(recoveryBuild.result.stderr, /exactly one occurrence/i);
+    assert.equal(
+      existsSync(output),
+      true,
+      "prior output must be restored before new build validation",
+    );
+    assert.deepEqual(snapshotDirectory(output), before);
+    assertNoBuildDebris(output);
+
+    writeFileSync(indexPath, validIndex);
+    const replacement = build({
+      buildId: "after-recovery",
+      cwd: isolatedRoot,
+      output,
+    });
+    assertBuildSucceeded(replacement.result);
+    assert.match(
+      readFileSync(join(output, "index.html"), "utf8"),
+      /buildId: "after-recovery"/,
+    );
+    assertNoBuildDebris(output);
+  } finally {
+    rmSync(isolatedRoot, { recursive: true, force: true });
+  }
+});
+
+test("a caught second publication rename failure restores previous output", async () => {
+  const { buildStatePaths, publishBuild } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-publish-failure-"));
+  const output = join(parent, "dist");
+  const stage = mkdtempSync(join(parent, ".dist.stage-"));
+  const failure = new Error("injected stage publication failure");
+  mkdirSync(output);
+  writeFileSync(join(output, "prior.txt"), "prior", "utf8");
+  writeFileSync(join(stage, "next.txt"), "next", "utf8");
+  try {
+    await assert.rejects(
+      publishBuild(stage, output, {
+        async renamePath(from, to) {
+          if (from === stage && to === output) {
+            throw failure;
+          }
+          renameSync(from, to);
+        },
+      }),
+      (error) => error === failure,
+    );
+
+    assert.equal(readFileSync(join(output, "prior.txt"), "utf8"), "prior");
+    assert.equal(existsSync(stage), true);
+    assert.equal(existsSync(buildStatePaths(output).backupPath), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("a dead lock owner is recovered and replaced with owner metadata", async () => {
+  const {
+    acquireBuildLock,
+    buildStatePaths,
+    releaseBuildLock,
+  } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-stale-lock-"));
+  const output = join(parent, "dist");
+  const { lockOwnerPath, lockPath } = buildStatePaths(output);
+  mkdirSync(lockPath);
+  writeFileSync(
+    lockOwnerPath,
+    JSON.stringify({
+      pid: 2_147_483_647,
+      timestamp: Date.now(),
+      token: "dead-owner",
+    }),
+    "utf8",
+  );
+  try {
+    const lock = await acquireBuildLock(output, {
+      retryMs: 5,
+      timeoutMs: 250,
+    });
+    const owner = JSON.parse(readFileSync(lockOwnerPath, "utf8"));
+    assert.equal(owner.pid, process.pid);
+    assert.equal(typeof owner.timestamp, "number");
+    assert.notEqual(owner.token, "dead-owner");
+    await releaseBuildLock(lock);
+    assert.equal(existsSync(lockPath), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("an old lock owned by a live process is never stolen", async () => {
+  const { acquireBuildLock, buildStatePaths } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-live-lock-"));
+  const output = join(parent, "dist");
+  const { lockOwnerPath, lockPath } = buildStatePaths(output);
+  const liveOwner = {
+    pid: process.pid,
+    timestamp: Date.now() - 60 * 60 * 1000,
+    token: "live-owner",
+  };
+  mkdirSync(lockPath);
+  writeFileSync(lockOwnerPath, JSON.stringify(liveOwner), "utf8");
+  try {
+    await assert.rejects(
+      acquireBuildLock(output, {
+        retryMs: 5,
+        staleMs: 1,
+        timeoutMs: 75,
+      }),
+      /Timed out waiting for build lock/,
+    );
+    assert.deepEqual(JSON.parse(readFileSync(lockOwnerPath, "utf8")), liveOwner);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("an ownerless lock is recovered only after the stale threshold", async () => {
+  const {
+    acquireBuildLock,
+    buildStatePaths,
+    releaseBuildLock,
+  } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-ownerless-lock-"));
+  const output = join(parent, "dist");
+  const { lockPath } = buildStatePaths(output);
+  mkdirSync(lockPath);
+  try {
+    await assert.rejects(
+      acquireBuildLock(output, {
+        retryMs: 5,
+        staleMs: 60_000,
+        timeoutMs: 50,
+      }),
+      /Timed out waiting for build lock/,
+    );
+    assert.equal(existsSync(lockPath), true);
+
+    const staleTime = new Date(Date.now() - 120_000);
+    utimesSync(lockPath, staleTime, staleTime);
+    const lock = await acquireBuildLock(output, {
+      retryMs: 5,
+      staleMs: 60_000,
+      timeoutMs: 250,
+    });
+    await releaseBuildLock(lock);
+    assert.equal(existsSync(lockPath), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("recovery keeps a completed destination and cleans debris only under lock", async () => {
+  const {
+    acquireBuildLock,
+    buildStatePaths,
+    reconcileBuildState,
+    releaseBuildLock,
+  } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-completed-publish-"));
+  const output = join(parent, "dist");
+  const { backupPath, lockPath } = buildStatePaths(output);
+  const stage = join(parent, ".dist.stage-abandoned");
+  mkdirSync(output);
+  mkdirSync(backupPath);
+  mkdirSync(stage);
+  writeFileSync(join(output, "current.txt"), "current", "utf8");
+  writeFileSync(join(backupPath, "prior.txt"), "prior", "utf8");
+  try {
+    await assert.rejects(
+      reconcileBuildState(output, {
+        owner: { pid: process.pid, timestamp: Date.now(), token: "not-owner" },
+        path: lockPath,
+      }),
+      /not owned by this process/,
+    );
+    assert.equal(existsSync(backupPath), true);
+    assert.equal(existsSync(stage), true);
+
+    const lock = await acquireBuildLock(output);
+    try {
+      await reconcileBuildState(output, lock);
+    } finally {
+      await releaseBuildLock(lock);
+    }
+    assert.equal(readFileSync(join(output, "current.txt"), "utf8"), "current");
+    assert.equal(existsSync(backupPath), false);
+    assert.equal(existsSync(stage), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
   }
 });
 

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   cp,
   mkdir,
@@ -11,11 +11,14 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { build } from "esbuild";
+import {
+  acquireBuildLock,
+  publishBuild,
+  reconcileBuildState,
+  releaseBuildLock,
+} from "./build-publication.mjs";
 
-const LOCK_RETRY_MS = 25;
-const LOCK_TIMEOUT_MS = 10_000;
 const root = resolve(import.meta.dirname, "..");
 const src = resolve(root, "src");
 const buildId = resolveBuildId();
@@ -104,25 +107,6 @@ function replaceExactly(source, expected, replacement, label) {
   )}`;
 }
 
-async function acquireBuildLock(output) {
-  const lockPath = resolve(dirname(output), `.${basename(output)}.lock`);
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
-  while (true) {
-    try {
-      await mkdir(lockPath);
-      return lockPath;
-    } catch (error) {
-      if (error.code !== "EEXIST") {
-        throw error;
-      }
-      if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for build lock ${lockPath}.`);
-      }
-      await delay(LOCK_RETRY_MS);
-    }
-  }
-}
-
 async function buildInto(dist) {
   await cp(src, dist, { recursive: true });
   await build({
@@ -187,46 +171,13 @@ async function buildInto(dist) {
   await writeFile(resolve(dist, ".nojekyll"), "");
 }
 
-async function publishBuild(stage, output) {
-  const backup = resolve(
-    dirname(output),
-    `.${basename(output)}.backup-${randomUUID()}`,
-  );
-  let hasPrevious = false;
-  try {
-    await rename(output, backup);
-    hasPrevious = true;
-  } catch (error) {
-    if (error.code !== "ENOENT") {
-      throw error;
-    }
-  }
-
-  try {
-    await rename(stage, output);
-  } catch (publishError) {
-    if (hasPrevious) {
-      try {
-        await rename(backup, output);
-      } catch (restoreError) {
-        throw new AggregateError(
-          [publishError, restoreError],
-          `Build publication failed; previous output remains at ${backup}.`,
-        );
-      }
-    }
-    throw publishError;
-  }
-
-  if (hasPrevious) {
-    await rm(backup, { recursive: true, force: true });
-  }
-}
-
 await mkdir(dirname(destination), { recursive: true });
-const lockPath = await acquireBuildLock(destination);
+const lock = await acquireBuildLock(destination);
 let stage = null;
 try {
+  // Publication contract: consumers wait for command success. Any interrupted
+  // rename gap is reconciled under this lock before a new stage is created.
+  await reconcileBuildState(destination, lock);
   stage = await mkdtemp(
     resolve(dirname(destination), `.${basename(destination)}.stage-`),
   );
@@ -234,10 +185,13 @@ try {
   await publishBuild(stage, destination);
   stage = null;
 } finally {
-  if (stage) {
-    await rm(stage, { recursive: true, force: true });
+  try {
+    if (stage) {
+      await rm(stage, { recursive: true, force: true });
+    }
+  } finally {
+    await releaseBuildLock(lock);
   }
-  await rm(lockPath, { recursive: true, force: true });
 }
 
 console.log(`Built ${destination}`);
