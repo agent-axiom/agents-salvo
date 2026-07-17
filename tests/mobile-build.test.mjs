@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -183,6 +191,57 @@ function listFiles(root) {
   });
 }
 
+function withTemporaryBuildTree(callback) {
+  const buildOutput = mkdtempSync(join(tmpdir(), "salvo-mobile-build-"));
+  try {
+    return callback(buildOutput);
+  } finally {
+    rmSync(buildOutput, { recursive: true, force: true });
+  }
+}
+
+function runTelegramArtifactVerification(workflowPath, jobName, sdkCount) {
+  const workflow = parseWorkflowSource(
+    readFileSync(workflowPath, "utf8"),
+    workflowPath,
+  );
+  const command = namedWorkflowStep(
+    workflow,
+    jobName,
+    "Verify Telegram Mini App artifacts",
+  ).step.run;
+
+  return withTemporaryBuildTree((fixtureRoot) => {
+    const dist = join(fixtureRoot, "dist");
+    const telegramDist = join(dist, "telegram");
+    const app = "app.0123456789.js";
+    const styles = "styles.0123456789.css";
+    const buildId = "fixture-build-id";
+    const sdkTag =
+      '<script src="https://telegram.org/js/telegram-web-app.js"></script>';
+
+    mkdirSync(telegramDist, { recursive: true });
+    writeFileSync(join(dist, app), "", "utf8");
+    writeFileSync(join(dist, styles), "", "utf8");
+    writeFileSync(
+      join(dist, "index.html"),
+      `<script src="./${app}"></script>\n<link href="./${styles}">\n<script>buildId: "${buildId}"</script>`,
+      "utf8",
+    );
+    writeFileSync(
+      join(telegramDist, "index.html"),
+      `${sdkTag.repeat(sdkCount)}<script src="../${app}"></script>\n<link href="../${styles}">\n<script>buildId: "${buildId}"</script>`,
+      "utf8",
+    );
+
+    return spawnSync("bash", ["-c", command], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+      env: { ...process.env, SALVO_BUILD_ID: buildId },
+    });
+  });
+}
+
 function readWorkflow(path) {
   assert.equal(existsSync(path), true, `${path} is missing`);
   const source = readFileSync(path, "utf8");
@@ -304,7 +363,20 @@ function assertTelegramArtifactVerification(workflow, jobName) {
     verification.step.run.trim(),
     `set -euo pipefail
 test -f dist/telegram/index.html
-test "$(grep -Fc 'telegram-web-app.js' dist/telegram/index.html)" -eq 1
+sdk_occurrences="$(
+  awk '
+    {
+      remainder = $0
+      token = "telegram-web-app.js"
+      while ((position = index(remainder, token)) > 0) {
+        count += 1
+        remainder = substr(remainder, position + length(token))
+      }
+    }
+    END { print count + 0 }
+  ' dist/telegram/index.html
+)"
+test "$sdk_occurrences" -eq 1
 ! grep -Fq 'telegram-web-app.js' dist/index.html
 web_app="$(grep -oE 'app\\.[a-f0-9]{10}\\.js' dist/index.html)"
 telegram_app="$(grep -oE 'app\\.[a-f0-9]{10}\\.js' dist/telegram/index.html)"
@@ -408,8 +480,7 @@ test("Capacitor CLI loads the local TypeScript config", async () => {
   assert.equal(config.app.extConfig.server?.url, undefined);
 });
 
-test("mobile build emits bundled local web artifacts", () => {
-  const buildOutput = mkdtempSync(join(tmpdir(), "salvo-mobile-build-"));
+function assertBundledLocalWebArtifacts(buildOutput) {
   execFileSync(process.execPath, ["scripts/build.mjs"], {
     env: { ...process.env, SALVO_BUILD_DIR: buildOutput },
   });
@@ -482,6 +553,26 @@ test("mobile build emits bundled local web artifacts", () => {
     bundledApp,
     /(?:from\s*|import\s*(?:\(\s*)?)["']\.\.?\//,
   );
+}
+
+test("mobile build emits bundled local web artifacts", () => {
+  withTemporaryBuildTree(assertBundledLocalWebArtifacts);
+});
+
+test("temporary mobile build trees are removed after assertion failures", () => {
+  let buildOutput;
+
+  assert.throws(
+    () =>
+      withTemporaryBuildTree((path) => {
+        buildOutput = path;
+        writeFileSync(join(path, "partial-build.txt"), "partial", "utf8");
+        assert.fail("simulated build assertion failure");
+      }),
+    /simulated build assertion failure/,
+  );
+  assert.notEqual(buildOutput, undefined);
+  assert.equal(existsSync(buildOutput), false);
 });
 
 test("build output override rejects non-temporary directories before deleting files", () => {
@@ -911,6 +1002,34 @@ jobs:
   );
 });
 
+test("Telegram artifact verification enforces one exact SDK token", () => {
+  const targets = [
+    [".github/workflows/pages.yml", "build"],
+    [".github/workflows/mobile.yml", "web"],
+  ];
+  const validResults = targets.map(([path, job]) =>
+    runTelegramArtifactVerification(path, job, 1),
+  );
+  const duplicateResults = targets.map(([path, job]) =>
+    runTelegramArtifactVerification(path, job, 2),
+  );
+
+  for (const result of [...validResults, ...duplicateResults]) {
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+  }
+  assert.deepEqual(
+    validResults.map(({ status }) => status),
+    [0, 0],
+    "each workflow must accept exactly one SDK token",
+  );
+  assert.deepEqual(
+    duplicateResults.map(({ status }) => status),
+    [1, 1],
+    "each workflow must reject two SDK tokens even when they share one line",
+  );
+});
+
 test("Pages CI uses the pinned Node toolchain and preserves deployment", () => {
   const workflow = readWorkflow(".github/workflows/pages.yml");
   const parsedWorkflow = parseWorkflowSource(
@@ -1018,6 +1137,7 @@ test("mobile CI tests, lints, and packages the Android debug app", () => {
   );
   const android = workflowJob(workflow, "android");
 
+  assert.equal(parsedWorkflow.jobs.android.needs, "web");
   assert.match(android, /^  android:\n    runs-on: ubuntu-latest$/m);
   assert.deepEqual(actionVersions(android, "actions/checkout"), ["v7"]);
   assert.deepEqual(actionVersions(android, "actions/setup-node"), ["v7"]);
@@ -1061,6 +1181,7 @@ test("mobile CI builds an unsigned iOS Simulator app and retains failures", () =
   );
   const ios = workflowJob(workflow, "ios");
 
+  assert.equal(parsedWorkflow.jobs.ios.needs, "web");
   assert.match(ios, /^  ios:\n    runs-on: macos-26$/m);
   assert.deepEqual(actionVersions(ios, "actions/checkout"), ["v7"]);
   assert.deepEqual(actionVersions(ios, "actions/setup-node"), ["v7"]);
