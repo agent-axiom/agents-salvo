@@ -42,7 +42,7 @@ npm start
 
 При запуске внутри Telegram Mini App автоматически отправляет подписанный Telegram `initData` в Cloudflare Worker. Worker проверяет подпись и срок действия данных, а затем создаёт существующую сессию «Залпа», поэтому отдельный вход не требуется.
 
-Браузер, Telegram Mini App, iOS-приложение и Android-приложение используют единое дерево исходного кода и одну команду `npm run build`. Эта сборка создаёт обычный и Telegram HTML shell с общими хешированными JavaScript bundle и stylesheet; Telegram SDK загружает только Telegram shell.
+Браузер, Telegram Mini App, iOS-приложение и Android-приложение используют единое дерево исходного кода и одну команду `npm run build`. Эта сборка создаёт обычный и Telegram HTML shell с общими хешированными JavaScript bundle и stylesheet; Telegram SDK загружается только в Telegram shell.
 
 Pages и Mini App обновляются сразу после публикации Pages artifact. Нативные приложения не загружают Pages при старте: каждый APK или iOS app содержит сборку выбранного коммита и меняется только после упаковки и выпуска этого коммита.
 

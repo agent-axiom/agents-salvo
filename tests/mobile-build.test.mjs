@@ -1103,6 +1103,7 @@ test("localized READMEs document Telegram Mini App delivery", () => {
       publicUrl: /^Публичный Telegram Mini App: https:\/\/agent-axiom\.github\.io\/agents-salvo\/telegram\/$/m,
       automaticAuth: /автоматически отправляет подписанный Telegram `initData`/,
       sharedBuild: /единое дерево исходного кода и одну команду `npm run build`/,
+      sdkLoading: "Telegram SDK загружается только в Telegram shell.",
       delivery: /Pages и Mini App обновляются сразу[\s\S]*выбранного коммита/,
     },
     {
@@ -1121,6 +1122,13 @@ test("localized READMEs document Telegram Mini App delivery", () => {
     assert.match(readme, /@BotFather[\s\S]*Main Mini App/, expectation.path);
     assert.match(readme, expectation.automaticAuth, expectation.path);
     assert.match(readme, expectation.sharedBuild, expectation.path);
+    if (expectation.sdkLoading) {
+      assert.equal(
+        readme.includes(expectation.sdkLoading),
+        true,
+        expectation.path,
+      );
+    }
     assert.match(readme, expectation.delivery, expectation.path);
   }
 });
