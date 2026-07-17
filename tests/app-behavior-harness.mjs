@@ -28,6 +28,8 @@ const scenarios = {
   "auth-bootstrap": runAuthBootstrapScenario,
   "telegram-bootstrap": runTelegramBootstrapScenario,
   "telegram-launch-routing": runTelegramLaunchRoutingScenario,
+  "telegram-launch-retry": runTelegramLaunchRetryScenario,
+  "telegram-launch-authority": runTelegramLaunchAuthorityScenario,
   "telegram-launch-sharing": runTelegramLaunchSharingScenario,
   "telegram-auth-recovery": runTelegramAuthRecoveryScenario,
   "telegram-runtime": runTelegramRuntimeScenario,
@@ -850,6 +852,162 @@ async function runTelegramLaunchRoutingScenario() {
   await Promise.all([roomApp.stop(), replayApp.stop(), guardedApp.stop()]);
 }
 
+async function runTelegramLaunchRetryScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const sessionToken = "r".repeat(43);
+  const user = telegramUser("retry-launch-user", "Retry Launch Captain");
+  let roomAuthAttempts = 0;
+  const joinedRooms = [];
+  const room = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-room-retry-init-data",
+    startParam: "room_RETRY",
+    miniAppResponse() {
+      roomAuthAttempts += 1;
+      return roomAuthAttempts === 1
+        ? miniAppServiceFailure()
+        : { token: sessionToken, user };
+    },
+    createRemoteClient() {
+      return remoteClientHarness({
+        async joinRoom(roomCode) {
+          joinedRooms.push(roomCode);
+          return { roomCode, playerId: "p2", playerToken: "private-token", presetId: "classic" };
+        },
+      });
+    },
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const roomApp = bootSalvoApp(room.dependencies);
+  await roomApp.startup.done;
+  assert.equal(roomApp.getState().screen, "menu");
+  assert.deepEqual(joinedRooms, []);
+  assert.equal(roomAuthAttempts, 1);
+
+  await room.root.click("auth-telegram-retry");
+  assert.equal(roomApp.getState().screen, "online");
+  assert.equal(roomApp.getState().online.roomCodeInput, "RETRY");
+  assert.deepEqual(joinedRooms, ["RETRY"]);
+  assert.equal(roomAuthAttempts, 2);
+  await room.root.click("theme-toggle");
+  await room.root.click("auth-telegram-retry");
+  assert.deepEqual(joinedRooms, ["RETRY"]);
+  assert.equal(roomAuthAttempts, 2, "an authenticated retry is ignored");
+
+  let replayAuthAttempts = 0;
+  const replay = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-replay-retry-init-data",
+    startParam: "replay_retry-replay",
+    miniAppResponse() {
+      replayAuthAttempts += 1;
+      return replayAuthAttempts === 1
+        ? miniAppServiceFailure()
+        : { token: sessionToken, user };
+    },
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      if (url.endsWith("/replays/retry-replay")) {
+        return response({ error: "Replay not found" }, { ok: false, status: 404 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const replayApp = bootSalvoApp(replay.dependencies);
+  await replayApp.startup.done;
+  assert.equal(replayApp.getState().screen, "menu");
+  assert.equal(replay.fetchCalls.some(({ url }) => url.includes("/replays/")), false);
+
+  await replay.root.click("auth-telegram-retry");
+  assert.equal(replayApp.getState().screen, "replay");
+  assert.equal(replayApp.getState().replayArchive.requestedId, "retry-replay");
+  assert.equal(replay.fetchCalls.filter(({ url }) => url.endsWith("/replays/retry-replay")).length, 1);
+  await replay.root.click("theme-toggle");
+  await replay.root.click("auth-telegram-retry");
+  assert.equal(replayAuthAttempts, 2, "an authenticated retry is ignored");
+  assert.equal(replay.fetchCalls.filter(({ url }) => url.endsWith("/replays/retry-replay")).length, 1);
+
+  await Promise.all([roomApp.stop(), replayApp.stop()]);
+}
+
+async function runTelegramLaunchAuthorityScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const replayHarness = ({ initialReplayId, startParam, platformName = "telegram" }) => (
+    createAppHarness({
+      platformName,
+      launchData: platformName === "telegram" ? "signed-authority-init-data" : "",
+      startParam,
+      initialUrl: `https://agent-axiom.github.io/agents-salvo/?replay=${initialReplayId}`,
+      secureSession: platformName === "telegram" ? resolvedDeferred("") : resolvedDeferred("web-token"),
+      fetchResponse(url) {
+        if (url.endsWith("/auth/me")) {
+          return response({ user: { id: "web-user", name: "Web Captain", username: "web" } });
+        }
+        if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+        if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+        if (url.includes("/replays/")) {
+          return response({ error: "Replay not found" }, { ok: false, status: 404 });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      },
+    })
+  );
+  const replayRequestIds = (harness) => harness.fetchCalls
+    .filter(({ url }) => url.includes("/replays/"))
+    .map(({ url }) => decodeURIComponent(url.split("/replays/")[1]));
+
+  const same = replayHarness({
+    initialReplayId: "same-replay",
+    startParam: "replay_same-replay",
+  });
+  const sameApp = bootSalvoApp(same.dependencies);
+  await sameApp.startup.done;
+  assert.deepEqual(replayRequestIds(same), ["same-replay"]);
+  assert.equal(sameApp.getState().replayArchive.requestedId, "same-replay");
+  assert.equal(same.calls.historyPushes, 0);
+  assert.equal(same.calls.historyReplacements, 0);
+
+  const conflict = replayHarness({
+    initialReplayId: "url-replay",
+    startParam: "replay_start-replay",
+  });
+  const conflictApp = bootSalvoApp(conflict.dependencies);
+  await conflictApp.startup.done;
+  assert.deepEqual(replayRequestIds(conflict), ["start-replay"]);
+  assert.equal(conflictApp.getState().replayArchive.requestedId, "start-replay");
+  assert.equal(conflict.dependencies.window.location.search, "?replay=start-replay");
+  assert.equal(conflict.calls.historyPushes, 0);
+  assert.equal(conflict.calls.historyReplacements, 1);
+
+  const invalid = replayHarness({
+    initialReplayId: "url-replay",
+    startParam: "replay_bad_id",
+  });
+  const invalidApp = bootSalvoApp(invalid.dependencies);
+  await invalidApp.startup.done;
+  assert.deepEqual(replayRequestIds(invalid), ["url-replay"]);
+  assert.equal(invalidApp.getState().replayArchive.requestedId, "url-replay");
+  assert.equal(invalid.calls.historyPushes, 0);
+  assert.equal(invalid.calls.historyReplacements, 0);
+
+  const web = replayHarness({
+    initialReplayId: "web-replay",
+    startParam: "replay_ignored-in-web",
+    platformName: "web",
+  });
+  const webApp = bootSalvoApp(web.dependencies);
+  await webApp.startup.done;
+  assert.deepEqual(replayRequestIds(web), ["web-replay"]);
+  assert.equal(webApp.getState().replayArchive.requestedId, "web-replay");
+
+  await Promise.all([sameApp.stop(), conflictApp.stop(), invalidApp.stop(), webApp.stop()]);
+}
+
 async function runTelegramLaunchSharingScenario() {
   const { bootSalvoApp } = await import("../src/app.js");
   const telegram = createAppHarness({
@@ -880,15 +1038,55 @@ async function runTelegramLaunchSharingScenario() {
     url: "https://t.me/salvo_test_bot?startapp=room_ABCD",
   });
 
-  telegram.calls.sharePayloads.length = 0;
-  telegramApp.getState().replayArchive.requestedId = "replay-123";
-  await telegram.root.click("replay-copy-link");
-  assert.equal(telegram.calls.sharePayloads.length, 1);
+  const telegramReplay = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-replay-share-init-data",
+    startParam: "replay_replay-123",
+    shareResult: { shared: true },
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      if (url.endsWith("/replays/replay-123")) {
+        return response({ replay: archivedReplayFixture("replay-123") });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const telegramReplayApp = bootSalvoApp(telegramReplay.dependencies);
+  await telegramReplayApp.startup.done;
+  assert.match(telegramReplay.root.innerHTML, />Share in Telegram<\/button>/);
+  assert.doesNotMatch(telegramReplay.root.innerHTML, />Copy link<\/button>/);
+  await telegramReplay.root.click("replay-copy-link");
+  assert.equal(telegramReplay.calls.sharePayloads.length, 1);
   assert.equal(
-    telegram.calls.sharePayloads[0].url,
+    telegramReplay.calls.sharePayloads[0].url,
     "https://t.me/salvo_test_bot?startapp=replay_replay-123",
   );
-  assert.equal(telegram.calls.sharePayloads[0].text, "Battle replay");
+  assert.equal(telegramReplay.calls.sharePayloads[0].text, "Battle replay");
+  assert.equal(telegramReplayApp.getState().replayArchive.copyStatus, "");
+  assert.doesNotMatch(telegramReplay.root.innerHTML, /Replay link copied/);
+
+  const failedTelegramReplay = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-failed-replay-share-init-data",
+    startParam: "replay_replay-456",
+    shareResult: { shared: false },
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      if (url.endsWith("/replays/replay-456")) {
+        return response({ replay: archivedReplayFixture("replay-456") });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const failedTelegramReplayApp = bootSalvoApp(failedTelegramReplay.dependencies);
+  await failedTelegramReplayApp.startup.done;
+  assert.match(failedTelegramReplay.root.innerHTML, />Share in Telegram<\/button>/);
+  await failedTelegramReplay.root.click("replay-copy-link");
+  assert.equal(failedTelegramReplayApp.getState().replayArchive.copyStatus, "error");
+  assert.match(failedTelegramReplay.root.innerHTML, /Could not share\./);
+  assert.doesNotMatch(failedTelegramReplay.root.innerHTML, /Could not copy the replay link/);
 
   const failed = createAppHarness({
     platformName: "telegram",
@@ -941,14 +1139,41 @@ async function runTelegramLaunchSharingScenario() {
   await web.root.click("share-telegram");
   assert.equal(web.calls.sharePayloads[0].url, "https://agent-axiom.github.io/agents-salvo/");
 
-  webApp.getState().replayArchive.requestedId = "replay-123";
-  await web.root.click("replay-copy-link");
+  const webReplay = createAppHarness({
+    initialUrl: "https://agent-axiom.github.io/agents-salvo/?replay=replay-789",
+    secureSession: resolvedDeferred("web-session-token"),
+    fetchResponse(url) {
+      if (url.endsWith("/auth/me")) {
+        return response({ user: { id: "web-user", name: "Web Captain", username: "web" } });
+      }
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      if (url.endsWith("/replays/replay-789")) {
+        return response({ replay: archivedReplayFixture("replay-789") });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const webReplayApp = bootSalvoApp(webReplay.dependencies);
+  await webReplayApp.startup.done;
+  assert.match(webReplay.root.innerHTML, />Copy link<\/button>/);
+  assert.doesNotMatch(webReplay.root.innerHTML, />Share in Telegram<\/button>/);
+  await webReplay.root.click("replay-copy-link");
   assert.equal(
-    web.calls.clipboardWrites.at(-1),
-    "https://agent-axiom.github.io/agents-salvo/?replay=replay-123",
+    webReplay.calls.clipboardWrites.at(-1),
+    "https://agent-axiom.github.io/agents-salvo/?replay=replay-789",
   );
+  assert.equal(webReplayApp.getState().replayArchive.copyStatus, "copied");
+  assert.match(webReplay.root.innerHTML, /Replay link copied/);
 
-  await Promise.all([telegramApp.stop(), failedApp.stop(), webApp.stop()]);
+  await Promise.all([
+    telegramApp.stop(),
+    telegramReplayApp.stop(),
+    failedTelegramReplayApp.stop(),
+    failedApp.stop(),
+    webApp.stop(),
+    webReplayApp.stop(),
+  ]);
 }
 
 async function runTelegramAuthRecoveryScenario() {
@@ -1539,6 +1764,7 @@ function createAppHarness({
     clipboardWrites: [],
     openedUrls: [],
     closedUrls: 0,
+    historyPushes: 0,
     historyReplacements: 0,
     settingWrites: [],
     ready: 0,
@@ -1972,6 +2198,7 @@ function createWindowHarness({
     history: {
       state: null,
       pushState(_state, _title, url) {
+        if (calls) calls.historyPushes += 1;
         updateLocation(url);
       },
       replaceState(state, _title, url) {
@@ -2031,6 +2258,77 @@ function remoteClientHarness(overrides = {}) {
     close() {},
     async send() {},
     ...overrides,
+  };
+}
+
+function miniAppServiceFailure() {
+  return new Response(JSON.stringify({ error: "Telegram Mini App authentication failed" }), {
+    status: 503,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function archivedReplayFixture(id) {
+  return {
+    id,
+    version: 1,
+    presetId: "classic",
+    viewerPlayerId: "p1",
+    winnerId: "p1",
+    finishedAt: "2026-07-17T12:00:00.000Z",
+    players: {
+      p1: { name: "Viewer Captain", username: "viewer" },
+      p2: { name: "Opponent Captain", username: "opponent" },
+    },
+    boards: {
+      p1: {
+        size: 4,
+        ships: [{
+          id: "p1-patrol",
+          length: 1,
+          cells: [{ row: 1, col: 1 }],
+          hits: [{ row: 1, col: 1 }],
+        }],
+        markers: [],
+        shots: [{ row: 1, col: 1, result: "sunk", shipId: "p1-patrol" }],
+      },
+      p2: {
+        size: 4,
+        ships: [{
+          id: "p2-patrol",
+          length: 1,
+          cells: [{ row: 2, col: 3 }],
+          hits: [{ row: 2, col: 3 }],
+        }],
+        markers: [],
+        shots: [
+          { row: 0, col: 0, result: "miss" },
+          { row: 2, col: 3, result: "sunk", shipId: "p2-patrol" },
+        ],
+      },
+    },
+    log: [
+      {
+        playerId: "p1",
+        targetPlayerId: "p2",
+        coordinate: { row: 0, col: 0 },
+        result: "miss",
+      },
+      {
+        playerId: "p2",
+        targetPlayerId: "p1",
+        coordinate: { row: 1, col: 1 },
+        result: "sunk",
+        shipId: "p1-patrol",
+      },
+      {
+        playerId: "p1",
+        targetPlayerId: "p2",
+        coordinate: { row: 2, col: 3 },
+        result: "sunk",
+        shipId: "p2-patrol",
+      },
+    ],
   };
 }
 

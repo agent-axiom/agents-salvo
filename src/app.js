@@ -119,6 +119,9 @@ let backButtonVisibilityGeneration = 0;
 let leaveDialogReturnFocus = null;
 let pendingLeaveTransition = null;
 const initialRequestedReplayId = replayIdFromSearch(window.location.search);
+let telegramLaunchRouteCaptured = false;
+let pendingTelegramLaunchRoute = null;
+let telegramLaunchProcessed = false;
 let authEpoch = 0;
 let authCallbacksBlocked = false;
 let activeAuthTicket = null;
@@ -491,16 +494,30 @@ function startMobileApp() {
 }
 
 async function processTelegramMiniAppLaunch() {
-  if (!state.auth.token || !state.auth.user) return false;
-
-  let route = null;
-  try {
-    route = parseTelegramStartParam(platform.getStartParam());
-  } catch {
-    return false;
+  if (!telegramLaunchRouteCaptured) {
+    telegramLaunchRouteCaptured = true;
+    try {
+      pendingTelegramLaunchRoute = parseTelegramStartParam(platform.getStartParam());
+    } catch {
+      pendingTelegramLaunchRoute = null;
+    }
   }
-  if (!route) return false;
-  return navigateToInternalRoute(route, { joinRoom: true });
+  if (
+    telegramLaunchProcessed
+    || !pendingTelegramLaunchRoute
+    || !state.auth.token
+    || !state.auth.user
+  ) return false;
+
+  const route = pendingTelegramLaunchRoute;
+  pendingTelegramLaunchRoute = null;
+  telegramLaunchProcessed = true;
+  let replayHistoryMode = "push";
+  if (route.type === "replay" && initialRequestedReplayId) {
+    replayHistoryMode = route.replayId === initialRequestedReplayId ? "none" : "replace";
+  }
+  await navigateToInternalRoute(route, { joinRoom: true, replayHistoryMode });
+  return true;
 }
 
 async function loadTelegramAuthCapability() {
@@ -547,6 +564,11 @@ async function processTelegramAuthBootstrap() {
 }
 
 async function authenticateTelegramMiniApp() {
+  if (state.auth.token && state.auth.user) {
+    await processTelegramMiniAppLaunch();
+    return true;
+  }
+
   let launchData = "";
   let available = false;
   try {
@@ -590,7 +612,8 @@ async function authenticateTelegramMiniApp() {
     const sessionRequest = captureAuthRequest();
     await refreshProfile();
     if (authRequestIsCurrent(sessionRequest, currentAuthRequest())) {
-      await resumeRequestedReplay();
+      const launchProcessed = await processTelegramMiniAppLaunch();
+      if (!launchProcessed) await resumeRequestedReplay();
     }
     return true;
   } catch (error) {
@@ -1320,12 +1343,16 @@ function renderArchivedReplayContent() {
         <div><dt>${translate("replayArchive.date")}</dt><dd>${formatReplayDate(replay.finishedAt)}</dd></div>
         <div><dt>${translate("replay.timeline")}</dt><dd>${translate("replay.move", { turn: frame.turn, total: frame.totalTurns })}</dd></div>
       </dl>
-      <button data-action="replay-copy-link">${translate("replayArchive.copyLink")}</button>
+      <button data-action="replay-copy-link">${translate(
+        isTelegramMiniApp ? "online.shareTelegram" : "replayArchive.copyLink",
+      )}</button>
     </div>
     ${
       state.replayArchive.copyStatus
         ? `<p class="replay-copy-status ${state.replayArchive.copyStatus === "error" ? "is-error" : ""}" role="status">${translate(
-            state.replayArchive.copyStatus === "copied" ? "replayArchive.copied" : "replayArchive.copyFailed",
+            state.replayArchive.copyStatus === "copied"
+              ? "replayArchive.copied"
+              : isTelegramMiniApp ? "share.failed" : "replayArchive.copyFailed",
           )}</p>`
         : ""
     }
@@ -3409,7 +3436,10 @@ async function handlePlatformDeepLink(rawUrl) {
   return navigateToInternalRoute(route);
 }
 
-async function navigateToInternalRoute(route, { joinRoom = false } = {}) {
+async function navigateToInternalRoute(
+  route,
+  { joinRoom = false, replayHistoryMode = "push" } = {},
+) {
   return requestLeaveBattle(async () => {
     try {
       if (route.type === "room") {
@@ -3420,7 +3450,10 @@ async function navigateToInternalRoute(route, { joinRoom = false } = {}) {
           if (joinRoom) await onlineJoin();
         });
       }
-      return await openArchivedReplay(route.replayId, { source: "direct" });
+      return await openArchivedReplay(route.replayId, {
+        source: "direct",
+        historyMode: replayHistoryMode,
+      });
     } catch {
       return false;
     }
@@ -3491,7 +3524,7 @@ async function openReplayArchive({ historyMode = "push" } = {}) {
   });
 }
 
-async function openArchivedReplay(id, { source = "direct" } = {}) {
+async function openArchivedReplay(id, { source = "direct", historyMode = "push" } = {}) {
   const replayId = replayIdFromSearch(`?replay=${encodeURIComponent(id || "")}`);
   if (!replayId) {
     return false;
@@ -3512,7 +3545,9 @@ async function openArchivedReplay(id, { source = "direct" } = {}) {
     state.replayArchive.openedFromArchive = source === "archive";
     state.archive.requestId += 1;
     state.archive.loading = false;
-    updateReplayHistory(replayId, "push", "replay", { replaySource: source });
+    if (historyMode !== "none") {
+      updateReplayHistory(replayId, historyMode, "replay", { replaySource: source });
+    }
     await loadArchivedReplay(replayId);
   });
 }
@@ -3591,7 +3626,7 @@ async function copyArchivedReplayLink() {
     const shared = url
       ? await shareWithTelegramFallback(translate("replayArchive.title"), url)
       : false;
-    state.replayArchive.copyStatus = shared ? "copied" : "error";
+    state.replayArchive.copyStatus = shared ? "" : "error";
     render();
     return;
   }

@@ -51,6 +51,14 @@ test("actual app routes Telegram room and replay launches after authentication",
   await runScenarioInChild("telegram-launch-routing");
 });
 
+test("actual app retains Telegram room and replay launches across auth retry", async () => {
+  await runScenarioInChild("telegram-launch-retry");
+});
+
+test("actual app makes valid Telegram launch params authoritative over URL replays", async () => {
+  await runScenarioInChild("telegram-launch-authority");
+});
+
 test("actual app shares Telegram launches without changing web canonical links", async () => {
   await runScenarioInChild("telegram-launch-sharing");
 });
