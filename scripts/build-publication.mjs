@@ -205,28 +205,29 @@ export async function reconcileBuildState(output, lock) {
   }
 
   const entries = await readdir(paths.parentPath);
-  const stageNamePrefix = basename(paths.stagePrefix);
-  const staleLockNamePrefix = basename(paths.staleLockPrefix);
+  const generatedStates = [
+    [basename(paths.stagePrefix), "Build stage path"],
+    [basename(paths.staleLockPrefix), "Build stale lock path"],
+    [
+      basename(paths.lockRecoveryQuarantinePrefix),
+      "Build recovery quarantine path",
+    ],
+  ];
   for (const entry of entries) {
-    if (
-      entry.startsWith(stageNamePrefix)
-      || entry.startsWith(staleLockNamePrefix)
-    ) {
-      const statePath = anchoredStatePath(
-        paths.parentPath,
-        resolve(paths.parentPath, entry),
-        entry.startsWith(stageNamePrefix)
-          ? "Build stage path"
-          : "Build stale lock path",
-      );
-      await inspectRealDirectory(
-        statePath,
-        entry.startsWith(stageNamePrefix)
-          ? "Build stage path"
-          : "Build stale lock path",
-      );
-      await rm(statePath, { recursive: true, force: true });
+    const generatedState = generatedStates.find(([prefix]) =>
+      entry.startsWith(prefix),
+    );
+    if (!generatedState) {
+      continue;
     }
+    const [, label] = generatedState;
+    const statePath = anchoredStatePath(
+      paths.parentPath,
+      resolve(paths.parentPath, entry),
+      label,
+    );
+    await inspectRealDirectory(statePath, label);
+    await rm(statePath, { recursive: true, force: true });
   }
 }
 

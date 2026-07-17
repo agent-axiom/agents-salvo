@@ -535,6 +535,31 @@ test("build rejects a symlinked abandoned stage without touching its target", ()
   }
 });
 
+test("build rejects a symlinked recovery quarantine without touching its target", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "salvo-quarantine-symlink-"));
+  const externalRoot = mkdtempSync(join(root, ".salvo-external-quarantine-"));
+  const output = join(temporaryRoot, "dist");
+  writeFileSync(join(externalRoot, "keep.txt"), "do not modify", "utf8");
+  const before = snapshotDirectory(externalRoot);
+  symlinkSync(
+    externalRoot,
+    join(temporaryRoot, ".dist.lock.recovery-quarantine-untrusted"),
+    "dir",
+  );
+  try {
+    const { result } = build({ output });
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /Build recovery quarantine path must be a real directory/,
+    );
+    assert.deepEqual(snapshotDirectory(externalRoot), before);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+    rmSync(externalRoot, { recursive: true, force: true });
+  }
+});
+
 test("a failed staged build preserves the previously published output", () => {
   const isolatedRoot = makeIsolatedProject();
   const output = join(isolatedRoot, "dist");
@@ -1210,6 +1235,34 @@ test("recovery keeps a completed destination and cleans debris only under lock",
     assert.equal(readFileSync(join(output, "current.txt"), "utf8"), "current");
     assert.equal(existsSync(backupPath), false);
     assert.equal(existsSync(stage), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("recovery removes an abandoned real recovery quarantine under lock", async () => {
+  const {
+    acquireBuildLock,
+    buildStatePaths,
+    reconcileBuildState,
+    releaseBuildLock,
+  } = await loadPublicationModule();
+  const parent = mkdtempSync(join(tmpdir(), "salvo-abandoned-quarantine-"));
+  const output = join(parent, "dist");
+  const { lockRecoveryQuarantinePrefix } = buildStatePaths(output);
+  const quarantine = `${lockRecoveryQuarantinePrefix}abandoned`;
+  mkdirSync(quarantine);
+  writeFileSync(join(quarantine, "owner.json"), "abandoned", "utf8");
+
+  try {
+    const lock = await acquireBuildLock(output);
+    try {
+      await reconcileBuildState(output, lock);
+    } finally {
+      await releaseBuildLock(lock);
+    }
+    assert.equal(existsSync(quarantine), false);
+    assertNoBuildDebris(output);
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
