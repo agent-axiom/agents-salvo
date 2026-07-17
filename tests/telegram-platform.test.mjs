@@ -73,7 +73,6 @@ function fakeTelegram({ versionAtLeast = true } = {}) {
     viewportHeight: 640,
     viewportStableHeight: 620,
     isExpanded: true,
-    isViewportStable: true,
     safeAreaInset: { top: 10, right: 11, bottom: 12, left: 13 },
     contentSafeAreaInset: { top: 20, right: 21, bottom: 22, left: 23 },
     BackButton: back.api,
@@ -254,9 +253,31 @@ test("Telegram lifecycle and theme events map and remove listeners", async () =>
   assert.equal(fake.events.get("themeChanged").size, 0);
 });
 
+test("Telegram gates lifecycle events below version 8.0", async () => {
+  const fake = fakeTelegram({ versionAtLeast: false });
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  const lifecycle = [];
+
+  const remove = await adapter.onLifecycleChange((state) => lifecycle.push(state));
+  assert.ok(fake.calls.some((call) => call[0] === "version" && call[1] === "8.0"));
+  assert.equal(fake.events.has("activated"), false);
+  assert.equal(fake.events.has("deactivated"), false);
+  fake.emit("activated");
+  fake.emit("deactivated");
+  assert.deepEqual(lifecycle, []);
+  assert.doesNotThrow(remove);
+});
+
 test("Telegram viewport events expose state and update safe-area CSS variables", async () => {
   const fake = fakeTelegram();
-  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  const providerReads = [];
+  const webApp = new Proxy(fake.webApp, {
+    get(target, property, receiver) {
+      providerReads.push(property);
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const adapter = createTelegramPlatform({ webApp, window: fake.window });
   const viewports = [];
   const remove = await adapter.onViewportChange((viewport) => viewports.push(viewport));
 
@@ -271,11 +292,15 @@ test("Telegram viewport events expose state and update safe-area CSS variables",
   assert.equal(fake.css.get("--tg-safe-area-inset-left"), "13px");
   assert.equal(fake.css.get("--tg-content-safe-area-inset-top"), "20px");
   assert.equal(fake.css.get("--tg-content-safe-area-inset-bottom"), "22px");
+  assert.equal(providerReads.includes("isViewportStable"), false);
+
+  fake.emit("safeAreaChanged");
+  assert.equal(viewports.at(-1).isStateStable, false);
 
   fake.webApp.viewportHeight = 600;
   fake.webApp.viewportStableHeight = 590;
   fake.webApp.contentSafeAreaInset = { top: 30, right: 31, bottom: 32, left: 33 };
-  fake.emit("viewportChanged", { isStateStable: false });
+  fake.emit("viewportChanged", { isStateStable: true });
   fake.emit("contentSafeAreaChanged");
   assert.equal(fake.css.get("--tg-viewport-height"), "600px");
   assert.equal(fake.css.get("--tg-content-safe-area-inset-bottom"), "32px");
@@ -283,7 +308,7 @@ test("Telegram viewport events expose state and update safe-area CSS variables",
     height: 600,
     stableHeight: 590,
     isExpanded: true,
-    isStateStable: false,
+    isStateStable: true,
     safeAreaInset: { top: 10, right: 11, bottom: 12, left: 13 },
     contentSafeAreaInset: { top: 30, right: 31, bottom: 32, left: 33 },
   });

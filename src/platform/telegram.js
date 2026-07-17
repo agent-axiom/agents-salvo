@@ -134,7 +134,7 @@ export function createTelegramPlatform({
     return value === "light" || value === "dark" ? value : null;
   };
 
-  const supportsSafeArea = () => readOr(
+  const supportsVersion8 = () => readOr(
     () => webApp?.isVersionAtLeast?.("8.0") === true,
     false,
   );
@@ -266,6 +266,7 @@ export function createTelegramPlatform({
       return subscribeButton(readOr(() => webApp?.BackButton, null), listener);
     },
     async onLifecycleChange(listener) {
+      if (!supportsVersion8()) return noOp;
       return subscribeEvents(webApp, [
         ["activated", () => invokeListener(listener, { active: true })],
         ["deactivated", () => invokeListener(listener, { active: false })],
@@ -280,7 +281,7 @@ export function createTelegramPlatform({
       const color = colorsByTheme[getTheme()] ?? colorsByTheme.light;
       await callOptionalAsync(webApp, "setHeaderColor", color);
       await callOptionalAsync(webApp, "setBackgroundColor", color);
-      const safeAreaSupported = supportsSafeArea();
+      const safeAreaSupported = supportsVersion8();
       updateViewportCss(safeAreaSupported);
       if (safeAreaSupported) await callOptionalAsync(webApp, "requestFullscreen");
     },
@@ -298,8 +299,8 @@ export function createTelegramPlatform({
       ]]);
     },
     async onViewportChange(listener) {
-      const safeAreaSupported = supportsSafeArea();
-      let isStateStable = readOr(() => webApp?.isViewportStable === true, false);
+      const safeAreaSupported = supportsVersion8();
+      let isStateStable = false;
       const notify = (event) => {
         const eventState = readOr(() => event?.isStateStable, undefined);
         if (typeof eventState === "boolean") isStateStable = eventState;
