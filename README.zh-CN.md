@@ -6,6 +6,8 @@
 
 在线版本：https://agent-axiom.github.io/agents-salvo/
 
+Telegram Mini App：https://agent-axiom.github.io/agents-salvo/telegram/
+
 ![纸上海战棋棋盘插图](src/assets/salvo-board-action.png)
 
 ## 功能
@@ -33,6 +35,16 @@ npm start
 ```
 
 运行 `npm start` 后打开 `http://localhost:5173`。
+
+## Telegram Mini App
+
+在 [@BotFather](https://t.me/BotFather) 中选择齐射机器人，打开 Main Mini App 设置，并将 URL 设为 `https://agent-axiom.github.io/agents-salvo/telegram/`。
+
+从 Telegram 内打开时，Mini App 会自动将 Telegram 签名的 `initData` 发送到 Cloudflare Worker。Worker 验证签名和数据时效后创建现有的齐射会话，因此玩家无需再次登录。
+
+浏览器、Telegram Mini App、iOS 应用和 Android 应用共享同一份源代码，并由一次 `npm run build` 生成。该构建会输出普通 HTML shell 和 Telegram HTML shell，两者引用同一组带哈希的 JavaScript bundle 和 stylesheet；只有 Telegram shell 加载 Telegram SDK。
+
+发布 Pages artifact 后，Pages 和 Mini App 会立即更新。原生应用启动时不会加载 Pages：每个 APK 或 iOS 应用会打包所选提交的构建，只有在该提交完成打包和发布后才会更新。
 
 ## iOS 和 Android 开发
 
@@ -85,7 +97,7 @@ Android debug APK 和 iOS Simulator 构建不需要 Google Play 或 Apple Develo
 2. 在 Settings -> Pages 中选择 GitHub Actions。
 3. 运行 `Deploy GitHub Pages` workflow，或推送到 `main`。
 
-Workflow 会运行 `npm test`，构建 `dist`，并发布为 Pages artifact。
+Workflow 会运行测试和 coverage gates，构建 `dist`，验证两个 HTML shell 及其共享的带哈希资源，并将结果发布为 Pages artifact。
 
 ## 在线后端
 

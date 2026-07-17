@@ -38,7 +38,29 @@ jobs:
         run: npm run coverage
 
       - name: Build
+        env:
+          SALVO_BUILD_ID: ${{ github.sha }}
         run: npm run build
+
+      - name: Verify Telegram Mini App artifacts
+        env:
+          SALVO_BUILD_ID: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f dist/telegram/index.html
+          test "$(grep -Fc 'telegram-web-app.js' dist/telegram/index.html)" -eq 1
+          ! grep -Fq 'telegram-web-app.js' dist/index.html
+          web_app="$(grep -oE 'app\.[a-f0-9]{10}\.js' dist/index.html)"
+          telegram_app="$(grep -oE 'app\.[a-f0-9]{10}\.js' dist/telegram/index.html)"
+          test "$web_app" = "$telegram_app"
+          test -f "dist/$web_app"
+          web_styles="$(grep -oE 'styles\.[a-f0-9]{10}\.css' dist/index.html)"
+          telegram_styles="$(grep -oE 'styles\.[a-f0-9]{10}\.css' dist/telegram/index.html)"
+          test "$web_styles" = "$telegram_styles"
+          test -f "dist/$web_styles"
+          grep -Fq "buildId: \"$SALVO_BUILD_ID\"" dist/index.html
+          grep -Fq "buildId: \"$SALVO_BUILD_ID\"" dist/telegram/index.html
 
       - name: Configure Pages
         uses: actions/configure-pages@v6

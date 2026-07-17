@@ -263,6 +263,62 @@ function scalarRunCommands(workflow) {
   );
 }
 
+function namedWorkflowStep(workflow, jobName, stepName) {
+  const steps = workflow.jobs[jobName]?.steps;
+  assert.equal(Array.isArray(steps), true, `${jobName} job steps are missing`);
+  const matches = steps
+    .map((step, index) => ({ index, step }))
+    .filter(({ step }) => step.name === stepName);
+  assert.equal(
+    matches.length,
+    1,
+    `${jobName} must contain exactly one ${stepName} step`,
+  );
+  return matches[0];
+}
+
+function assertCommitBuildId(step, label) {
+  assert.deepEqual(step.env, {
+    SALVO_BUILD_ID: "${{ github.sha }}",
+  }, `${label} must use the triggering commit as its build ID`);
+}
+
+function assertTelegramArtifactVerification(workflow, jobName) {
+  const build = namedWorkflowStep(workflow, jobName, "Build");
+  assert.equal(build.step.run, "npm run build");
+  assertCommitBuildId(build.step, `${jobName} Build`);
+
+  const verification = namedWorkflowStep(
+    workflow,
+    jobName,
+    "Verify Telegram Mini App artifacts",
+  );
+  assert.equal(
+    verification.index,
+    build.index + 1,
+    `${jobName} must verify the artifacts immediately after building`,
+  );
+  assert.equal(verification.step.shell, "bash");
+  assertCommitBuildId(verification.step, `${jobName} artifact verification`);
+  assert.equal(
+    verification.step.run.trim(),
+    `set -euo pipefail
+test -f dist/telegram/index.html
+test "$(grep -Fc 'telegram-web-app.js' dist/telegram/index.html)" -eq 1
+! grep -Fq 'telegram-web-app.js' dist/index.html
+web_app="$(grep -oE 'app\\.[a-f0-9]{10}\\.js' dist/index.html)"
+telegram_app="$(grep -oE 'app\\.[a-f0-9]{10}\\.js' dist/telegram/index.html)"
+test "$web_app" = "$telegram_app"
+test -f "dist/$web_app"
+web_styles="$(grep -oE 'styles\\.[a-f0-9]{10}\\.css' dist/index.html)"
+telegram_styles="$(grep -oE 'styles\\.[a-f0-9]{10}\\.css' dist/telegram/index.html)"
+test "$web_styles" = "$telegram_styles"
+test -f "dist/$web_styles"
+grep -Fq "buildId: \\"$SALVO_BUILD_ID\\"" dist/index.html
+grep -Fq "buildId: \\"$SALVO_BUILD_ID\\"" dist/telegram/index.html`,
+  );
+}
+
 test("mobile toolchain is pinned and uses bundled local web assets", () => {
   assert.equal(readFileSync(".nvmrc", "utf8").trim(), "24.14.1");
   assert.equal(packageJson.engines.node, ">=24.14.1 <25");
@@ -359,8 +415,13 @@ test("mobile build emits bundled local web artifacts", () => {
   });
 
   assert.equal(existsSync(join(buildOutput, "index.html")), true);
+  assert.equal(existsSync(join(buildOutput, "telegram/index.html")), true);
   assert.equal(existsSync(join(buildOutput, "assets")), true);
   const rootShell = readFileSync(join(buildOutput, "index.html"), "utf8");
+  const telegramShell = readFileSync(
+    join(buildOutput, "telegram/index.html"),
+    "utf8",
+  );
   const appReferences = [
     ...rootShell.matchAll(/src="\.\/(app\.[a-f0-9]{10}\.js)"/g),
   ];
@@ -370,6 +431,20 @@ test("mobile build emits bundled local web artifacts", () => {
   assert.equal(appReferences.length, 1);
   assert.equal(styleReferences.length, 1);
   assert.doesNotMatch(rootShell, /telegram-web-app\.js/);
+  assert.equal(
+    (telegramShell.match(/telegram-web-app\.js/g) ?? []).length,
+    1,
+  );
+  assert.equal(
+    telegramShell.match(/src="\.\.\/(app\.[a-f0-9]{10}\.js)"/)?.[1],
+    appReferences[0][1],
+  );
+  assert.equal(
+    telegramShell.match(/href="\.\.\/(styles\.[a-f0-9]{10}\.css)"/)?.[1],
+    styleReferences[0][1],
+  );
+  assert.match(rootShell, /buildId: "dev"/);
+  assert.match(telegramShell, /buildId: "dev"/);
 
   const localAssetReferences = [
     ...rootShell.matchAll(/(?:href|src)="([^"]+)"/g),
@@ -838,8 +913,12 @@ jobs:
 
 test("Pages CI uses the pinned Node toolchain and preserves deployment", () => {
   const workflow = readWorkflow(".github/workflows/pages.yml");
+  const parsedWorkflow = parseWorkflowSource(
+    workflow,
+    ".github/workflows/pages.yml",
+  );
   assertWorkflowStructure(
-    parseWorkflowSource(workflow, ".github/workflows/pages.yml"),
+    parsedWorkflow,
     { triggers: ["push", "workflow_dispatch"], jobs: ["build", "deploy"] },
   );
   const build = workflowJob(workflow, "build");
@@ -858,6 +937,7 @@ test("Pages CI uses the pinned Node toolchain and preserves deployment", () => {
     "npm run coverage",
     "npm run build",
   ]);
+  assertTelegramArtifactVerification(parsedWorkflow, "build");
   assert.match(build, /uses: actions\/configure-pages@v6/);
   assert.match(
     build,
@@ -908,6 +988,10 @@ test("mobile CI covers branch builds without signing credentials", () => {
 
 test("mobile CI validates the web build and coverage gate", () => {
   const workflow = readWorkflow(".github/workflows/mobile.yml");
+  const parsedWorkflow = parseWorkflowSource(
+    workflow,
+    ".github/workflows/mobile.yml",
+  );
   const web = workflowJob(workflow, "web");
 
   assert.match(web, /^  web:\n    runs-on: ubuntu-latest$/m);
@@ -923,10 +1007,15 @@ test("mobile CI validates the web build and coverage gate", () => {
     "npm run coverage",
     "npm run build",
   ]);
+  assertTelegramArtifactVerification(parsedWorkflow, "web");
 });
 
 test("mobile CI tests, lints, and packages the Android debug app", () => {
   const workflow = readWorkflow(".github/workflows/mobile.yml");
+  const parsedWorkflow = parseWorkflowSource(
+    workflow,
+    ".github/workflows/mobile.yml",
+  );
   const android = workflowJob(workflow, "android");
 
   assert.match(android, /^  android:\n    runs-on: ubuntu-latest$/m);
@@ -946,6 +1035,10 @@ test("mobile CI tests, lints, and packages the Android debug app", () => {
     "npm run mobile:sync",
     "android/gradlew -p android test lint assembleDebug",
   ]);
+  assertCommitBuildId(
+    namedWorkflowStep(parsedWorkflow, "android", "Sync native projects").step,
+    "Android native sync",
+  );
   assert.deepEqual(
     actionVersions(android, "ReactiveCircus/android-emulator-runner"),
     ["a421e43855164a8197daf9d8d40fe71c6996bb0d"],
@@ -962,6 +1055,10 @@ test("mobile CI tests, lints, and packages the Android debug app", () => {
 
 test("mobile CI builds an unsigned iOS Simulator app and retains failures", () => {
   const workflow = readWorkflow(".github/workflows/mobile.yml");
+  const parsedWorkflow = parseWorkflowSource(
+    workflow,
+    ".github/workflows/mobile.yml",
+  );
   const ios = workflowJob(workflow, "ios");
 
   assert.match(ios, /^  ios:\n    runs-on: macos-26$/m);
@@ -976,6 +1073,10 @@ test("mobile CI builds an unsigned iOS Simulator app and retains failures", () =
     "npm ci",
     "npm run mobile:sync",
   ]);
+  assertCommitBuildId(
+    namedWorkflowStep(parsedWorkflow, "ios", "Sync native projects").step,
+    "iOS native sync",
+  );
   assert.match(
     ios,
     /if: \$\{\{ always\(\) && steps\.ios_build\.outcome == 'failure' \}\}\n\s+uses: actions\/upload-artifact@v7\n\s+with:\n\s+name: ios-xcodebuild-log\n\s+path: xcodebuild\.log\n\s+if-no-files-found: error/,
@@ -984,4 +1085,42 @@ test("mobile CI builds an unsigned iOS Simulator app and retains failures", () =
     ios,
     /id: ios_build\n\s+shell: bash\n\s+run: \|\n\s+set -o pipefail\n\s+xcodebuild -project ios\/App\/App\.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build 2>&1 \| tee xcodebuild\.log/,
   );
+});
+
+test("localized READMEs document Telegram Mini App delivery", () => {
+  const publicMiniAppUrl =
+    "https://agent-axiom.github.io/agents-salvo/telegram/";
+  const expectations = [
+    {
+      path: "README.md",
+      publicUrl: /^Telegram Mini App: https:\/\/agent-axiom\.github\.io\/agents-salvo\/telegram\/$/m,
+      automaticAuth: /automatically sends Telegram's signed `initData`/,
+      sharedBuild: /one source tree and one `npm run build`/,
+      delivery: /Pages and the Mini App update immediately[\s\S]*selected commit/,
+    },
+    {
+      path: "README.ru.md",
+      publicUrl: /^Публичный Telegram Mini App: https:\/\/agent-axiom\.github\.io\/agents-salvo\/telegram\/$/m,
+      automaticAuth: /автоматически отправляет подписанный Telegram `initData`/,
+      sharedBuild: /единое дерево исходного кода и одну команду `npm run build`/,
+      delivery: /Pages и Mini App обновляются сразу[\s\S]*выбранного коммита/,
+    },
+    {
+      path: "README.zh-CN.md",
+      publicUrl: /^Telegram Mini App：https:\/\/agent-axiom\.github\.io\/agents-salvo\/telegram\/$/m,
+      automaticAuth: /自动将 Telegram 签名的 `initData`/,
+      sharedBuild: /共享同一份源代码，并由一次 `npm run build`/,
+      delivery: /Pages 和 Mini App 会立即更新[\s\S]*所选提交/,
+    },
+  ];
+
+  for (const expectation of expectations) {
+    const readme = readFileSync(expectation.path, "utf8");
+    assert.equal(readme.includes(publicMiniAppUrl), true, expectation.path);
+    assert.match(readme, expectation.publicUrl, expectation.path);
+    assert.match(readme, /@BotFather[\s\S]*Main Mini App/, expectation.path);
+    assert.match(readme, expectation.automaticAuth, expectation.path);
+    assert.match(readme, expectation.sharedBuild, expectation.path);
+    assert.match(readme, expectation.delivery, expectation.path);
+  }
 });
