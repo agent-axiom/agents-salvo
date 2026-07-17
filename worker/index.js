@@ -39,6 +39,8 @@ const telegramWebTarget = "https://agent-axiom.github.io/agents-salvo/";
 const telegramFlowTtlSeconds = 5 * 60;
 const telegramTicketTtlSeconds = 5 * 60;
 const maxTelegramJsonBytes = 1024;
+const telegramMiniAppJsonEnvelopeBytes = 15;
+const maxTelegramMiniAppJsonBytes = 16 * 1024 + telegramMiniAppJsonEnvelopeBytes;
 const maxTelegramCodeLength = 4096;
 const telegramSecretPattern = /^[A-Za-z0-9_-]{43}$/;
 const telegramPlatforms = new Set(["web", "android", "ios"]);
@@ -810,7 +812,7 @@ async function authenticateTelegramMiniApp(request, env) {
     if (!env?.DB || typeof env.TELEGRAM_BOT_TOKEN !== "string" || env.TELEGRAM_BOT_TOKEN.length === 0) {
       throw new Error("Unavailable");
     }
-    const { initData } = await readStrictTelegramJson(request, "initData", 16 * 1024);
+    const { initData } = await readStrictTelegramJson(request, "initData", maxTelegramMiniAppJsonBytes);
     const { user } = await verifyTelegramMiniAppInitData(initData, env.TELEGRAM_BOT_TOKEN);
     const { token } = await createSession(env.DB, user);
     return json({ token, user });

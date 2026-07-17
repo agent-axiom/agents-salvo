@@ -4,7 +4,9 @@ import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
+import { createTelegramMiniAppAuthClient } from "../src/telegram-mini-app-auth.js";
 import worker from "../worker/index.js";
+import { verifyTelegramMiniAppInitData } from "../worker/telegram-mini-app-auth.js";
 
 const cryptoApi = globalThis.crypto ?? webcrypto;
 const textEncoder = new TextEncoder();
@@ -28,6 +30,7 @@ const expectedUser = {
   photoUrl: "https://t.me/i/userpic/320/avatar.jpg",
 };
 const authenticationFailure = JSON.stringify({ error: "Telegram Mini App authentication failed" });
+const maxInitDataBytes = 16 * 1024;
 
 test("Telegram Mini App auth creates an opaque session for the existing Telegram identity", async (t) => {
   const db = memoryD1(t);
@@ -49,6 +52,33 @@ test("Telegram Mini App auth creates an opaque session for the existing Telegram
   );
   assert.equal(me.status, 200);
   assert.deepEqual(await me.json(), { user: payload.user });
+});
+
+test("Mini App client and Worker accept the exact raw initData boundary", async (t) => {
+  const db = memoryD1(t);
+  const initData = await signedInitDataAtByteLength(maxInitDataBytes);
+  const oversizedInitData = `${initData}x`;
+  let fetchCalls = 0;
+  const client = createTelegramMiniAppAuthClient({
+    workerUrl: "https://worker.test",
+    async fetcher(url, init) {
+      fetchCalls += 1;
+      assert.equal(textEncoder.encode(init.body).byteLength, maxInitDataBytes + 15);
+      return worker.fetch(new Request(url, init), { DB: db, TELEGRAM_BOT_TOKEN: botToken });
+    },
+  });
+
+  const payload = await client.authenticate(initData);
+  assert.deepEqual(payload.user, expectedUser);
+  assert.match(payload.token, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(fetchCalls, 1);
+
+  await assert.rejects(client.authenticate(oversizedInitData), { name: "TypeError" });
+  await assert.rejects(
+    verifyTelegramMiniAppInitData(oversizedInitData, botToken),
+    { message: "Telegram Mini App authentication failed" },
+  );
+  assert.equal(fetchCalls, 1);
 });
 
 test("Telegram Mini App auth route matches only the exact path and POST method", async () => {
@@ -212,6 +242,15 @@ async function signedInitData(overrides = {}) {
   const secret = await hmac(textEncoder.encode("WebAppData"), botToken);
   const hash = bytesToHex(await hmac(secret, dataCheckString));
   return new URLSearchParams({ ...fields, hash }).toString();
+}
+
+async function signedInitDataAtByteLength(byteLength) {
+  const empty = await signedInitData({ query_id: "" });
+  const paddingLength = byteLength - textEncoder.encode(empty).byteLength;
+  assert.ok(paddingLength > 0);
+  const initData = await signedInitData({ query_id: "x".repeat(paddingLength) });
+  assert.equal(textEncoder.encode(initData).byteLength, byteLength);
+  return initData;
 }
 
 async function hmac(secret, value) {

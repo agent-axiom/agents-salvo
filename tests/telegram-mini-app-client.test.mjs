@@ -180,6 +180,30 @@ test("responses require successful JSON with a body no larger than 16 KiB", asyn
   }
 });
 
+test("non-success responses cancel stalled bodies before request cleanup", async () => {
+  const caller = trackedAbortController();
+  const stalled = stalledRejectedResponse(503);
+  const client = createTelegramMiniAppAuthClient({
+    workerUrl: "https://worker.test",
+    timeoutMs: 1_000,
+    fetcher: async () => stalled.response,
+  });
+
+  const pending = client.authenticate("signed-launch-data", { signal: caller.signal });
+  const firstEvent = await Promise.race([
+    stalled.cancelStarted.then(() => "cancelled"),
+    pending.then(() => "settled", () => "settled"),
+  ]);
+
+  assert.equal(firstEvent, "cancelled");
+  assert.deepEqual(caller.listenerCounts(), { added: 1, removed: 0 });
+  stalled.releaseCancel();
+  const error = await rejectedWithin(pending);
+  assertGenericClientError(error, 503);
+  assert.equal(stalled.cancelCalls(), 1);
+  assert.deepEqual(caller.listenerCounts(), { added: 1, removed: 1 });
+});
+
 test("response validation accepts only exact tokens and public Telegram users", async () => {
   const malformed = [
     null,
@@ -428,6 +452,29 @@ function stallingJsonResponse() {
       body: { getReader: () => reader },
     },
     readStalled: readStalled.promise,
+    cancelCalls: () => cancellations,
+  };
+}
+
+function stalledRejectedResponse(status) {
+  const started = deferred();
+  const cancellation = deferred();
+  let cancellations = 0;
+  return {
+    response: {
+      ok: false,
+      status,
+      headers: new Headers({ "Content-Type": "application/json" }),
+      body: {
+        cancel() {
+          cancellations += 1;
+          started.resolve();
+          return cancellation.promise;
+        },
+      },
+    },
+    cancelStarted: started.promise,
+    releaseCancel: cancellation.resolve,
     cancelCalls: () => cancellations,
   };
 }
