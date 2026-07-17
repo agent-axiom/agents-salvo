@@ -1133,7 +1133,8 @@ async function runTelegramLaunchSharingScenario() {
   const failedApp = bootSalvoApp(failed.dependencies);
   await failedApp.startup.done;
   await failed.root.click("share-telegram");
-  assert.equal(failedApp.getState().online.error, "Could not share.");
+  assert.equal(failedApp.getState().online.error, "");
+  assert.equal(failedApp.getState().online.shareStatus, "share-failed");
   assert.match(failed.root.innerHTML, /Could not share\./);
   assert.deepEqual(failed.calls.openedUrls, [], "failed Telegram sharing must remain failed");
 
@@ -1231,45 +1232,63 @@ async function runTelegramLaunchSharingScenario() {
 
 async function runTelegramShareStatusRaceScenario() {
   const { bootSalvoApp } = await import("../src/app.js");
-  const shareResult = deferred();
-  let remoteHandlers = null;
-  const harness = createAppHarness({
-    platformName: "telegram",
-    launchData: "signed-share-race-init-data",
-    startParam: "room_RACE",
-    shareResult: shareResult.promise,
-    createRemoteClient(handlers) {
-      remoteHandlers = handlers;
-      return remoteClientHarness({
-        async joinRoom(roomCode) {
-          return { roomCode, playerId: "p2", playerToken: "private-token", presetId: "classic" };
-        },
-      });
-    },
-    fetchResponse(url) {
-      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
-      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
-      throw new Error(`Unexpected fetch: ${url}`);
-    },
-  });
-  const app = bootSalvoApp(harness.dependencies);
-  await app.startup.done;
-  assert.ok(remoteHandlers);
+  for (const [name, roomCode, outcome, expectedShareStatus, feedbackPattern, feedbackRole] of [
+    ["copied", "COPY", { shared: false, copied: true }, "invite-copied", /Room invite link copied/, "status"],
+    ["failed", "FAIL", { shared: false, copied: false }, "share-failed", /Could not share\./, "alert"],
+  ]) {
+    const shareResult = deferred();
+    let remoteHandlers = null;
+    const harness = createAppHarness({
+      platformName: "telegram",
+      launchData: `signed-${name}-share-race-init-data`,
+      startParam: `room_${roomCode}`,
+      shareResult: shareResult.promise,
+      createRemoteClient(handlers) {
+        remoteHandlers = handlers;
+        return remoteClientHarness({
+          async joinRoom(joinedRoomCode) {
+            return {
+              roomCode: joinedRoomCode,
+              playerId: "p2",
+              playerToken: "private-token",
+              presetId: "classic",
+            };
+          },
+        });
+      },
+      fetchResponse(url) {
+        if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+        if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+        throw new Error(`Unexpected fetch: ${url}`);
+      },
+    });
+    const app = bootSalvoApp(harness.dependencies);
+    await app.startup.done;
+    assert.ok(remoteHandlers, name);
 
-  const sharing = harness.root.click("share-telegram");
-  await waitFor(() => harness.calls.sharePayloads.length === 1);
-  remoteHandlers.onStatus("disconnected");
-  assert.equal(app.getState().online.status, "disconnected");
+    const sharing = harness.root.click("share-telegram");
+    await waitFor(() => harness.calls.sharePayloads.length === 1);
+    remoteHandlers.onStatus("disconnected");
+    remoteHandlers.onError(new Error("connection failed"));
+    assert.equal(app.getState().online.status, "disconnected", name);
+    assert.equal(app.getState().online.error, "connection failed", name);
 
-  shareResult.resolve({ shared: false, copied: true });
-  await sharing;
-  assert.equal(app.getState().online.status, "disconnected");
-  assert.equal(app.getState().online.shareStatus, "invite-copied");
-  assert.match(harness.root.innerHTML, /Disconnected/);
-  assert.match(harness.root.innerHTML, /Room invite link copied/);
-  assert.doesNotMatch(harness.root.innerHTML, /Could not share/);
+    shareResult.resolve(outcome);
+    await sharing;
+    assert.equal(app.getState().online.status, "disconnected", name);
+    assert.equal(app.getState().online.error, "connection failed", name);
+    assert.equal(app.getState().online.shareStatus, expectedShareStatus, name);
+    assert.match(harness.root.innerHTML, /Disconnected/, name);
+    assert.match(harness.root.innerHTML, /connection failed/, name);
+    assert.match(harness.root.innerHTML, feedbackPattern, name);
+    assert.match(
+      harness.root.innerHTML,
+      new RegExp(`class="status-line online-share-status[^"]*" role="${feedbackRole}"`),
+      name,
+    );
 
-  await app.stop();
+    await app.stop();
+  }
 }
 
 async function runTelegramAuthRecoveryScenario() {

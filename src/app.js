@@ -4339,12 +4339,15 @@ async function shareRoom() {
       url = "";
     }
   }
+  state.online.shareStatus = "";
+  if (showingResult) state.resultCopyStatus = "";
+  render();
   const outcome = url
     ? await shareWithTelegramFallback(text, url)
     : { shared: false, copied: false };
-  const succeeded = outcome.shared || outcome.copied;
-  state.online.shareStatus = outcome.copied ? "invite-copied" : "";
-  state.online.error = succeeded ? "" : translate("share.failed");
+  state.online.shareStatus = outcome.shared
+    ? ""
+    : outcome.copied ? "invite-copied" : "share-failed";
   if (showingResult) {
     state.resultCopyStatus = outcome.shared
       ? ""
@@ -5710,7 +5713,9 @@ function renderOnlineStatus(snapshot) {
 
 function renderOnlineShareStatus() {
   if (!state.online.shareStatus) return "";
-  return `<p class="status-line online-share-status" role="status">${onlineStatusText(state.online.shareStatus)}</p>`;
+  const failed = state.online.shareStatus === "share-failed";
+  const message = translate(failed ? "share.failed" : "online.inviteCopied");
+  return `<p class="status-line online-share-status${failed ? " is-error" : ""}" role="${failed ? "alert" : "status"}">${message}</p>`;
 }
 
 function currentResultKey() {
