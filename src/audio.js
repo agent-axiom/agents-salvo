@@ -154,7 +154,7 @@ export function createAudioController() {
       return false;
     }
 
-    const element = new Audio(resolveAudioUrl(source));
+    const element = new Audio(source);
     element.loop = true;
     element.preload = "auto";
     element.volume = MUSIC_VOLUME;
@@ -197,8 +197,4 @@ function chooseMenuTrack() {
   }
   const index = Math.floor(Math.random() * menuMusicTracks.length);
   return menuMusicTracks[index];
-}
-
-function resolveAudioUrl(source) {
-  return new URL(source, import.meta.url).href;
 }

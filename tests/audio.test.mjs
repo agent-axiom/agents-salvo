@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { access, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import * as audioCore from "../src/core/audio.js";
 import { createAudioController } from "../src/audio.js";
@@ -26,16 +27,22 @@ test("soundPresets include all gameplay and interface events", () => {
 });
 
 test("menuMusicTracks include both mp3 menu loops", () => {
-  assert.deepEqual(audioCore.menuMusicTracks, [
-    "./assets/audio/menu-loop.mp3",
-    "./assets/audio/menu-loop-v2.mp3",
-  ]);
+  for (const source of audioCore.menuMusicTracks) {
+    assert.match(source, /^file:/);
+  }
+  assert.deepEqual(
+    audioCore.menuMusicTracks.map((source) => fileURLToPath(source)),
+    [
+      resolve("src/assets/audio/menu-loop.mp3"),
+      resolve("src/assets/audio/menu-loop-v2.mp3"),
+    ],
+  );
 });
 
 test("configured menu mp3 audio assets exist in source tree", async () => {
   for (const source of audioCore.menuMusicTracks) {
-    assert.match(source, /^\.\/assets\/audio\/.+\.mp3$/);
-    await access(resolve("src", source.slice(2)));
+    assert.match(source, /^file:.+\/assets\/audio\/.+\.mp3$/);
+    await access(fileURLToPath(source));
   }
 });
 

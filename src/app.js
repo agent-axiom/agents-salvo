@@ -1,4 +1,5 @@
 import { chooseAgentShot } from "./core/ai.js";
+import { assetUrl } from "./asset-url.js";
 import { createAudioController } from "./audio.js";
 import {
   createLocalBattleSnapshotStore,
@@ -66,6 +67,9 @@ import { createMobileRuntime } from "./mobile.js";
 import { platform } from "./platform/index.js";
 import { RemoteClient } from "./remote.js";
 import { createTelegramAuthClient } from "./telegram-auth.js";
+
+export { assetUrl };
+export { menuMusicTracks } from "./core/audio.js";
 
 export function bootSalvoApp({
   document: appDocument = globalThis.document,
@@ -1501,11 +1505,11 @@ function renderLeaderboard(leaderboard) {
 
 function menuArtworkSource() {
   if (state.visualStyle !== "render") {
-    return "./assets/salvo-board-action.png";
+    return assetUrl("./assets/salvo-board-action.png");
   }
   return state.theme === "dark"
-    ? "./assets/images/backgrounds/main-menu-hero-dark-no-ui.png"
-    : "./assets/images/backgrounds/main-menu-hero-no-ui.png";
+    ? assetUrl("./assets/images/backgrounds/main-menu-hero-dark-no-ui.png")
+    : assetUrl("./assets/images/backgrounds/main-menu-hero-no-ui.png");
 }
 
 function renderPresetSelector() {
@@ -5140,7 +5144,9 @@ function shipSprite(cell, kind, board, coordinate) {
   const orientation = shipOrientation(ship);
   const state = shipState(ship);
   const direction = orientation === "horizontal" ? "h" : "v";
-  const path = `./assets/images/ships/ship-${ship.length}-${direction}-${state}.png`;
+  const path = assetUrl(
+    `./assets/images/ships/ship-${ship.length}-${direction}-${state}.png`,
+  );
   return `<span class="ship-sprite ship-sprite-${direction}" style="--ship-cells: ${ship.length}; --ship-image: url('${path}')" aria-hidden="true"></span>`;
 }
 
@@ -5177,18 +5183,18 @@ function markerSprite(cell, kind) {
   }
   const path =
     cell.markerType === "mine"
-      ? "./assets/images/special/mine.png"
-      : "./assets/images/special/minesweeper-2-h-normal.png";
+      ? assetUrl("./assets/images/special/mine.png")
+      : assetUrl("./assets/images/special/minesweeper-2-h-normal.png");
   return `<span class="marker-sprite marker-sprite-${cell.markerType}" style="--marker-image: url('${path}')" aria-hidden="true"></span>`;
 }
 
 function shotSprite(cell, kind, board, coordinate) {
   const paths = {
-    miss: "./assets/images/markers/miss-blue-dot.png",
-    hit: "./assets/images/effects/hit-explosion-smoke.png",
-    sunk: "./assets/images/effects/sunk-destruction-smoke.png",
-    mine: "./assets/images/special/mine-triggered.png",
-    sweeper: "./assets/images/special/mine-disabled.png",
+    miss: assetUrl("./assets/images/markers/miss-blue-dot.png"),
+    hit: assetUrl("./assets/images/effects/hit-explosion-smoke.png"),
+    sunk: assetUrl("./assets/images/effects/sunk-destruction-smoke.png"),
+    mine: assetUrl("./assets/images/special/mine-triggered.png"),
+    sweeper: assetUrl("./assets/images/special/mine-disabled.png"),
   };
   const path = paths[cell.shot];
   if (!path) {
