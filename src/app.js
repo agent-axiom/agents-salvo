@@ -67,6 +67,7 @@ import { createMobileRuntime } from "./mobile.js";
 import { platform } from "./platform/index.js";
 import { RemoteClient } from "./remote.js";
 import { createTelegramAuthClient } from "./telegram-auth.js";
+import { createTelegramMiniAppAuthClient } from "./telegram-mini-app-auth.js";
 
 export { assetUrl };
 export { menuMusicTracks } from "./core/audio.js";
@@ -86,6 +87,8 @@ const navigator = appNavigator;
 const platform = appPlatform;
 const audio = appAudio;
 const fetch = appFetch;
+const isTelegramMiniApp = platform.getPlatform() === "telegram";
+const buildId = validateBuildId(window.SALVO_CONFIG?.buildId);
 const telegramAuthBootstrap = platform.isNative()
   ? { type: "none" }
   : captureTelegramAuthBootstrap({ rawUrl: window.location.href, history: window.history });
@@ -101,6 +104,8 @@ const resultReplayClock = createReplayClock({
 });
 let telegramWidgetScheduled = false;
 let platformHydrationRenderScheduled = false;
+let hasExplicitThemePreference = false;
+let closingConfirmationEnabled = null;
 let leaveDialogReturnFocus = null;
 let pendingLeaveTransition = null;
 const initialRequestedReplayId = replayIdFromSearch(window.location.search);
@@ -211,7 +216,17 @@ const state = {
 };
 
 let telegramAuthClient = null;
-if (state.auth.workerUrl) {
+let telegramMiniAppClient = null;
+if (state.auth.workerUrl && isTelegramMiniApp) {
+  try {
+    telegramMiniAppClient = createTelegramMiniAppAuthClient({
+      workerUrl: state.auth.workerUrl,
+      fetcher: fetch,
+    });
+  } catch {
+    telegramMiniAppClient = null;
+  }
+} else if (state.auth.workerUrl) {
   try {
     telegramAuthClient = createTelegramAuthClient({
       workerUrl: state.auth.workerUrl,
@@ -260,13 +275,22 @@ const mobileRuntime = createMobileRuntime({
   onNetwork: handleNetwork,
   onDeepLink: handlePlatformDeepLink,
   onBack: handlePlatformBack,
+  onSettings: handlePlatformSettings,
+  onThemeChange: handlePlatformThemeChange,
   pauseAudio: () => audio.pauseForLifecycle(),
   resumeAudio: () => audio.resumeForLifecycle(state.audioEnabled, state.screen === "menu"),
   onRuntimeError: reportRuntimeError,
 });
 
 function getInitialTheme() {
+  const platformTheme = isTelegramMiniApp ? platform.getTheme?.() : null;
+  if (["light", "dark"].includes(platformTheme)) return platformTheme;
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function validateBuildId(value) {
+  const buildIdPattern = /^[A-Za-z0-9._-]{1,64}$/;
+  return typeof value === "string" && buildIdPattern.test(value) ? value : "dev";
 }
 
 function getInitialVisualStyle() {
@@ -288,6 +312,7 @@ function hydratePlatformPreferences() {
     }),
     preferenceCoordinator.hydrate("theme", (theme) => {
       if (["light", "dark"].includes(theme)) {
+        hasExplicitThemePreference = true;
         state.theme = theme;
         schedulePlatformHydrationRender();
       }
@@ -396,6 +421,19 @@ function handleNetwork(status) {
   render();
 }
 
+function handlePlatformSettings() {
+  state.settingsOpen = true;
+  state.profileOpen = false;
+  state.leaderboardOpen = false;
+  render();
+}
+
+function handlePlatformThemeChange(theme) {
+  if (hasExplicitThemePreference || !["light", "dark"].includes(theme)) return;
+  state.theme = theme;
+  render();
+}
+
 function requireOnline(onOffline) {
   if (hasConfirmedNetworkConnection(state.network)) return true;
   const message = `${translate("network.offline")} ${translate("network.retry")}`;
@@ -409,16 +447,22 @@ function startMobileApp() {
     startRuntime: () => mobileRuntime.start(),
     hydratePreferences: hydratePlatformPreferences,
     hydrateSecureSession,
-    refreshAuth: telegramAuthBootstrap.type === "ticket" ? async () => {} : refreshAuth,
+    refreshAuth: isTelegramMiniApp
+      ? authenticateTelegramMiniApp
+      : telegramAuthBootstrap.type === "ticket" ? async () => {} : refreshAuth,
     refreshLeaderboard,
     onError: reportRuntimeError,
   });
-  const capabilityReady = services.runtimeReady.then(loadTelegramAuthCapability);
-  const bootstrapReady = Promise.all([
-    services.runtimeReady,
-    services.secureSessionReady,
-    capabilityReady,
-  ]).then(processTelegramAuthBootstrap);
+  const capabilityReady = isTelegramMiniApp
+    ? services.runtimeReady
+    : services.runtimeReady.then(loadTelegramAuthCapability);
+  const bootstrapReady = isTelegramMiniApp
+    ? services.authReady
+    : Promise.all([
+        services.runtimeReady,
+        services.secureSessionReady,
+        capabilityReady,
+      ]).then(processTelegramAuthBootstrap);
   const done = Promise.all([services.done, capabilityReady, bootstrapReady]).then(() => undefined);
   return {
     ...services,
@@ -469,6 +513,77 @@ async function processTelegramAuthBootstrap() {
     return cancelTelegramAuth();
   }
   return false;
+}
+
+async function authenticateTelegramMiniApp() {
+  let launchData = "";
+  let available = false;
+  try {
+    available = platform.isAvailable();
+    launchData = platform.getLaunchData();
+  } catch {
+    available = false;
+  }
+  if (!available || !launchData || !telegramMiniAppClient) {
+    state.auth.method = "miniapp-unavailable";
+    state.auth.error = translate("auth.unavailable");
+    state.auth.loading = false;
+    render();
+    return false;
+  }
+
+  state.auth.method = "miniapp";
+  if (!requireOnline(() => {
+    state.auth.error = translate("auth.unavailable");
+  })) return false;
+
+  authCallbacksBlocked = false;
+  const request = captureAuthRequest();
+  const controller = beginPrivateRequest("auth");
+  state.auth.loading = true;
+  state.auth.opening = false;
+  state.auth.error = "";
+  render();
+  try {
+    const authPayload = await telegramMiniAppClient.authenticate(launchData, {
+      signal: controller.signal,
+    });
+    if (!authOperationIsCurrent(request, controller)) return false;
+    const established = await establishAuthSession(
+      authPayload.token,
+      authPayload.user,
+      () => authOperationIsCurrent(request, controller),
+    );
+    if (!established) return false;
+    render();
+    const sessionRequest = captureAuthRequest();
+    await refreshProfile();
+    if (authRequestIsCurrent(sessionRequest, currentAuthRequest())) {
+      await resumeRequestedReplay();
+    }
+    return true;
+  } catch (error) {
+    if (isAbortError(error) || !authOperationIsCurrent(request, controller)) {
+      return false;
+    }
+    const errorKey = error?.authKey === "auth.secureStorageFailed"
+      ? "auth.secureStorageFailed"
+      : "auth.unavailable";
+    await invalidateAuthSession({
+      error: translate(errorKey),
+      preserveRequestedId: true,
+    });
+    render();
+    return false;
+  } finally {
+    if (authOperationIsCurrent(request, controller)) {
+      state.auth.loading = false;
+      finishPrivateRequest("auth", controller);
+      render();
+    } else {
+      finishPrivateRequest("auth", controller);
+    }
+  }
 }
 
 function reportRuntimeError(error) {
@@ -581,6 +696,7 @@ function render() {
   } else {
     leaveDialogFocus.deactivate();
   }
+  syncClosingConfirmation();
   mountTelegramLoginWidget();
   syncMenuMusic();
 }
@@ -765,6 +881,7 @@ function renderSettingsPanel() {
         </select>
       </label>
       ${renderAuthControl()}
+      <small class="settings-build-id">Build: ${escapeHtml(buildId)}</small>
     </section>
   `;
 }
@@ -2914,7 +3031,9 @@ root.addEventListener("click", async (event) => {
   if (action === "share-telegram") await shareRoom();
   if (action === "battle-tab") selectBattleTab(button.dataset.tab);
   if (action === "auth-telegram-oidc") await startTelegramOidc();
-  if (action === "auth-telegram-retry") await loadTelegramAuthCapability();
+  if (action === "auth-telegram-retry") {
+    await (isTelegramMiniApp ? authenticateTelegramMiniApp() : loadTelegramAuthCapability());
+  }
   if (action === "auth-logout") await logoutAuth();
   if (action === "refresh-profile") await refreshProfile();
   if (action === "refresh-leaderboard") await refreshLeaderboard();
@@ -3062,6 +3181,14 @@ function hasUnfinishedBattle() {
   if (state.screen === "training") return state.training.session?.phase !== "finished";
   if (state.screen === "online") return state.online.snapshot?.phase !== "finished";
   return false;
+}
+
+function syncClosingConfirmation() {
+  if (!isTelegramMiniApp || typeof platform.setClosingConfirmation !== "function") return;
+  const enabled = hasUnfinishedBattle();
+  if (closingConfirmationEnabled === enabled) return;
+  closingConfirmationEnabled = enabled;
+  observePlatformWrite(platform.setClosingConfirmation(enabled));
 }
 
 function cancelLeaveBattle() {
@@ -3357,6 +3484,7 @@ function closeLeaderboardPopover() {
 }
 
 async function toggleTheme() {
+  hasExplicitThemePreference = true;
   state.theme = state.theme === "dark" ? "light" : "dark";
   render();
   await preferenceCoordinator.write("theme", state.theme);
@@ -4011,7 +4139,7 @@ function remoteHandlers() {
 }
 
 function mountTelegramLoginWidget() {
-  if (platform.isNative() || state.auth.method !== "legacy") {
+  if (isTelegramMiniApp || platform.isNative() || state.auth.method !== "legacy") {
     return;
   }
   const slot = document.querySelector("#telegram-login-slot");

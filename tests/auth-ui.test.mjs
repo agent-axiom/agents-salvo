@@ -31,6 +31,24 @@ test("frontend selects legacy or OIDC Telegram login from worker capability", ()
   assert.doesNotMatch(app, /auth\.mobileSecureLoginPending/);
 });
 
+test("Telegram Mini App auth is isolated from legacy Telegram login startup", () => {
+  assert.match(app, /import \{ createTelegramMiniAppAuthClient \} from "\.\/telegram-mini-app-auth\.js"/);
+  assert.match(app, /platform\.getPlatform\(\) === "telegram"/);
+  assert.match(app, /createTelegramMiniAppAuthClient\(\{/);
+  assert.match(app, /authenticateTelegramMiniApp/);
+  assert.match(app, /platform\.getLaunchData\(\)/);
+  assert.match(app, /miniapp-unavailable/);
+  assert.match(app, /telegramMiniAppClient\.authenticate\(launchData/);
+  assert.match(app, /establishAuthSession\(/);
+});
+
+test("runtime settings metadata validates and escapes the shared build identifier", () => {
+  assert.match(app, /\^\[A-Za-z0-9\._-\]\{1,64\}\$/);
+  assert.match(app, /window\.SALVO_CONFIG\?\.buildId/);
+  assert.match(app, /settings-build-id/);
+  assert.match(app, /escapeHtml\(buildId\)/);
+});
+
 test("Telegram login requires an explicit, readable privacy consent control", () => {
   assert.match(app, /data-action="auth-consent"/);
   assert.match(app, /authConsentSettingKey/);

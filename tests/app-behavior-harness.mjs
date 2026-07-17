@@ -26,6 +26,10 @@ const scenarios = {
   "auth-native-callback": runAuthNativeCallbackScenario,
   "auth-races": runAuthRacesScenario,
   "auth-bootstrap": runAuthBootstrapScenario,
+  "telegram-bootstrap": runTelegramBootstrapScenario,
+  "telegram-auth-recovery": runTelegramAuthRecoveryScenario,
+  "telegram-runtime": runTelegramRuntimeScenario,
+  "telegram-theme-build": runTelegramThemeBuildScenario,
   "auth-recovery": runAuthRecoveryScenario,
 };
 const scenario = scenarios[scenarioName];
@@ -633,6 +637,268 @@ async function runAuthBootstrapScenario() {
   await Promise.all([app.stop(), cancelledApp.stop()]);
 }
 
+async function runTelegramBootstrapScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const authResponse = deferred();
+  const sessionToken = "t".repeat(43);
+  const user = telegramUser("mini-app-user", "Mini App Captain");
+  const harness = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-init-data",
+    miniAppResponse: () => authResponse.promise,
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+
+  const app = bootSalvoApp(harness.dependencies);
+  await waitFor(() => harness.fetchCalls.some(({ url }) => (
+    url.endsWith("/auth/telegram/miniapp")
+  )));
+  assert.ok(harness.calls.networkSamples >= 1, "auth waits for the first runtime network sample");
+  const authRequest = harness.fetchCalls.find(({ url }) => (
+    url.endsWith("/auth/telegram/miniapp")
+  ));
+  assert.deepEqual(JSON.parse(authRequest.init.body), { initData: "signed-init-data" });
+  assert.equal(harness.fetchCalls.some(({ url }) => url.endsWith("/auth/telegram/config")), false);
+
+  authResponse.resolve({ token: sessionToken, user });
+  await app.startup.authReady;
+  assert.equal(app.getState().auth.user.id, user.id);
+  assert.equal(app.getState().auth.token, sessionToken);
+  assert.equal(harness.calls.secureSets, 1);
+  assert.doesNotMatch(harness.root.innerHTML, /auth-telegram-oidc|telegram-login-slot/);
+  await app.stop();
+}
+
+async function runTelegramAuthRecoveryScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  for (const [name, options] of [
+    ["missing SDK", { platformAvailable: false, launchData: "signed-init-data" }],
+    ["missing initData", { platformAvailable: true, launchData: "" }],
+  ]) {
+    const harness = createAppHarness({
+      platformName: "telegram",
+      ...options,
+    });
+    const app = bootSalvoApp(harness.dependencies);
+    await app.startup.done;
+    assert.equal(app.getState().auth.method, "miniapp-unavailable", name);
+    assert.equal(app.getState().auth.token, "", name);
+    assert.equal(app.getState().auth.user, null, name);
+    assert.match(harness.root.innerHTML, /Telegram login is unavailable/, name);
+    assert.equal(
+      harness.fetchCalls.some(({ url }) => url.endsWith("/auth/telegram/miniapp")),
+      false,
+      name,
+    );
+    assert.doesNotMatch(harness.root.innerHTML, /data-action="start-agent"[^>]*disabled/, name);
+    assert.doesNotMatch(harness.root.innerHTML, /data-action="start-hotseat"[^>]*disabled/, name);
+    assert.doesNotMatch(harness.root.innerHTML, /data-action="start-training"[^>]*disabled/, name);
+    assert.doesNotMatch(harness.root.innerHTML, /data-action="toggle-profile"/, name);
+    await harness.root.click("show-online");
+    assert.match(harness.root.innerHTML, /data-action="online-create"[^>]*disabled/, name);
+    assert.match(harness.root.innerHTML, /data-action="online-join"[^>]*disabled/, name);
+    await app.stop();
+  }
+
+  let attempts = 0;
+  const retryToken = "r".repeat(43);
+  const retry = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-init-data",
+    miniAppResponse() {
+      attempts += 1;
+      if (attempts === 1) return new Error("private provider detail");
+      return { token: retryToken, user: telegramUser("retry-user", "Retry Captain") };
+    },
+  });
+  const retryApp = bootSalvoApp(retry.dependencies);
+  await retryApp.startup.done;
+  assert.equal(retryApp.getState().auth.method, "miniapp");
+  assert.equal(retryApp.getState().auth.token, "");
+  assert.equal(retryApp.getState().auth.user, null);
+  assert.match(retry.root.innerHTML, /Telegram login is unavailable/);
+  assert.doesNotMatch(retry.root.innerHTML, /private provider detail/);
+  assert.match(retry.root.innerHTML, /data-action="auth-telegram-retry"/);
+
+  await retry.root.click("auth-telegram-retry");
+  assert.equal(attempts, 2);
+  assert.equal(retryApp.getState().auth.token, retryToken);
+  assert.equal(retryApp.getState().auth.user.id, "retry-user");
+  assert.equal(retry.calls.secureSets, 1);
+
+  await retry.root.click("auth-logout");
+  await flushMicrotasks();
+  assert.equal(attempts, 2, "logout must not trigger an automatic reauth loop");
+  assert.equal(retryApp.getState().auth.token, "");
+  assert.equal(retryApp.getState().auth.user, null);
+  await retry.root.click("auth-telegram-retry");
+  assert.equal(attempts, 3, "an explicit retry may authenticate after logout");
+  assert.equal(retryApp.getState().auth.token, retryToken);
+
+  const staleResponse = deferred();
+  const stale = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-init-data",
+    miniAppResponse: () => staleResponse.promise,
+  });
+  const staleApp = bootSalvoApp(stale.dependencies);
+  await waitFor(() => stale.fetchCalls.some(({ url }) => url.endsWith("/auth/telegram/miniapp")));
+  await stale.root.click("auth-logout");
+  staleResponse.resolve({
+    token: "s".repeat(43),
+    user: telegramUser("stale-user", "Stale Captain"),
+  });
+  await staleApp.startup.done;
+  assert.equal(staleApp.getState().auth.token, "");
+  assert.equal(staleApp.getState().auth.user, null);
+  assert.equal(stale.calls.secureSets, 0);
+
+  const persistence = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-init-data",
+    miniAppResponse: {
+      token: "p".repeat(43),
+      user: telegramUser("storage-user", "Storage Captain"),
+    },
+    onSecureSet: async () => Promise.reject(new Error("memory write failed")),
+  });
+  const persistenceApp = bootSalvoApp(persistence.dependencies);
+  await persistenceApp.startup.done;
+  assert.equal(persistenceApp.getState().auth.token, "");
+  assert.equal(persistenceApp.getState().auth.user, null);
+  assert.match(persistence.root.innerHTML, /Secure login could not be saved/);
+  assert.doesNotMatch(persistence.root.innerHTML, /memory write failed/);
+
+  await Promise.all([retryApp.stop(), staleApp.stop(), persistenceApp.stop()]);
+}
+
+async function runTelegramRuntimeScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const harness = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-init-data",
+  });
+  const app = bootSalvoApp(harness.dependencies);
+  await app.startup.done;
+
+  assert.equal(harness.calls.ready, 1);
+  assert.deepEqual(harness.activePlatformHandlers(), {
+    back: true,
+    deepLink: true,
+    lifecycle: true,
+    network: true,
+    settings: true,
+    theme: true,
+    viewport: true,
+  });
+  assert.equal(harness.calls.closingConfirmations.at(-1), false);
+
+  await harness.emitSettings();
+  assert.equal(app.getState().settingsOpen, true);
+  await harness.emitBack();
+  assert.equal(app.getState().settingsOpen, false);
+
+  await harness.root.click("start-agent");
+  assert.equal(harness.calls.closingConfirmations.at(-1), true);
+  await harness.emitBack();
+  assert.equal(app.getState().leaveBattleDialog, true);
+  await harness.root.click("confirm-leave-battle");
+  assert.equal(app.getState().screen, "menu");
+  assert.equal(harness.calls.closingConfirmations.at(-1), false);
+
+  await harness.emitLifecycle({ active: false });
+  await harness.emitLifecycle({ active: true });
+  assert.equal(harness.calls.audioPauses, 1);
+  assert.equal(harness.calls.audioResumes, 1);
+
+  await harness.root.click("toggle-settings");
+  await harness.root.click("toggle-settings");
+  assert.equal(harness.calls.ready, 1, "rerenders must not repeat platform.ready()");
+
+  await app.stop();
+  assert.deepEqual(harness.activePlatformHandlers(), {
+    back: false,
+    deepLink: false,
+    lifecycle: false,
+    network: false,
+    settings: false,
+    theme: false,
+    viewport: false,
+  });
+}
+
+async function runTelegramThemeBuildScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const inherited = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-init-data",
+    platformTheme: "dark",
+  });
+  const inheritedApp = bootSalvoApp(inherited.dependencies);
+  assert.equal(inheritedApp.getState().theme, "dark");
+  await inheritedApp.startup.done;
+  await inherited.emitTheme("light");
+  assert.equal(inheritedApp.getState().theme, "light");
+
+  const stored = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-init-data",
+    platformTheme: "light",
+    preferences: resolvedDeferred("dark"),
+  });
+  const storedApp = bootSalvoApp(stored.dependencies);
+  await storedApp.startup.done;
+  assert.equal(storedApp.getState().theme, "dark");
+  await stored.emitTheme("light");
+  assert.equal(storedApp.getState().theme, "dark", "stored theme overrides Telegram events");
+
+  const selected = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-init-data",
+    platformTheme: "dark",
+  });
+  const selectedApp = bootSalvoApp(selected.dependencies);
+  await selectedApp.startup.done;
+  await selected.root.click("theme-toggle");
+  assert.equal(selectedApp.getState().theme, "light");
+  await selected.emitTheme("dark");
+  assert.equal(selectedApp.getState().theme, "light", "user-selected theme remains authoritative");
+
+  for (const [platformName, native] of [
+    ["web", false],
+    ["android", true],
+    ["telegram", false],
+  ]) {
+    const runtime = createAppHarness({
+      native,
+      platformName,
+      launchData: platformName === "telegram" ? "signed-init-data" : "",
+      buildId: "build_2026.07.17",
+    });
+    const runtimeApp = bootSalvoApp(runtime.dependencies);
+    assert.match(runtime.root.innerHTML, /settings-build-id[^>]*>Build: build_2026\.07\.17</);
+    await runtimeApp.startup.done;
+    await runtimeApp.stop();
+  }
+
+  const unsafe = createAppHarness({ buildId: '<img src=x onerror="alert(1)">' });
+  const unsafeApp = bootSalvoApp(unsafe.dependencies);
+  assert.match(unsafe.root.innerHTML, /settings-build-id[^>]*>Build: dev</);
+  assert.doesNotMatch(unsafe.root.innerHTML, /src=x|onerror|alert\(1\)/);
+  await unsafeApp.startup.done;
+
+  await Promise.all([
+    inheritedApp.stop(),
+    storedApp.stop(),
+    selectedApp.stop(),
+    unsafeApp.stop(),
+  ]);
+}
+
 async function runAuthRecoveryScenario() {
   const { bootSalvoApp } = await import("../src/app.js");
   const offline = createAppHarness({
@@ -677,13 +943,21 @@ function createAppHarness({
   secureSession = resolvedDeferred(""),
   native = false,
   platformName = native ? "android" : "web",
+  launchData = "",
+  platformAvailable = Boolean(launchData),
+  platformTheme = null,
   workerUrl = "https://worker.example.test",
+  buildId,
   initialUrl = "https://agent-axiom.github.io/agents-salvo/",
   capability = { method: "oidc" },
   startResponse = { authorizationUrl: "https://oauth.telegram.org/auth?state=default" },
   redeemResponse = {
     token: "default-redeemed-token",
     user: telegramUser("default-user", "Default Captain"),
+  },
+  miniAppResponse = {
+    token: "m".repeat(43),
+    user: telegramUser("mini-app-default", "Mini App Captain"),
   },
   onSecureClear = () => Promise.resolve(),
   onSecureSet = () => Promise.resolve(),
@@ -713,6 +987,10 @@ function createAppHarness({
     closedUrls: 0,
     historyReplacements: 0,
     settingWrites: [],
+    ready: 0,
+    closingConfirmations: [],
+    audioPauses: 0,
+    audioResumes: 0,
   };
   void preferences.promise.then(() => {
     calls.preferencesSettled = true;
@@ -721,9 +999,16 @@ function createAppHarness({
   let lifecycleHandler = null;
   let deepLinkHandler = null;
   let networkHandler = null;
+  let backHandler = null;
+  let settingsHandler = null;
+  let themeHandler = null;
+  let viewportHandler = null;
+  let currentPlatformTheme = platformTheme;
   const platform = {
     isNative: () => native,
     getPlatform: () => platformName,
+    isAvailable: () => platformAvailable,
+    getLaunchData: () => launchData,
     settings: {
       get(key) {
         if (key === "localBattle") {
@@ -770,14 +1055,42 @@ function createAppHarness({
         if (deepLinkHandler === handler) deepLinkHandler = null;
       };
     },
-    async onBack() {
-      return async () => {};
+    async onBack(handler) {
+      backHandler = handler;
+      return async () => {
+        if (backHandler === handler) backHandler = null;
+      };
     },
     async onLifecycleChange(handler) {
       lifecycleHandler = handler;
       return async () => {
         if (lifecycleHandler === handler) lifecycleHandler = null;
       };
+    },
+    async onSettings(handler) {
+      settingsHandler = handler;
+      return async () => {
+        if (settingsHandler === handler) settingsHandler = null;
+      };
+    },
+    getTheme: () => currentPlatformTheme,
+    async onThemeChange(handler) {
+      themeHandler = handler;
+      return async () => {
+        if (themeHandler === handler) themeHandler = null;
+      };
+    },
+    async onViewportChange(handler) {
+      viewportHandler = handler;
+      return async () => {
+        if (viewportHandler === handler) viewportHandler = null;
+      };
+    },
+    async ready() {
+      calls.ready += 1;
+    },
+    async setClosingConfirmation(enabled) {
+      calls.closingConfirmations.push(Boolean(enabled));
     },
     async haptic() {},
     async share() {
@@ -792,7 +1105,7 @@ function createAppHarness({
       await onCloseExternalUrl();
     },
   };
-  const window = createWindowHarness({ initialUrl, workerUrl, calls });
+  const window = createWindowHarness({ initialUrl, workerUrl, buildId, calls });
   const navigator = {
     onLine: true,
     clipboard: { async writeText() {} },
@@ -801,13 +1114,41 @@ function createAppHarness({
     async startMusic() {},
     stopMusic() {},
     async play() {},
-    async pauseForLifecycle() {},
-    async resumeForLifecycle() {},
+    async pauseForLifecycle() {
+      calls.audioPauses += 1;
+    },
+    async resumeForLifecycle() {
+      calls.audioResumes += 1;
+    },
   };
 
   return {
     calls,
     document,
+    activePlatformHandlers() {
+      return {
+        back: Boolean(backHandler),
+        deepLink: Boolean(deepLinkHandler),
+        lifecycle: Boolean(lifecycleHandler),
+        network: Boolean(networkHandler),
+        settings: Boolean(settingsHandler),
+        theme: Boolean(themeHandler),
+        viewport: Boolean(viewportHandler),
+      };
+    },
+    emitBack() {
+      assert.ok(backHandler, "Back handler is not registered");
+      return backHandler();
+    },
+    emitSettings() {
+      assert.ok(settingsHandler, "Settings handler is not registered");
+      return settingsHandler();
+    },
+    emitTheme(theme) {
+      currentPlatformTheme = theme;
+      assert.ok(themeHandler, "Theme handler is not registered");
+      return themeHandler(theme);
+    },
     emitLifecycle(event) {
       assert.ok(lifecycleHandler, "Lifecycle handler is not registered");
       return lifecycleHandler(event);
@@ -840,6 +1181,9 @@ function createAppHarness({
         }
         if (url.endsWith("/auth/telegram/mobile/redeem")) {
           return clientResult(redeemResponse);
+        }
+        if (url.endsWith("/auth/telegram/miniapp")) {
+          return clientResult(miniAppResponse);
         }
         return fetchResponse(url, init);
       },
@@ -1014,6 +1358,7 @@ function createRootHarness(document) {
 function createWindowHarness({
   initialUrl = "https://agent-axiom.github.io/agents-salvo/",
   workerUrl = "https://worker.example.test",
+  buildId,
   calls,
 } = {}) {
   const listeners = new Map();
@@ -1039,6 +1384,7 @@ function createWindowHarness({
     SALVO_CONFIG: {
       workerUrl,
       telegramBotUsername: "salvo_test_bot",
+      ...(buildId === undefined ? {} : { buildId }),
     },
     location,
     history: {

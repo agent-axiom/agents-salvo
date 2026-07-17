@@ -43,6 +43,22 @@ test("actual app cleans and redeems web Telegram bootstrap callbacks", async () 
   await runScenarioInChild("auth-bootstrap");
 });
 
+test("actual app authenticates Telegram Mini App launch data automatically", async () => {
+  await runScenarioInChild("telegram-bootstrap");
+});
+
+test("actual app keeps Telegram Mini App auth failures recoverable and race-safe", async () => {
+  await runScenarioInChild("telegram-auth-recovery");
+});
+
+test("actual app connects Telegram runtime controls through mobile lifecycle cleanup", async () => {
+  await runScenarioInChild("telegram-runtime");
+});
+
+test("actual app honors Telegram theme precedence and renders safe build metadata", async () => {
+  await runScenarioInChild("telegram-theme-build");
+});
+
 test("actual app retries Telegram capability and rejects failed secure persistence", async () => {
   await runScenarioInChild("auth-recovery");
 });
