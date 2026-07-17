@@ -29,6 +29,7 @@ const scenarios = {
   "telegram-bootstrap": runTelegramBootstrapScenario,
   "telegram-auth-recovery": runTelegramAuthRecoveryScenario,
   "telegram-runtime": runTelegramRuntimeScenario,
+  "haptic-runtime": runHapticRuntimeScenario,
   "telegram-theme-build": runTelegramThemeBuildScenario,
   "auth-recovery": runAuthRecoveryScenario,
 };
@@ -1056,6 +1057,49 @@ async function runTelegramRuntimeScenario() {
   await retryClosingApp.stop();
 }
 
+async function runHapticRuntimeScenario() {
+  const hapticFailure = new Error("private haptic provider detail");
+  const runtimeErrors = [];
+  const harness = createAppHarness({
+    native: true,
+    onHaptic: async () => {
+      throw hapticFailure;
+    },
+  });
+  const { bootSalvoApp } = await import("../src/app.js");
+  const originalConsoleError = console.error;
+  let app = null;
+  console.error = (...args) => runtimeErrors.push(args);
+
+  try {
+    app = bootSalvoApp(harness.dependencies);
+    await app.startup.done;
+    assert.equal(app.getState().hapticsEnabled, true);
+
+    await harness.root.click("start-agent");
+    await harness.root.click("reset");
+    assert.equal(app.getState().setupBoard.ships.length, 0);
+    const rendersBeforePlacement = harness.root.renderCount;
+
+    await assert.doesNotReject(() => (
+      harness.root.click("setup-cell", { row: "0", col: "0" })
+    ));
+    await flushMicrotasks();
+
+    assert.deepEqual(harness.calls.haptics, ["placement"]);
+    assert.equal(app.getState().setupBoard.ships.length, 1);
+    assert.equal(app.getState().setupError, "");
+    assert.equal(harness.root.renderCount, rendersBeforePlacement + 1);
+    assert.equal(runtimeErrors.length, 1);
+    assert.equal(runtimeErrors[0][0], "Salvo mobile runtime error");
+    assert.equal(runtimeErrors[0][1], hapticFailure);
+    assert.doesNotMatch(harness.root.innerHTML, /private haptic provider detail/);
+  } finally {
+    console.error = originalConsoleError;
+    if (app) await app.stop();
+  }
+}
+
 async function runTelegramThemeBuildScenario() {
   const { bootSalvoApp } = await import("../src/app.js");
   const inherited = createAppHarness({
@@ -1191,6 +1235,7 @@ function createAppHarness({
   onCloseExternalUrl = () => Promise.resolve(),
   onSetBackButtonVisible = () => Promise.resolve(),
   onSetClosingConfirmation = () => Promise.resolve(),
+  onHaptic = () => Promise.resolve(),
   onSettingWrite = () => Promise.resolve(),
   createRemoteClient = () => {
     throw new Error("Remote client was not expected");
@@ -1218,6 +1263,7 @@ function createAppHarness({
     ready: 0,
     backButtonVisibility: [],
     closingConfirmations: [],
+    haptics: [],
     audioPauses: 0,
     audioResumes: 0,
   };
@@ -1326,7 +1372,10 @@ function createAppHarness({
       calls.closingConfirmations.push(Boolean(enabled));
       await onSetClosingConfirmation(Boolean(enabled));
     },
-    async haptic() {},
+    async haptic(event) {
+      calls.haptics.push(event);
+      await onHaptic(event);
+    },
     async share() {
       return { shared: false };
     },
@@ -1498,6 +1547,7 @@ function createRootHarness(document) {
     },
   };
   let html = "";
+  let renderCount = 0;
   let cancelControl = null;
   let confirmControl = null;
   let competingDialogControl = null;
@@ -1520,6 +1570,9 @@ function createRootHarness(document) {
 
   const root = {
     background,
+    get renderCount() {
+      return renderCount;
+    },
     get competingDialogControl() {
       return competingDialogControl;
     },
@@ -1527,6 +1580,7 @@ function createRootHarness(document) {
       return html;
     },
     set innerHTML(value) {
+      renderCount += 1;
       html = value;
       telegramSlot = html.includes('id="telegram-login-slot"')
         ? {

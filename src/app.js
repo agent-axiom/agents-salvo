@@ -606,6 +606,10 @@ function reportRuntimeError(error) {
   console.error("Salvo mobile runtime error", error);
 }
 
+function observePlatformWrite(operation) {
+  void Promise.resolve(operation).catch(reportRuntimeError);
+}
+
 function translate(key, params) {
   return t(state.language, key, params);
 }

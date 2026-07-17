@@ -55,6 +55,10 @@ test("actual app connects Telegram runtime controls through mobile lifecycle cle
   await runScenarioInChild("telegram-runtime");
 });
 
+test("actual app contains rejected haptics without interrupting gameplay renders", async () => {
+  await runScenarioInChild("haptic-runtime");
+});
+
 test("actual app honors Telegram theme precedence and renders safe build metadata", async () => {
   await runScenarioInChild("telegram-theme-build");
 });
