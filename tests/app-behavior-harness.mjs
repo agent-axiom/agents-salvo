@@ -964,6 +964,67 @@ async function runTelegramRuntimeScenario() {
   assert.deepEqual(retryVisibility.calls.backButtonVisibility, [false, false]);
   assert.doesNotMatch(retryVisibility.root.innerHTML, /provider|visibility update failed/);
   await retryVisibilityApp.stop();
+
+  const releaseEnable = deferred();
+  const providerClosingStates = [];
+  const serializedClosing = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-init-data",
+    onSetClosingConfirmation: async (enabled) => {
+      if (enabled) await releaseEnable.promise;
+      providerClosingStates.push(enabled);
+    },
+  });
+  const serializedClosingApp = bootSalvoApp(serializedClosing.dependencies);
+  await serializedClosingApp.startup.done;
+  await flushMicrotasks();
+  assert.deepEqual(providerClosingStates, [false]);
+
+  await serializedClosing.root.click("start-agent");
+  await serializedClosing.root.click("ready");
+  await flushMicrotasks();
+  assert.deepEqual(serializedClosing.calls.closingConfirmations, [false, true]);
+  serializedClosingApp.getState().game.phase = "finished";
+  serializedClosingApp.getState().game.winnerId = "p1";
+  await serializedClosing.root.click("menu");
+  assert.equal(serializedClosingApp.getState().screen, "menu");
+  assert.deepEqual(
+    serializedClosing.calls.closingConfirmations,
+    [false, true],
+    "disable waits for the in-flight enable",
+  );
+
+  releaseEnable.resolve();
+  await flushMicrotasks();
+  assert.deepEqual(serializedClosing.calls.closingConfirmations, [false, true, false]);
+  assert.deepEqual(providerClosingStates, [false, true, false]);
+  await serializedClosingApp.stop();
+
+  let enableAttempts = 0;
+  const retryClosing = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-init-data",
+    onSetClosingConfirmation: async (enabled) => {
+      if (!enabled) return;
+      enableAttempts += 1;
+      if (enableAttempts === 1) {
+        throw new Error("private closing-confirmation provider detail");
+      }
+    },
+  });
+  const retryClosingApp = bootSalvoApp(retryClosing.dependencies);
+  await retryClosingApp.startup.done;
+  await retryClosing.root.click("start-agent");
+  await flushMicrotasks();
+  assert.equal(enableAttempts, 1);
+  await flushMicrotasks();
+  assert.equal(enableAttempts, 1, "rejection must not spin an immediate retry");
+
+  await retryClosing.root.click("theme-toggle");
+  await flushMicrotasks();
+  assert.equal(enableAttempts, 2, "a later render retries the unapplied state");
+  assert.deepEqual(retryClosing.calls.closingConfirmations, [false, true, true]);
+  await retryClosingApp.stop();
 }
 
 async function runTelegramThemeBuildScenario() {
@@ -1100,6 +1161,7 @@ function createAppHarness({
   onOpenExternalUrl = () => Promise.resolve(),
   onCloseExternalUrl = () => Promise.resolve(),
   onSetBackButtonVisible = () => Promise.resolve(),
+  onSetClosingConfirmation = () => Promise.resolve(),
   onSettingWrite = () => Promise.resolve(),
   createRemoteClient = () => {
     throw new Error("Remote client was not expected");
@@ -1233,6 +1295,7 @@ function createAppHarness({
     },
     async setClosingConfirmation(enabled) {
       calls.closingConfirmations.push(Boolean(enabled));
+      await onSetClosingConfirmation(Boolean(enabled));
     },
     async haptic() {},
     async share() {

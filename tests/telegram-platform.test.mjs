@@ -14,6 +14,11 @@ const buttonVisibilityError = {
   message: "Telegram button visibility update failed",
 };
 
+const closingConfirmationError = {
+  name: "Error",
+  message: "Telegram closing confirmation update failed",
+};
+
 const eventCleanupError = {
   name: "Error",
   message: "Telegram event cleanup failed",
@@ -510,6 +515,39 @@ test("Telegram retries visibility requested before BackButton subscription", asy
   assert.equal(fake.back.listeners.size, 0);
 });
 
+test("Telegram ready retries SettingsButton visibility after its first show fails", async () => {
+  const fake = fakeTelegram();
+  const originalShow = fake.settings.api.show;
+  let showAttempts = 0;
+  fake.settings.api.show = function show() {
+    showAttempts += 1;
+    if (showAttempts === 1) {
+      return Promise.reject(new Error("private SettingsButton provider detail"));
+    }
+    return originalShow.call(this);
+  };
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  let settings = 0;
+  const remove = await adapter.onSettings(() => {
+    settings += 1;
+  });
+
+  assert.equal(fake.settings.listeners.size, 1);
+  assert.equal(showAttempts, 1);
+  for (const listener of fake.settings.listeners) listener();
+  assert.equal(settings, 1, "show failure must not discard the registered callback");
+
+  await adapter.ready();
+  assert.equal(showAttempts, 2);
+
+  await remove();
+  assert.equal(fake.settings.listeners.size, 0);
+  assert.equal(
+    fake.calls.filter((call) => call[0] === "settings" && call[1] === "hide").length,
+    1,
+  );
+});
+
 test("mobile runtime keeps Telegram BackButton subscribed while home is hidden", async () => {
   const fake = fakeTelegram();
   const platform = createTelegramPlatform({
@@ -748,6 +786,20 @@ test("Telegram ready expands, colors, and requests gated fullscreen", async () =
     ["closing", false],
   ]);
   assert.ok(fake.calls.some((call) => call[0] === "version" && call[1] === "8.0"));
+});
+
+test("Telegram closing confirmation failures are redacted and reject", async () => {
+  const fake = fakeTelegram();
+  fake.webApp.enableClosingConfirmation = () => (
+    Promise.reject(new Error("private closing-confirmation provider detail"))
+  );
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+
+  await assert.rejects(
+    adapter.setClosingConfirmation(true),
+    closingConfirmationError,
+  );
+  await assert.doesNotReject(() => adapter.setClosingConfirmation(false));
 });
 
 test("Telegram gates fullscreen and safe-area APIs below version 8.0", async () => {
@@ -1012,8 +1064,14 @@ test("Telegram unavailable and throwing provider APIs remain safe", async () => 
   await assert.doesNotReject(() => throwing.ready());
   await assert.doesNotReject(() => throwing.setBackButtonVisible(true));
   await assert.doesNotReject(() => throwing.setBackButtonVisible(false));
-  await assert.doesNotReject(() => throwing.setClosingConfirmation(true));
-  await assert.doesNotReject(() => throwing.setClosingConfirmation(false));
+  await assert.rejects(
+    throwing.setClosingConfirmation(true),
+    closingConfirmationError,
+  );
+  await assert.rejects(
+    throwing.setClosingConfirmation(false),
+    closingConfirmationError,
+  );
   await assert.doesNotReject(() => throwing.haptic("hit"));
   await assert.doesNotReject(() => throwing.openExternalUrl("https://t.me/test"));
   await assert.doesNotReject(() => throwing.openExternalUrl("https://example.com"));

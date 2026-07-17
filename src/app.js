@@ -106,7 +106,9 @@ const resultReplayClock = createReplayClock({
 let telegramWidgetScheduled = false;
 let platformHydrationRenderScheduled = false;
 let hasExplicitThemePreference = false;
-let closingConfirmationEnabled = null;
+let closingConfirmationDesired = null;
+let closingConfirmationApplied = null;
+let closingConfirmationOperation = null;
 let backButtonVisibility = null;
 let backButtonVisibilityGeneration = 0;
 let leaveDialogReturnFocus = null;
@@ -602,10 +604,6 @@ async function authenticateTelegramMiniApp() {
 
 function reportRuntimeError(error) {
   console.error("Salvo mobile runtime error", error);
-}
-
-function observePlatformWrite(operation) {
-  void Promise.resolve(operation).catch(reportRuntimeError);
 }
 
 function translate(key, params) {
@@ -3285,10 +3283,34 @@ function hasUnfinishedBattle() {
 
 function syncClosingConfirmation() {
   if (!isTelegramMiniApp || typeof platform.setClosingConfirmation !== "function") return;
-  const enabled = hasUnfinishedBattle();
-  if (closingConfirmationEnabled === enabled) return;
-  closingConfirmationEnabled = enabled;
-  observePlatformWrite(platform.setClosingConfirmation(enabled));
+  closingConfirmationDesired = hasUnfinishedBattle();
+  if (
+    closingConfirmationOperation
+    || closingConfirmationApplied === closingConfirmationDesired
+  ) return;
+
+  const attempted = closingConfirmationDesired;
+  let providerOperation;
+  try {
+    providerOperation = platform.setClosingConfirmation(attempted);
+  } catch (error) {
+    reportRuntimeError(error);
+    return;
+  }
+
+  closingConfirmationOperation = Promise.resolve(providerOperation).then(
+    () => {
+      closingConfirmationApplied = attempted;
+      closingConfirmationOperation = null;
+      if (closingConfirmationDesired !== closingConfirmationApplied) {
+        syncClosingConfirmation();
+      }
+    },
+    (error) => {
+      closingConfirmationOperation = null;
+      reportRuntimeError(error);
+    },
+  );
 }
 
 function syncBackButtonVisibility() {

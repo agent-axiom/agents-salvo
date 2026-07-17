@@ -18,6 +18,7 @@ const colorsByTheme = {
 const insetSides = ["top", "right", "bottom", "left"];
 const buttonCleanupErrorMessage = "Telegram button cleanup failed";
 const buttonVisibilityErrorMessage = "Telegram button visibility update failed";
+const closingConfirmationErrorMessage = "Telegram closing confirmation update failed";
 const eventCleanupErrorMessage = "Telegram event cleanup failed";
 const settingsStorageErrorMessage = "Settings storage unavailable";
 const resolvedCleanup = Promise.resolve();
@@ -222,7 +223,9 @@ function createButtonController(getButton, { visibilityControlled = false } = {}
     return reconcileVisibility(buttonVisibilityErrorMessage);
   };
 
-  return { setVisible, subscribe };
+  const reconcile = () => reconcileVisibility(buttonVisibilityErrorMessage);
+
+  return { reconcile, setVisible, subscribe };
 }
 
 export function createTelegramPlatform({
@@ -413,15 +416,19 @@ export function createTelegramPlatform({
       const safeAreaSupported = supportsVersion8();
       updateViewportCss(safeAreaSupported);
       if (safeAreaSupported) await callOptionalAsync(webApp, "requestFullscreen");
+      await settingsButtonController.reconcile();
     },
     async setBackButtonVisible(enabled) {
       await backButtonController.setVisible(enabled);
     },
     async setClosingConfirmation(enabled) {
-      await callOptionalAsync(
+      const updated = await callOptionalAsync(
         webApp,
         enabled ? "enableClosingConfirmation" : "disableClosingConfirmation",
       );
+      if (!updated) {
+        throw new Error(closingConfirmationErrorMessage);
+      }
     },
     getTheme,
     async onThemeChange(listener) {
