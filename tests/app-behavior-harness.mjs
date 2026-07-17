@@ -798,12 +798,12 @@ async function runTelegramLaunchRoutingScenario() {
     ru: "Аккаунт Telegram Mini App подтверждён. Ваш существующий профиль и онлайн-прогресс доступны.",
     "zh-CN": "Telegram Mini App 账号已确认。您可以继续使用现有档案和在线进度。",
   };
-  for (const [language, failureMessage, expectedMessage] of [
-    ["ru", "Room is full", roomUnavailableCopy.ru],
-    ["zh-CN", "Room not found", roomUnavailableCopy["zh-CN"]],
-    ["ru", "Room is closed", roomUnavailableCopy.ru],
-    ["zh-CN", "Room is unavailable", roomUnavailableCopy["zh-CN"]],
-    ["ru", "Room connection unavailable", "Room connection unavailable"],
+  for (const [language, failureMessage, expectedMessage, expectedKey] of [
+    ["ru", "Room is full", roomUnavailableCopy.ru, "online.roomUnavailable"],
+    ["zh-CN", "Room not found", roomUnavailableCopy["zh-CN"], "online.roomUnavailable"],
+    ["ru", "Room is closed", roomUnavailableCopy.ru, "online.roomUnavailable"],
+    ["zh-CN", "Room is unavailable", roomUnavailableCopy["zh-CN"], "online.roomUnavailable"],
+    ["ru", "Room connection unavailable", "Room connection unavailable", ""],
   ]) {
     const failedJoin = createAppHarness({
       platformName: "telegram",
@@ -829,11 +829,20 @@ async function runTelegramLaunchRoutingScenario() {
     assert.equal(failedJoinApp.getState().language, language, failureMessage);
     assert.equal(failedJoinApp.getState().online.roomCodeInput, "ABCD", failureMessage);
     assert.equal(failedJoinApp.getState().online.session, null, failureMessage);
-    assert.equal(failedJoinApp.getState().online.error, expectedMessage, failureMessage);
+    assert.equal(failedJoinApp.getState().online.error, failureMessage, failureMessage);
+    assert.equal(failedJoinApp.getState().online.errorKey, expectedKey, failureMessage);
     assert.ok(failedJoin.root.innerHTML.includes(expectedMessage), failureMessage);
     assert.ok(failedJoin.root.innerHTML.includes(miniAppAccountCopy[language]), failureMessage);
     if (expectedMessage !== failureMessage) {
       assert.equal(failedJoin.root.innerHTML.includes(failureMessage), false, failureMessage);
+    }
+    if (failureMessage === "Room is full") {
+      assert.match(failedJoin.root.innerHTML, /class="error-line" role="alert" aria-live="assertive"/);
+      await failedJoin.root.change("language", { value: "zh-CN" });
+      assert.equal(failedJoinApp.getState().online.error, failureMessage);
+      assert.equal(failedJoinApp.getState().online.errorKey, "online.roomUnavailable");
+      assert.ok(failedJoin.root.innerHTML.includes(roomUnavailableCopy["zh-CN"]));
+      assert.equal(failedJoin.root.innerHTML.includes(roomUnavailableCopy.ru), false);
     }
     await failedJoinApp.stop();
   }

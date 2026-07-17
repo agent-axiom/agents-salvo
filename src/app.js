@@ -220,6 +220,7 @@ const state = {
     status: "",
     shareStatus: "",
     error: "",
+    errorKey: "",
     session: null,
     snapshot: null,
     client: null,
@@ -412,7 +413,7 @@ function applyLocalBattleSnapshot(snapshot) {
   state.leaderboardOpen = false;
   state.leaveBattleDialog = false;
   state.online.roomCodeInput = "";
-  state.online.error = "";
+  clearOnlineError();
   state.online.status = "";
   state.online.shareStatus = "";
   state.resultModalDismissed = null;
@@ -2149,7 +2150,7 @@ function renderOnlineLobby() {
           <button data-action="online-join" ${onlineDisabled}>${translate("online.join")}</button>
         </div>
         ${renderOnlineShareStatus()}
-        ${state.online.error ? `<p class="error-line">${translate("online.error", { message: state.online.error })}</p>` : ""}
+        ${renderOnlineError()}
       </aside>
       <section class="board-stage">
         ${renderBoard(state.setupBoard, { kind: "setup", title: translate("game.yourFleet") })}
@@ -2187,7 +2188,7 @@ function renderOnlineRoom(snapshot) {
         </div>
         ${renderOnlineStatus(snapshot)}
         ${renderOnlineShareStatus()}
-        ${state.online.error ? `<p class="error-line">${translate("online.error", { message: state.online.error })}</p>` : ""}
+        ${renderOnlineError()}
       </aside>
       <section class="board-stage">
         ${snapshot ? renderOnlineSnapshot(snapshot) : renderBoard(state.setupBoard, { kind: "setup", title: translate("game.yourFleet") })}
@@ -3244,7 +3245,7 @@ function showOnline() {
   state.setupHover = null;
   state.setupError = "";
   state.online.roomCodeInput = "";
-  state.online.error = "";
+  clearOnlineError();
   state.online.status = "";
   state.online.shareStatus = "";
   state.battleTab = "target";
@@ -3500,7 +3501,7 @@ function applyMenuState({ updateHistory }) {
   state.mode = null;
   state.game = null;
   state.training.session = null;
-  state.online.error = "";
+  clearOnlineError();
   state.online.status = "";
   state.online.shareStatus = "";
   state.resultModalDismissed = null;
@@ -4158,15 +4159,15 @@ function runAgentTurns(game) {
 
 async function onlineCreate() {
   if (!requireOnline((message) => {
-    state.online.error = message;
+    setOnlineError(message);
   })) return;
   if (!isOnlineAuthReady()) {
-    state.online.error = translate("online.authRequired");
+    setOnlineError(translate("online.authRequired"));
     render();
     return;
   }
   if (!hasFullFleet(state.setupBoard)) {
-    state.online.error = translate("setup.needFleet");
+    setOnlineError(translate("setup.needFleet"));
     render();
     return;
   }
@@ -4190,15 +4191,15 @@ async function onlineCreate() {
 
 async function onlineJoin() {
   if (!requireOnline((message) => {
-    state.online.error = message;
+    setOnlineError(message);
   })) return;
   if (!isOnlineAuthReady()) {
-    state.online.error = translate("online.authRequired");
+    setOnlineError(translate("online.authRequired"));
     render();
     return;
   }
   if (!hasFullFleet(state.setupBoard)) {
-    state.online.error = translate("setup.needFleet");
+    setOnlineError(translate("setup.needFleet"));
     render();
     return;
   }
@@ -4232,23 +4233,23 @@ function prepareOnlineConnection() {
   state.online.snapshot = null;
   state.online.status = "";
   state.online.shareStatus = "";
-  state.online.error = "";
+  clearOnlineError();
   render();
 }
 
-function handleOnlineConnectionError(error) {
+function handleOnlineConnectionError(error, errorKey = "") {
   state.online.session = null;
   state.online.snapshot = null;
   state.online.status = "";
   state.online.shareStatus = "";
-  state.online.error = error.message;
+  setOnlineError(error, errorKey);
   render();
 }
 
 function handleOnlineJoinError(error) {
   const message = String(error?.message ?? "");
   if (isTelegramMiniApp && telegramUnavailableRoomErrorPattern.test(message.trim())) {
-    handleOnlineConnectionError(new Error(translate("online.roomUnavailable")));
+    handleOnlineConnectionError(error, "online.roomUnavailable");
     return;
   }
   handleOnlineConnectionError(error);
@@ -4256,7 +4257,7 @@ function handleOnlineJoinError(error) {
 
 async function onlineRematch() {
   if (!requireOnline((message) => {
-    state.online.error = message;
+    setOnlineError(message);
   })) return;
   await withOnlineError(async () => {
     const snapshot = state.online.snapshot;
@@ -4277,7 +4278,7 @@ async function onlineRematch() {
 
 function handleOnlineShot(coordinate) {
   if (!requireOnline((message) => {
-    state.online.error = message;
+    setOnlineError(message);
   })) return;
   playSound("shot");
   withOnlineError(async () => {
@@ -4406,7 +4407,7 @@ function remoteHandlers() {
       render();
     },
     onError(error) {
-      state.online.error = error.message;
+      setOnlineError(error);
       render();
     },
     onMessage(message) {
@@ -4419,7 +4420,7 @@ function remoteHandlers() {
         }
       }
       if (message.type === "error") {
-        state.online.error = message.message;
+        setOnlineError(message.message);
       }
       render();
     },
@@ -5371,10 +5372,10 @@ function syncMenuMusic() {
 
 async function withOnlineError(action) {
   try {
-    state.online.error = "";
+    clearOnlineError();
     await action();
   } catch (error) {
-    state.online.error = error.message;
+    setOnlineError(error);
     render();
   }
 }
@@ -5389,7 +5390,25 @@ function resetOnlineConnectionState() {
   state.online.snapshot = null;
   state.online.status = "";
   state.online.shareStatus = "";
+  clearOnlineError();
+}
+
+function clearOnlineError() {
   state.online.error = "";
+  state.online.errorKey = "";
+}
+
+function setOnlineError(error, errorKey = "") {
+  state.online.error = typeof error === "string" ? error : String(error?.message ?? "");
+  state.online.errorKey = errorKey;
+}
+
+function renderOnlineError() {
+  const message = state.online.errorKey
+    ? translate(state.online.errorKey)
+    : state.online.error;
+  if (!message) return "";
+  return `<p class="error-line" role="alert" aria-live="assertive" aria-atomic="true">${translate("online.error", { message })}</p>`;
 }
 
 function currentPreset() {

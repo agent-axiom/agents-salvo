@@ -156,7 +156,9 @@ test("online room actions require a registered Telegram player in the UI", () =>
   assert.match(app, /online\.authRequired/);
   assert.match(app, /data-action="online-create"[^>]*\$\{onlineDisabled\}/);
   assert.match(app, /data-action="online-join"[^>]*\$\{onlineDisabled\}/);
-  assert.match(app, /if \(!isOnlineAuthReady\(\)\) \{\s*state\.online\.error = translate\("online\.authRequired"\);/s);
+  assert.match(app, /if \(!isOnlineAuthReady\(\)\) \{\s*setOnlineError\(translate\("online\.authRequired"\)\);/s);
+  assert.match(app, /function renderOnlineError\(\)/);
+  assert.match(app, /role="alert" aria-live="assertive"/);
 });
 
 test("private replay archive state uses authenticated participant endpoints", () => {

@@ -76,6 +76,27 @@ test("privacy notice explains Telegram Mini App identity processing in all local
   assert.match(sections["zh-CN"], /同一份档案记录/);
 });
 
+test("privacy notice distinguishes explicit Telegram consent from automatic Mini App validation", () => {
+  const privacy = readFileSync("src/privacy.html", "utf8");
+  const sections = {
+    ru: privacySection(privacy, "ru", "en"),
+    en: privacySection(privacy, "en", "zh-CN"),
+    "zh-CN": privacySection(privacy, "zh-CN"),
+  };
+
+  assert.match(sections.ru, /на сайте и в установленном приложении[\s\S]*явное согласие[\s\S]*перед входом через Telegram/i);
+  assert.match(sections.ru, /Telegram Mini App[\s\S]*проверка личности начинается автоматически[\s\S]*подписанных данных запуска/i);
+  assert.match(sections.ru, /на сайте и в установленном приложении[\s\S]*без входа/i);
+
+  assert.match(sections.en, /website and installed app[\s\S]*explicit consent[\s\S]*before Telegram sign-in/i);
+  assert.match(sections.en, /Telegram Mini App[\s\S]*identity validation starts automatically[\s\S]*signed launch data/i);
+  assert.match(sections.en, /without signing in[\s\S]*website and installed app/i);
+
+  assert.match(sections["zh-CN"], /网站和已安装的应用[\s\S]*Telegram 登录前[\s\S]*明确同意/);
+  assert.match(sections["zh-CN"], /Telegram Mini App[\s\S]*已签名启动数据[\s\S]*身份验证会在打开时自动开始/);
+  assert.match(sections["zh-CN"], /网站和已安装应用[\s\S]*无需登录/);
+});
+
 test("privacy notice is built and linked from Telegram authentication", () => {
   assert.match(app, /data-action=["']open-privacy["']/);
   assert.match(app, /href=["']\/agents-salvo\/privacy\.html["']/);

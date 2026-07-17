@@ -2957,6 +2957,15 @@ html[data-runtime="telegram"] .modal-backdrop {
     0 0 34px var(--glow);
 }
 
+html[data-runtime="telegram"] .result-modal {
+  max-height: calc(
+    var(--tg-viewport-stable-height, 100dvh) -
+    var(--salvo-safe-top) -
+    var(--salvo-safe-bottom) -
+    36px
+  );
+}
+
 .result-modal > span {
   color: var(--muted);
   font-size: 12px;
