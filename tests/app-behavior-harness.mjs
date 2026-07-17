@@ -720,24 +720,59 @@ async function runTelegramAuthRecoveryScenario() {
   assert.doesNotMatch(invalidBot.root.innerHTML, /auth-miniapp-open|https:\/\/t\.me/);
   assert.deepEqual(invalidBot.calls.openedUrls, []);
 
-  const expired = createAppHarness({
-    platformName: "telegram",
-    launchData: "expired-init-data",
-    miniAppResponse: new Response(JSON.stringify({ error: "invalid initData" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    }),
-  });
-  const expiredApp = bootSalvoApp(expired.dependencies);
-  await expiredApp.startup.done;
-  assert.equal(expiredApp.getState().auth.method, "miniapp-expired");
-  assert.equal(expiredApp.getState().auth.token, "");
-  assert.equal(expiredApp.getState().auth.user, null);
-  assert.match(expired.root.innerHTML, /Telegram Mini App session expired/);
-  assert.doesNotMatch(expired.root.innerHTML, /invalid initData|auth-telegram-retry/);
-  assert.match(expired.root.innerHTML, /data-action="auth-miniapp-reopen"/);
-  await expired.root.click("auth-miniapp-reopen");
-  assert.deepEqual(expired.calls.openedUrls, ["https://t.me/salvo_test_bot?startapp"]);
+  const authenticationFailure = { error: "Telegram Mini App authentication failed" };
+  const expiredApps = [];
+  for (const [name, launchData] of [
+    ["stale initData", "stale-init-data"],
+    ["tampered initData", "tampered-init-data"],
+  ]) {
+    const expired = createAppHarness({
+      platformName: "telegram",
+      launchData,
+      miniAppResponse: new Response(JSON.stringify(authenticationFailure), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      }),
+    });
+    const expiredApp = bootSalvoApp(expired.dependencies);
+    expiredApps.push(expiredApp);
+    await expiredApp.startup.done;
+    assert.equal(expiredApp.getState().auth.method, "miniapp-expired", name);
+    assert.equal(expiredApp.getState().auth.token, "", name);
+    assert.equal(expiredApp.getState().auth.user, null, name);
+    assert.match(expired.root.innerHTML, /Telegram Mini App session expired/, name);
+    assert.doesNotMatch(expired.root.innerHTML, /authentication failed|auth-telegram-retry/, name);
+    assert.match(expired.root.innerHTML, /data-action="auth-miniapp-reopen"/, name);
+    await expired.root.click("auth-miniapp-reopen");
+    assert.deepEqual(expired.calls.openedUrls, ["https://t.me/salvo_test_bot?startapp"], name);
+  }
+
+  const serviceFailureApps = [];
+  for (const name of ["Worker configuration failure", "D1 session failure"]) {
+    const serviceFailure = createAppHarness({
+      platformName: "telegram",
+      launchData: "signed-init-data",
+      miniAppResponse: new Response(JSON.stringify(authenticationFailure), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      }),
+    });
+    const serviceFailureApp = bootSalvoApp(serviceFailure.dependencies);
+    serviceFailureApps.push(serviceFailureApp);
+    await serviceFailureApp.startup.done;
+    assert.equal(serviceFailureApp.getState().auth.method, "miniapp", name);
+    assert.equal(serviceFailureApp.getState().auth.token, "", name);
+    assert.equal(serviceFailureApp.getState().auth.user, null, name);
+    assert.match(serviceFailure.root.innerHTML, /Telegram login is unavailable/, name);
+    assert.doesNotMatch(serviceFailure.root.innerHTML, /authentication failed|auth-miniapp-reopen/, name);
+    assert.match(serviceFailure.root.innerHTML, /data-action="auth-telegram-retry"/, name);
+    assert.doesNotMatch(serviceFailure.root.innerHTML, /data-action="start-agent"[^>]*disabled/, name);
+    assert.doesNotMatch(serviceFailure.root.innerHTML, /data-action="start-hotseat"[^>]*disabled/, name);
+    assert.doesNotMatch(serviceFailure.root.innerHTML, /data-action="start-training"[^>]*disabled/, name);
+    await serviceFailure.root.click("show-online");
+    assert.match(serviceFailure.root.innerHTML, /data-action="online-create"[^>]*disabled/, name);
+    assert.match(serviceFailure.root.innerHTML, /data-action="online-join"[^>]*disabled/, name);
+  }
 
   let attempts = 0;
   const retryToken = "r".repeat(43);
@@ -810,7 +845,8 @@ async function runTelegramAuthRecoveryScenario() {
 
   await Promise.all([
     invalidBotApp.stop(),
-    expiredApp.stop(),
+    ...expiredApps.map((app) => app.stop()),
+    ...serviceFailureApps.map((app) => app.stop()),
     retryApp.stop(),
     staleApp.stop(),
     persistenceApp.stop(),

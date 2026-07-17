@@ -808,17 +808,46 @@ async function authenticateTelegram(request, env) {
 }
 
 async function authenticateTelegramMiniApp(request, env) {
+  const config = telegramMiniAppServiceConfig(env);
+  if (!config) {
+    return telegramMiniAppAuthFailure(503);
+  }
+
+  let initData;
   try {
-    if (!env?.DB || typeof env.TELEGRAM_BOT_TOKEN !== "string" || env.TELEGRAM_BOT_TOKEN.length === 0) {
-      throw new Error("Unavailable");
-    }
-    const { initData } = await readStrictTelegramJson(request, "initData", maxTelegramMiniAppJsonBytes);
-    const { user } = await verifyTelegramMiniAppInitData(initData, env.TELEGRAM_BOT_TOKEN);
-    const { token } = await createSession(env.DB, user);
+    ({ initData } = await readStrictTelegramJson(request, "initData", maxTelegramMiniAppJsonBytes));
+  } catch {
+    return telegramMiniAppAuthFailure(401);
+  }
+
+  let user;
+  try {
+    ({ user } = await verifyTelegramMiniAppInitData(initData, config.botToken));
+  } catch {
+    return telegramMiniAppAuthFailure(401);
+  }
+
+  try {
+    const { token } = await createSession(config.db, user);
     return json({ token, user });
   } catch {
-    return json({ error: "Telegram Mini App authentication failed" }, 401);
+    return telegramMiniAppAuthFailure(503);
   }
+}
+
+function telegramMiniAppServiceConfig(env) {
+  try {
+    const db = env?.DB;
+    const botToken = env?.TELEGRAM_BOT_TOKEN;
+    if (!db || typeof botToken !== "string" || botToken.trim() === "") return null;
+    return { db, botToken };
+  } catch {
+    return null;
+  }
+}
+
+function telegramMiniAppAuthFailure(status) {
+  return json({ error: "Telegram Mini App authentication failed" }, status);
 }
 
 async function startTelegramMobileAuth(request, env, ctx) {

@@ -96,7 +96,7 @@ test("Telegram Mini App auth route matches only the exact path and POST method",
   }
 });
 
-test("Telegram Mini App auth rejects invalid requests and failures with one redacted response", async (t) => {
+test("Telegram Mini App auth classifies launch and service failures with one redacted response", async (t) => {
   const db = memoryD1(t);
   const now = Math.floor(Date.now() / 1_000);
   const initData = await signedInitData({ auth_date: String(now) });
@@ -111,59 +111,106 @@ test("Telegram Mini App auth rejects invalid requests and failures with one reda
     textEncoder.encode(JSON.stringify({ initData: oversizedInitData })).byteLength,
     maxTelegramMiniAppJsonBytes + 1,
   );
-  const d1Failure = {
-    prepare() {
-      throw new Error(`D1 failure: ${telegramUserJson}`);
+  const upsertFailureSecret = `D1 upsert failure: ${telegramUserJson}`;
+  const sessionFailureSecret = `D1 session failure: ${queryId}`;
+  const upsertFailure = {
+    prepare(sql) {
+      if (sql.includes("INSERT INTO users")) throw new Error(upsertFailureSecret);
+      return db.prepare(sql);
     },
   };
+  const sessionFailure = {
+    prepare(sql) {
+      if (sql.includes("INSERT INTO auth_sessions")) throw new Error(sessionFailureSecret);
+      return db.prepare(sql);
+    },
+  };
+  const inaccessibleConfig = {};
+  Object.defineProperty(inaccessibleConfig, "DB", {
+    get() {
+      throw new Error("private Worker binding failure");
+    },
+  });
   const cases = [
     {
       name: "wrong content type",
+      status: 401,
       request: () => postMiniApp({ initData }, { DB: db, TELEGRAM_BOT_TOKEN: botToken }, "text/plain"),
     },
     {
       name: "extra JSON field",
+      status: 401,
       request: () => postMiniApp({ initData, callback: "https://attacker.test" }, { DB: db, TELEGRAM_BOT_TOKEN: botToken }),
     },
     {
       name: "missing initData",
+      status: 401,
       request: () => postMiniApp({}, { DB: db, TELEGRAM_BOT_TOKEN: botToken }),
     },
     {
-      name: "missing D1 binding",
-      request: () => postMiniApp({ initData }, { TELEGRAM_BOT_TOKEN: botToken }),
-    },
-    {
-      name: "missing bot token",
-      request: () => postMiniApp({ initData }, { DB: db }),
-    },
-    {
       name: "malformed JSON",
+      status: 401,
       request: () => rawMiniAppRequest("{not-json", { DB: db, TELEGRAM_BOT_TOKEN: botToken }),
     },
     {
       name: "oversized JSON envelope",
+      status: 401,
       request: () => postMiniApp({ initData: oversizedInitData }, { DB: db, TELEGRAM_BOT_TOKEN: botToken }),
     },
     {
       name: "stale initData",
+      status: 401,
       request: () => postMiniApp({ initData: staleInitData }, { DB: db, TELEGRAM_BOT_TOKEN: botToken }),
     },
     {
       name: "tampered initData",
+      status: 401,
       request: () => postMiniApp({ initData: tamperedInitData }, { DB: db, TELEGRAM_BOT_TOKEN: botToken }),
     },
     {
-      name: "D1 failure",
-      request: () => postMiniApp({ initData }, { DB: d1Failure, TELEGRAM_BOT_TOKEN: botToken }),
+      name: "missing D1 binding",
+      status: 503,
+      request: () => postMiniApp({ initData }, { TELEGRAM_BOT_TOKEN: botToken }),
+    },
+    {
+      name: "missing bot token",
+      status: 503,
+      request: () => postMiniApp({ initData }, { DB: db }),
+    },
+    {
+      name: "empty bot token",
+      status: 503,
+      request: () => postMiniApp({ initData }, { DB: db, TELEGRAM_BOT_TOKEN: "" }),
+    },
+    {
+      name: "blank bot token",
+      status: 503,
+      request: () => postMiniApp({ initData }, { DB: db, TELEGRAM_BOT_TOKEN: " \t" }),
+    },
+    {
+      name: "inaccessible Worker configuration",
+      status: 503,
+      request: () => postMiniApp({ initData }, inaccessibleConfig),
+    },
+    {
+      name: "D1 upsert failure",
+      status: 503,
+      request: () => postMiniApp({ initData }, { DB: upsertFailure, TELEGRAM_BOT_TOKEN: botToken }),
+    },
+    {
+      name: "D1 session creation failure",
+      status: 503,
+      request: () => postMiniApp({ initData }, { DB: sessionFailure, TELEGRAM_BOT_TOKEN: botToken }),
     },
   ];
 
+  const responseBodies = new Set();
   for (const rejection of cases) {
     const response = await rejection.request();
     const body = await response.text();
-    assert.equal(response.status, 401, rejection.name);
+    assert.equal(response.status, rejection.status, rejection.name);
     assert.equal(body, authenticationFailure, rejection.name);
+    responseBodies.add(body);
     assertRedacted(body, [
       botToken,
       initData,
@@ -173,8 +220,12 @@ test("Telegram Mini App auth rejects invalid requests and failures with one reda
       queryId,
       telegramUserJson,
       oversizedEnvelopeSecret,
+      upsertFailureSecret,
+      sessionFailureSecret,
+      "private Worker binding failure",
     ]);
   }
+  assert.deepEqual([...responseBodies], [authenticationFailure]);
   assert.equal(db.queryOne("SELECT COUNT(*) AS count FROM auth_sessions").count, 0);
 });
 
