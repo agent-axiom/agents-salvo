@@ -68,7 +68,12 @@ import { platform } from "./platform/index.js";
 import { RemoteClient } from "./remote.js";
 import { createTelegramAuthClient } from "./telegram-auth.js";
 import { createTelegramMiniAppAuthClient } from "./telegram-mini-app-auth.js";
-import { telegramMainMiniAppUrl } from "./telegram-launch.js";
+import {
+  parseTelegramStartParam,
+  telegramMainMiniAppUrl,
+  telegramReplayUrl,
+  telegramRoomInviteUrl,
+} from "./telegram-launch.js";
 
 export { assetUrl };
 export { menuMusicTracks } from "./core/audio.js";
@@ -455,6 +460,7 @@ function startMobileApp() {
     refreshAuth: isTelegramMiniApp
       ? authenticateTelegramMiniApp
       : telegramAuthBootstrap.type === "ticket" ? async () => {} : refreshAuth,
+    processLaunch: isTelegramMiniApp ? processTelegramMiniAppLaunch : undefined,
     refreshLeaderboard,
     onError: reportRuntimeError,
   });
@@ -469,7 +475,7 @@ function startMobileApp() {
     ? services.runtimeReady
     : services.runtimeReady.then(loadTelegramAuthCapability);
   const bootstrapReady = isTelegramMiniApp
-    ? services.authReady
+    ? services.launchReady
     : Promise.all([
         services.runtimeReady,
         services.secureSessionReady,
@@ -482,6 +488,19 @@ function startMobileApp() {
     bootstrapReady,
     done,
   };
+}
+
+async function processTelegramMiniAppLaunch() {
+  if (!state.auth.token || !state.auth.user) return false;
+
+  let route = null;
+  try {
+    route = parseTelegramStartParam(platform.getStartParam());
+  } catch {
+    return false;
+  }
+  if (!route) return false;
+  return navigateToInternalRoute(route, { joinRoom: true });
 }
 
 async function loadTelegramAuthCapability() {
@@ -3387,13 +3406,18 @@ async function handlePlatformDeepLink(rawUrl) {
     }
     return redeemTelegramTicket(route.ticket);
   }
+  return navigateToInternalRoute(route);
+}
+
+async function navigateToInternalRoute(route, { joinRoom = false } = {}) {
   return requestLeaveBattle(async () => {
     try {
       if (route.type === "room") {
-        return await appNavigation.run(() => {
+        return await appNavigation.run(async () => {
           showOnline();
           state.online.roomCodeInput = route.roomCode;
           render();
+          if (joinRoom) await onlineJoin();
         });
       }
       return await openArchivedReplay(route.replayId, { source: "direct" });
@@ -3557,6 +3581,20 @@ function selectArchivedReplayTab(tab) {
 
 async function copyArchivedReplayLink() {
   const replayId = state.replayArchive.requestedId;
+  if (isTelegramMiniApp) {
+    let url = "";
+    try {
+      url = telegramReplayUrl(state.auth.telegramBotUsername, replayId);
+    } catch {
+      // Invalid launch configuration falls through to the existing error status.
+    }
+    const shared = url
+      ? await shareWithTelegramFallback(translate("replayArchive.title"), url)
+      : false;
+    state.replayArchive.copyStatus = shared ? "copied" : "error";
+    render();
+    return;
+  }
   const url = replayUrlForId(canonicalReplayBaseUrl, replayId);
   if (!url) {
     return;
@@ -4235,7 +4273,15 @@ async function shareRoom() {
   }
   const showingResult = Boolean(currentBattleResultContext());
   const text = translate("online.shareText", { code: roomCode });
-  const shared = await shareWithTelegramFallback(text, canonicalReplayBaseUrl);
+  let url = canonicalReplayBaseUrl;
+  if (isTelegramMiniApp) {
+    try {
+      url = telegramRoomInviteUrl(state.auth.telegramBotUsername, roomCode);
+    } catch {
+      url = "";
+    }
+  }
+  const shared = url ? await shareWithTelegramFallback(text, url) : false;
   state.online.error = shared ? "" : translate("share.failed");
   if (showingResult) state.resultCopyStatus = shared ? "" : "share-failed";
   render();
@@ -4249,6 +4295,7 @@ async function shareWithTelegramFallback(text, url) {
       url: url,
     });
     if (result.shared) return true;
+    if (isTelegramMiniApp) return false;
     const telegramUrl = new URL("https://t.me/share/url");
     telegramUrl.searchParams.set("url", url);
     telegramUrl.searchParams.set("text", text);

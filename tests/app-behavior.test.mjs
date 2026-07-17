@@ -47,6 +47,14 @@ test("actual app authenticates Telegram Mini App launch data automatically", asy
   await runScenarioInChild("telegram-bootstrap");
 });
 
+test("actual app routes Telegram room and replay launches after authentication", async () => {
+  await runScenarioInChild("telegram-launch-routing");
+});
+
+test("actual app shares Telegram launches without changing web canonical links", async () => {
+  await runScenarioInChild("telegram-launch-sharing");
+});
+
 test("actual app keeps Telegram Mini App auth failures recoverable and race-safe", async () => {
   await runScenarioInChild("telegram-auth-recovery");
 });

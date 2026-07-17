@@ -27,6 +27,8 @@ const scenarios = {
   "auth-races": runAuthRacesScenario,
   "auth-bootstrap": runAuthBootstrapScenario,
   "telegram-bootstrap": runTelegramBootstrapScenario,
+  "telegram-launch-routing": runTelegramLaunchRoutingScenario,
+  "telegram-launch-sharing": runTelegramLaunchSharingScenario,
   "telegram-auth-recovery": runTelegramAuthRecoveryScenario,
   "telegram-runtime": runTelegramRuntimeScenario,
   "haptic-runtime": runHapticRuntimeScenario,
@@ -674,6 +676,281 @@ async function runTelegramBootstrapScenario() {
   await app.stop();
 }
 
+async function runTelegramLaunchRoutingScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const sessionToken = "l".repeat(43);
+  const user = telegramUser("launch-user", "Launch Captain");
+  const authResponse = deferred();
+  const joinedRooms = [];
+  const roomHarness = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-room-init-data",
+    startParam: "room_ABCD",
+    miniAppResponse: () => authResponse.promise,
+    createRemoteClient() {
+      return remoteClientHarness({
+        async joinRoom(roomCode) {
+          joinedRooms.push(roomCode);
+          return {
+            roomCode,
+            playerId: "p2",
+            playerToken: "private-player-token",
+            presetId: "classic",
+          };
+        },
+      });
+    },
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const roomApp = bootSalvoApp(roomHarness.dependencies);
+  await waitFor(() => roomHarness.fetchCalls.some(({ url }) => (
+    url.endsWith("/auth/telegram/miniapp")
+  )));
+  assert.equal(roomApp.getState().screen, "menu");
+  assert.deepEqual(joinedRooms, []);
+
+  authResponse.resolve({ token: sessionToken, user });
+  await roomApp.startup.done;
+  assert.equal(roomApp.getState().screen, "online");
+  assert.equal(roomApp.getState().online.roomCodeInput, "ABCD");
+  assert.deepEqual(joinedRooms, ["ABCD"]);
+  assert.equal(roomApp.getState().online.session.roomCode, "ABCD");
+
+  await roomHarness.root.click("auth-telegram-retry");
+  assert.deepEqual(joinedRooms, ["ABCD"], "launch is not replayed after explicit authentication");
+
+  const replayAuth = deferred();
+  const replayHarness = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-replay-init-data",
+    startParam: "replay_replay-123",
+    miniAppResponse: () => replayAuth.promise,
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      if (url.endsWith("/replays/replay-123")) {
+        return response({ error: "Replay not found" }, { ok: false, status: 404 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const replayApp = bootSalvoApp(replayHarness.dependencies);
+  await waitFor(() => replayHarness.fetchCalls.some(({ url }) => (
+    url.endsWith("/auth/telegram/miniapp")
+  )));
+  assert.equal(
+    replayHarness.fetchCalls.some(({ url }) => url.includes("/replays/")),
+    false,
+    "private replay must not load before authentication",
+  );
+
+  replayAuth.resolve({ token: sessionToken, user });
+  await replayApp.startup.done;
+  const replayRequest = replayHarness.fetchCalls.find(({ url }) => (
+    url.endsWith("/replays/replay-123")
+  ));
+  assert.ok(replayRequest);
+  assert.equal(replayRequest.init.headers.Authorization, `Bearer ${sessionToken}`);
+  assert.equal(replayApp.getState().screen, "replay");
+  assert.equal(replayApp.getState().replayArchive.requestedId, "replay-123");
+
+  for (const startParam of [
+    "room_abcd",
+    `room_${"A".repeat(13)}`,
+    "replay_bad_id",
+    "replay_bad/id",
+  ]) {
+    let clientsCreated = 0;
+    const invalid = createAppHarness({
+      platformName: "telegram",
+      launchData: "signed-invalid-init-data",
+      startParam,
+      createRemoteClient() {
+        clientsCreated += 1;
+        return remoteClientHarness();
+      },
+      fetchResponse(url) {
+        if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+        if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+        throw new Error(`Unexpected fetch for ${startParam}: ${url}`);
+      },
+    });
+    const invalidApp = bootSalvoApp(invalid.dependencies);
+    await invalidApp.startup.done;
+    assert.equal(invalidApp.getState().screen, "menu", startParam);
+    assert.equal(clientsCreated, 0, startParam);
+    assert.equal(invalid.fetchCalls.some(({ url }) => url.includes("/replays/")), false, startParam);
+    await invalidApp.stop();
+  }
+
+  for (const failureMessage of ["Room is full", "Room was not found"]) {
+    const failedJoin = createAppHarness({
+      platformName: "telegram",
+      launchData: "signed-failed-room-init-data",
+      startParam: "room_ABCD",
+      createRemoteClient() {
+        return remoteClientHarness({
+          async joinRoom() {
+            throw new Error(failureMessage);
+          },
+        });
+      },
+      fetchResponse(url) {
+        if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+        if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+        throw new Error(`Unexpected fetch: ${url}`);
+      },
+    });
+    const failedJoinApp = bootSalvoApp(failedJoin.dependencies);
+    await failedJoinApp.startup.done;
+    assert.equal(failedJoinApp.getState().screen, "online", failureMessage);
+    assert.equal(failedJoinApp.getState().online.roomCodeInput, "ABCD", failureMessage);
+    assert.equal(failedJoinApp.getState().online.session, null, failureMessage);
+    assert.equal(failedJoinApp.getState().online.error, failureMessage, failureMessage);
+    assert.match(failedJoin.root.innerHTML, new RegExp(failureMessage), failureMessage);
+    await failedJoinApp.stop();
+  }
+
+  const guardedAuth = deferred();
+  const guardedJoins = [];
+  const guarded = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-guarded-init-data",
+    startParam: "room_GUARD",
+    miniAppResponse: () => guardedAuth.promise,
+    createRemoteClient() {
+      return remoteClientHarness({
+        async joinRoom(roomCode) {
+          guardedJoins.push(roomCode);
+          return { roomCode, playerId: "p2", playerToken: "private-token", presetId: "classic" };
+        },
+      });
+    },
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const guardedApp = bootSalvoApp(guarded.dependencies);
+  await guarded.root.click("start-agent");
+  guardedAuth.resolve({ token: sessionToken, user });
+  await guardedApp.startup.done;
+  assert.equal(guardedApp.getState().screen, "setup");
+  assert.equal(guardedApp.getState().leaveBattleDialog, true);
+  assert.deepEqual(guardedJoins, []);
+  await guarded.root.click("confirm-leave-battle");
+  assert.equal(guardedApp.getState().screen, "online");
+  assert.deepEqual(guardedJoins, ["GUARD"]);
+
+  await Promise.all([roomApp.stop(), replayApp.stop(), guardedApp.stop()]);
+}
+
+async function runTelegramLaunchSharingScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const telegram = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-room-init-data",
+    startParam: "room_ABCD",
+    shareResult: { shared: true },
+    createRemoteClient() {
+      return remoteClientHarness({
+        async joinRoom(roomCode) {
+          return { roomCode, playerId: "p2", playerToken: "private-token", presetId: "classic" };
+        },
+      });
+    },
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const telegramApp = bootSalvoApp(telegram.dependencies);
+  await telegramApp.startup.done;
+  await telegram.root.click("share-telegram");
+  assert.equal(telegram.calls.sharePayloads.length, 1);
+  assert.deepEqual(telegram.calls.sharePayloads[0], {
+    title: "Salvo",
+    text: "Join my Salvo room: ABCD",
+    url: "https://t.me/salvo_test_bot?startapp=room_ABCD",
+  });
+
+  telegram.calls.sharePayloads.length = 0;
+  telegramApp.getState().replayArchive.requestedId = "replay-123";
+  await telegram.root.click("replay-copy-link");
+  assert.equal(telegram.calls.sharePayloads.length, 1);
+  assert.equal(
+    telegram.calls.sharePayloads[0].url,
+    "https://t.me/salvo_test_bot?startapp=replay_replay-123",
+  );
+  assert.equal(telegram.calls.sharePayloads[0].text, "Battle replay");
+
+  const failed = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-room-init-data",
+    startParam: "room_ABCD",
+    shareResult: { shared: false },
+    createRemoteClient() {
+      return remoteClientHarness({
+        async joinRoom(roomCode) {
+          return { roomCode, playerId: "p2", playerToken: "private-token", presetId: "classic" };
+        },
+      });
+    },
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const failedApp = bootSalvoApp(failed.dependencies);
+  await failedApp.startup.done;
+  await failed.root.click("share-telegram");
+  assert.equal(failedApp.getState().online.error, "Could not share.");
+  assert.match(failed.root.innerHTML, /Could not share\./);
+  assert.deepEqual(failed.calls.openedUrls, [], "failed Telegram sharing must remain failed");
+
+  const web = createAppHarness({
+    secureSession: resolvedDeferred("web-session-token"),
+    shareResult: { shared: true },
+    createRemoteClient() {
+      return remoteClientHarness({
+        async createRoom() {
+          return { roomCode: "WEB1", playerId: "p1", playerToken: "private-token" };
+        },
+      });
+    },
+    fetchResponse(url) {
+      if (url.endsWith("/auth/me")) {
+        return response({ user: { id: "web-user", name: "Web Captain", username: "web" } });
+      }
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+  const webApp = bootSalvoApp(web.dependencies);
+  await webApp.startup.done;
+  await web.root.click("show-online");
+  await web.root.click("online-create");
+  await web.root.click("share-telegram");
+  assert.equal(web.calls.sharePayloads[0].url, "https://agent-axiom.github.io/agents-salvo/");
+
+  webApp.getState().replayArchive.requestedId = "replay-123";
+  await web.root.click("replay-copy-link");
+  assert.equal(
+    web.calls.clipboardWrites.at(-1),
+    "https://agent-axiom.github.io/agents-salvo/?replay=replay-123",
+  );
+
+  await Promise.all([telegramApp.stop(), failedApp.stop(), webApp.stop()]);
+}
+
 async function runTelegramAuthRecoveryScenario() {
   const { bootSalvoApp } = await import("../src/app.js");
   for (const [name, options] of [
@@ -1213,6 +1490,7 @@ function createAppHarness({
   native = false,
   platformName = native ? "android" : "web",
   launchData = "",
+  startParam = "",
   platformAvailable = Boolean(launchData),
   platformTheme = null,
   workerUrl = "https://worker.example.test",
@@ -1237,6 +1515,7 @@ function createAppHarness({
   onSetClosingConfirmation = () => Promise.resolve(),
   onHaptic = () => Promise.resolve(),
   onSettingWrite = () => Promise.resolve(),
+  shareResult = { shared: false },
   createRemoteClient = () => {
     throw new Error("Remote client was not expected");
   },
@@ -1256,6 +1535,8 @@ function createAppHarness({
     snapshotReads: 0,
     secureClears: 0,
     secureSets: 0,
+    sharePayloads: [],
+    clipboardWrites: [],
     openedUrls: [],
     closedUrls: 0,
     historyReplacements: 0,
@@ -1284,6 +1565,7 @@ function createAppHarness({
     getPlatform: () => platformName,
     isAvailable: () => platformAvailable,
     getLaunchData: () => launchData,
+    getStartParam: () => startParam,
     settings: {
       get(key) {
         if (key === "localBattle") {
@@ -1376,8 +1658,9 @@ function createAppHarness({
       calls.haptics.push(event);
       await onHaptic(event);
     },
-    async share() {
-      return { shared: false };
+    async share(payload) {
+      calls.sharePayloads.push(payload);
+      return shareResult;
     },
     async openExternalUrl(url) {
       calls.openedUrls.push(url);
@@ -1397,7 +1680,11 @@ function createAppHarness({
   });
   const navigator = {
     onLine: true,
-    clipboard: { async writeText() {} },
+    clipboard: {
+      async writeText(value) {
+        calls.clipboardWrites.push(value);
+      },
+    },
   };
   const audio = {
     async startMusic() {},
@@ -1736,6 +2023,14 @@ function telegramUser(id, name) {
     name,
     username: id,
     photoUrl: "",
+  };
+}
+
+function remoteClientHarness(overrides = {}) {
+  return {
+    close() {},
+    async send() {},
+    ...overrides,
   };
 }
 
