@@ -6,6 +6,8 @@ Salvo is a browser Battleship game for GitHub Pages with three localizations, sa
 
 Live build: https://agent-axiom.github.io/agents-salvo/
 
+Telegram Mini App: https://agent-axiom.github.io/agents-salvo/telegram/
+
 ![Salvo paper board artwork](src/assets/salvo-board-action.png)
 
 ## Features
@@ -33,6 +35,16 @@ npm start
 ```
 
 After `npm start`, open `http://localhost:5173`.
+
+## Telegram Mini App
+
+In [@BotFather](https://t.me/BotFather), select the Salvo bot, open the Main Mini App setup, and set its URL to `https://agent-axiom.github.io/agents-salvo/telegram/`.
+
+When opened inside Telegram, the Mini App automatically sends Telegram's signed `initData` to the Cloudflare Worker. The Worker verifies the signature and freshness before creating the existing Salvo session, so players do not complete a separate login flow.
+
+The browser, Telegram Mini App, iOS app, and Android app use one source tree and one `npm run build`. That build emits the regular and Telegram HTML shells with one shared hashed JavaScript bundle and stylesheet; only the Telegram shell loads the Telegram SDK.
+
+Pages and the Mini App update immediately when the Pages artifact is published. Native apps do not load Pages at startup: each APK or iOS app packages the build from a selected commit and changes only when that commit is packaged and released.
 
 ## iOS And Android Development
 
@@ -90,7 +102,7 @@ API publishing is available after RuStore has one active version. Run `Check RuS
 2. In Settings -> Pages, select GitHub Actions.
 3. Run the `Deploy GitHub Pages` workflow or push to `main`.
 
-The workflow runs `npm test`, builds `dist`, and publishes it as a Pages artifact.
+The workflow runs the test and coverage gates, builds `dist`, verifies both HTML shells and their shared hashed assets, and publishes the result as a Pages artifact.
 
 ## Online Backend
 

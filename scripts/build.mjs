@@ -1,18 +1,50 @@
-import { cp, mkdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { build } from "esbuild";
+import {
+  acquireBuildLock,
+  publishBuild,
+  reconcileBuildState,
+  releaseBuildLock,
+} from "./build-publication.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const src = resolve(root, "src");
-const dist = resolveBuildOutput();
+const buildId = resolveBuildId();
+const destination = await resolveBuildOutput();
 
-function resolveBuildOutput() {
+const shellReplacements = [
+  {
+    path: "index.html",
+    assetPrefix: "./",
+    styleReference: '<link rel="stylesheet" href="./styles.css" />',
+    appReference: '<script type="module" src="./app.js"></script>',
+  },
+  {
+    path: "telegram/index.html",
+    assetPrefix: "../",
+    styleReference: '<link rel="stylesheet" href="../styles.css" />',
+    appReference: '<script type="module" src="../app.js"></script>',
+  },
+];
+
+async function resolveBuildOutput() {
   if (!process.env.SALVO_BUILD_DIR) {
     return resolve(root, "dist");
   }
-  const candidate = resolve(process.env.SALVO_BUILD_DIR);
-  const temporaryRoot = resolve(tmpdir());
+  const candidate = await canonicalizePath(resolve(process.env.SALVO_BUILD_DIR));
+  const temporaryRoot = await realpath(resolve(tmpdir()));
   const temporaryPath = relative(temporaryRoot, candidate);
   if (
     !temporaryPath
@@ -25,19 +57,141 @@ function resolveBuildOutput() {
   return candidate;
 }
 
-await rm(dist, { recursive: true, force: true });
-await mkdir(dist, { recursive: true });
-await cp(src, dist, { recursive: true });
-await build({
-  entryPoints: [resolve(src, "app.js")],
-  outfile: resolve(dist, "app.js"),
-  bundle: true,
-  format: "esm",
-  platform: "browser",
-  target: ["es2022"],
-  sourcemap: true,
-  legalComments: "none",
-});
-await writeFile(resolve(dist, ".nojekyll"), "");
+async function canonicalizePath(candidate) {
+  const missing = [];
+  let ancestor = candidate;
+  while (true) {
+    try {
+      return resolve(await realpath(ancestor), ...missing);
+    } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
+        throw error;
+      }
+      const parent = dirname(ancestor);
+      if (parent === ancestor) {
+        throw error;
+      }
+      missing.unshift(basename(ancestor));
+      ancestor = parent;
+    }
+  }
+}
 
-console.log(`Built ${dist}`);
+function resolveBuildId() {
+  if (!Object.hasOwn(process.env, "SALVO_BUILD_ID")) {
+    return "dev";
+  }
+  const candidate = process.env.SALVO_BUILD_ID;
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(candidate)) {
+    throw new Error(
+      "SALVO_BUILD_ID must match /^[A-Za-z0-9._-]{1,64}$/.",
+    );
+  }
+  return candidate;
+}
+
+function hashName(prefix, extension, contents) {
+  const hash = createHash("sha256").update(contents).digest("hex").slice(0, 10);
+  return `${prefix}.${hash}.${extension}`;
+}
+
+function replaceExactly(source, expected, replacement, label) {
+  const first = source.indexOf(expected);
+  const second =
+    first === -1 ? -1 : source.indexOf(expected, first + expected.length);
+  if (first === -1 || second !== -1) {
+    throw new Error(`${label} must have exactly one occurrence.`);
+  }
+  return `${source.slice(0, first)}${replacement}${source.slice(
+    first + expected.length,
+  )}`;
+}
+
+async function buildInto(dist) {
+  await cp(src, dist, { recursive: true });
+  await build({
+    entryPoints: [resolve(src, "app.js")],
+    outfile: resolve(dist, "app.js"),
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    target: ["es2022"],
+    sourcemap: true,
+    legalComments: "none",
+  });
+
+  const appPath = resolve(dist, "app.js");
+  const sourceMapPath = resolve(dist, "app.js.map");
+  const stylePath = resolve(dist, "styles.css");
+  const appSource = await readFile(appPath, "utf8");
+  const sourceMapSource = await readFile(sourceMapPath);
+  const styleSource = await readFile(stylePath);
+  const sourceMapName = hashName("app", "js.map", sourceMapSource);
+  const rewrittenApp = replaceExactly(
+    appSource,
+    "//# sourceMappingURL=app.js.map",
+    `//# sourceMappingURL=${sourceMapName}`,
+    "Application sourcemap reference",
+  );
+  const appName = hashName("app", "js", rewrittenApp);
+  const styleName = hashName("styles", "css", styleSource);
+
+  const rewrittenShells = [];
+  for (const shell of shellReplacements) {
+    const shellPath = resolve(dist, shell.path);
+    let html = await readFile(shellPath, "utf8");
+    html = replaceExactly(
+      html,
+      shell.styleReference,
+      `<link rel="stylesheet" href="${shell.assetPrefix}${styleName}" />`,
+      `${shellPath} stylesheet reference`,
+    );
+    html = replaceExactly(
+      html,
+      shell.appReference,
+      `<script type="module" src="${shell.assetPrefix}${appName}"></script>`,
+      `${shellPath} application reference`,
+    );
+    html = replaceExactly(
+      html,
+      'buildId: "dev"',
+      `buildId: "${buildId}"`,
+      `${shellPath} build ID marker`,
+    );
+    rewrittenShells.push([shellPath, html]);
+  }
+
+  await writeFile(appPath, rewrittenApp);
+  await rename(appPath, resolve(dist, appName));
+  await rename(sourceMapPath, resolve(dist, sourceMapName));
+  await rename(stylePath, resolve(dist, styleName));
+  for (const [path, html] of rewrittenShells) {
+    await writeFile(path, html);
+  }
+  await writeFile(resolve(dist, ".nojekyll"), "");
+}
+
+await mkdir(dirname(destination), { recursive: true });
+const lock = await acquireBuildLock(destination);
+let stage = null;
+try {
+  // Publication contract: consumers wait for command success. Any interrupted
+  // rename gap is reconciled under this lock before a new stage is created.
+  await reconcileBuildState(destination, lock);
+  stage = await mkdtemp(
+    resolve(dirname(destination), `.${basename(destination)}.stage-`),
+  );
+  await buildInto(stage);
+  await publishBuild(stage, destination);
+  stage = null;
+} finally {
+  try {
+    if (stage) {
+      await rm(stage, { recursive: true, force: true });
+    }
+  } finally {
+    await releaseBuildLock(lock);
+  }
+}
+
+console.log(`Built ${destination}`);

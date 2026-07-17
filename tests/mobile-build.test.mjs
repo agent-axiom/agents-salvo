@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -183,6 +191,57 @@ function listFiles(root) {
   });
 }
 
+function withTemporaryBuildTree(callback) {
+  const buildOutput = mkdtempSync(join(tmpdir(), "salvo-mobile-build-"));
+  try {
+    return callback(buildOutput);
+  } finally {
+    rmSync(buildOutput, { recursive: true, force: true });
+  }
+}
+
+function runTelegramArtifactVerification(workflowPath, jobName, sdkCount) {
+  const workflow = parseWorkflowSource(
+    readFileSync(workflowPath, "utf8"),
+    workflowPath,
+  );
+  const command = namedWorkflowStep(
+    workflow,
+    jobName,
+    "Verify Telegram Mini App artifacts",
+  ).step.run;
+
+  return withTemporaryBuildTree((fixtureRoot) => {
+    const dist = join(fixtureRoot, "dist");
+    const telegramDist = join(dist, "telegram");
+    const app = "app.0123456789.js";
+    const styles = "styles.0123456789.css";
+    const buildId = "fixture-build-id";
+    const sdkTag =
+      '<script src="https://telegram.org/js/telegram-web-app.js"></script>';
+
+    mkdirSync(telegramDist, { recursive: true });
+    writeFileSync(join(dist, app), "", "utf8");
+    writeFileSync(join(dist, styles), "", "utf8");
+    writeFileSync(
+      join(dist, "index.html"),
+      `<script src="./${app}"></script>\n<link href="./${styles}">\n<script>buildId: "${buildId}"</script>`,
+      "utf8",
+    );
+    writeFileSync(
+      join(telegramDist, "index.html"),
+      `${sdkTag.repeat(sdkCount)}<script src="../${app}"></script>\n<link href="../${styles}">\n<script>buildId: "${buildId}"</script>`,
+      "utf8",
+    );
+
+    return spawnSync("bash", ["-c", command], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+      env: { ...process.env, SALVO_BUILD_ID: buildId },
+    });
+  });
+}
+
 function readWorkflow(path) {
   assert.equal(existsSync(path), true, `${path} is missing`);
   const source = readFileSync(path, "utf8");
@@ -260,6 +319,75 @@ function actionVersions(workflow, action) {
 function scalarRunCommands(workflow) {
   return [...workflow.matchAll(/^\s+run: (?!\|)(.+)$/gm)].map(
     (match) => match[1],
+  );
+}
+
+function namedWorkflowStep(workflow, jobName, stepName) {
+  const steps = workflow.jobs[jobName]?.steps;
+  assert.equal(Array.isArray(steps), true, `${jobName} job steps are missing`);
+  const matches = steps
+    .map((step, index) => ({ index, step }))
+    .filter(({ step }) => step.name === stepName);
+  assert.equal(
+    matches.length,
+    1,
+    `${jobName} must contain exactly one ${stepName} step`,
+  );
+  return matches[0];
+}
+
+function assertCommitBuildId(step, label) {
+  assert.deepEqual(step.env, {
+    SALVO_BUILD_ID: "${{ github.sha }}",
+  }, `${label} must use the triggering commit as its build ID`);
+}
+
+function assertTelegramArtifactVerification(workflow, jobName) {
+  const build = namedWorkflowStep(workflow, jobName, "Build");
+  assert.equal(build.step.run, "npm run build");
+  assertCommitBuildId(build.step, `${jobName} Build`);
+
+  const verification = namedWorkflowStep(
+    workflow,
+    jobName,
+    "Verify Telegram Mini App artifacts",
+  );
+  assert.equal(
+    verification.index,
+    build.index + 1,
+    `${jobName} must verify the artifacts immediately after building`,
+  );
+  assert.equal(verification.step.shell, "bash");
+  assertCommitBuildId(verification.step, `${jobName} artifact verification`);
+  assert.equal(
+    verification.step.run.trim(),
+    `set -euo pipefail
+test -f dist/telegram/index.html
+sdk_occurrences="$(
+  awk '
+    {
+      remainder = $0
+      token = "telegram-web-app.js"
+      while ((position = index(remainder, token)) > 0) {
+        count += 1
+        remainder = substr(remainder, position + length(token))
+      }
+    }
+    END { print count + 0 }
+  ' dist/telegram/index.html
+)"
+test "$sdk_occurrences" -eq 1
+! grep -Fq 'telegram-web-app.js' dist/index.html
+web_app="$(grep -oE 'app\\.[a-f0-9]{10}\\.js' dist/index.html)"
+telegram_app="$(grep -oE 'app\\.[a-f0-9]{10}\\.js' dist/telegram/index.html)"
+test "$web_app" = "$telegram_app"
+test -f "dist/$web_app"
+web_styles="$(grep -oE 'styles\\.[a-f0-9]{10}\\.css' dist/index.html)"
+telegram_styles="$(grep -oE 'styles\\.[a-f0-9]{10}\\.css' dist/telegram/index.html)"
+test "$web_styles" = "$telegram_styles"
+test -f "dist/$web_styles"
+grep -Fq "buildId: \\"$SALVO_BUILD_ID\\"" dist/index.html
+grep -Fq "buildId: \\"$SALVO_BUILD_ID\\"" dist/telegram/index.html`,
   );
 }
 
@@ -352,18 +480,59 @@ test("Capacitor CLI loads the local TypeScript config", async () => {
   assert.equal(config.app.extConfig.server?.url, undefined);
 });
 
-test("mobile build emits bundled local web artifacts", () => {
-  const buildOutput = mkdtempSync(join(tmpdir(), "salvo-mobile-build-"));
+function assertBundledLocalWebArtifacts(buildOutput) {
   execFileSync(process.execPath, ["scripts/build.mjs"], {
     env: { ...process.env, SALVO_BUILD_DIR: buildOutput },
   });
 
   assert.equal(existsSync(join(buildOutput, "index.html")), true);
+  assert.equal(existsSync(join(buildOutput, "telegram/index.html")), true);
   assert.equal(existsSync(join(buildOutput, "assets")), true);
-  assert.equal(
-    readFileSync(join(buildOutput, "index.html"), "utf8"),
-    readFileSync("src/index.html", "utf8"),
+  const rootShell = readFileSync(join(buildOutput, "index.html"), "utf8");
+  const telegramShell = readFileSync(
+    join(buildOutput, "telegram/index.html"),
+    "utf8",
   );
+  const appReferences = [
+    ...rootShell.matchAll(/src="\.\/(app\.[a-f0-9]{10}\.js)"/g),
+  ];
+  const styleReferences = [
+    ...rootShell.matchAll(/href="\.\/(styles\.[a-f0-9]{10}\.css)"/g),
+  ];
+  assert.equal(appReferences.length, 1);
+  assert.equal(styleReferences.length, 1);
+  assert.doesNotMatch(rootShell, /telegram-web-app\.js/);
+  assert.equal(
+    (telegramShell.match(/telegram-web-app\.js/g) ?? []).length,
+    1,
+  );
+  assert.equal(
+    telegramShell.match(/src="\.\.\/(app\.[a-f0-9]{10}\.js)"/)?.[1],
+    appReferences[0][1],
+  );
+  assert.equal(
+    telegramShell.match(/href="\.\.\/(styles\.[a-f0-9]{10}\.css)"/)?.[1],
+    styleReferences[0][1],
+  );
+  assert.match(rootShell, /buildId: "dev"/);
+  assert.match(telegramShell, /buildId: "dev"/);
+
+  const localAssetReferences = [
+    ...rootShell.matchAll(/(?:href|src)="([^"]+)"/g),
+  ].map((match) => match[1]);
+  assert.equal(localAssetReferences.length > 0, true);
+  for (const reference of localAssetReferences) {
+    assert.match(
+      reference,
+      /^\.\//,
+      `${reference} must be a local native asset`,
+    );
+    assert.equal(
+      existsSync(join(buildOutput, reference.slice(2))),
+      true,
+      `${reference} is missing from the native build`,
+    );
+  }
   assert.deepEqual(
     readFileSync(
       join(buildOutput, "assets/images/backgrounds/paper-texture-512.png"),
@@ -372,7 +541,10 @@ test("mobile build emits bundled local web artifacts", () => {
       "src/assets/images/backgrounds/paper-texture-512.png",
     ),
   );
-  const bundledApp = readFileSync(join(buildOutput, "app.js"), "utf8");
+  const bundledApp = readFileSync(
+    join(buildOutput, appReferences[0][1]),
+    "utf8",
+  );
   assert.doesNotMatch(
     bundledApp,
     /(?:from\s*|import\s*(?:\(\s*)?)["']@capacitor\//,
@@ -381,6 +553,26 @@ test("mobile build emits bundled local web artifacts", () => {
     bundledApp,
     /(?:from\s*|import\s*(?:\(\s*)?)["']\.\.?\//,
   );
+}
+
+test("mobile build emits bundled local web artifacts", () => {
+  withTemporaryBuildTree(assertBundledLocalWebArtifacts);
+});
+
+test("temporary mobile build trees are removed after assertion failures", () => {
+  let buildOutput;
+
+  assert.throws(
+    () =>
+      withTemporaryBuildTree((path) => {
+        buildOutput = path;
+        writeFileSync(join(path, "partial-build.txt"), "partial", "utf8");
+        assert.fail("simulated build assertion failure");
+      }),
+    /simulated build assertion failure/,
+  );
+  assert.notEqual(buildOutput, undefined);
+  assert.equal(existsSync(buildOutput), false);
 });
 
 test("build output override rejects non-temporary directories before deleting files", () => {
@@ -810,10 +1002,42 @@ jobs:
   );
 });
 
+test("Telegram artifact verification enforces one exact SDK token", () => {
+  const targets = [
+    [".github/workflows/pages.yml", "build"],
+    [".github/workflows/mobile.yml", "web"],
+  ];
+  const validResults = targets.map(([path, job]) =>
+    runTelegramArtifactVerification(path, job, 1),
+  );
+  const duplicateResults = targets.map(([path, job]) =>
+    runTelegramArtifactVerification(path, job, 2),
+  );
+
+  for (const result of [...validResults, ...duplicateResults]) {
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+  }
+  assert.deepEqual(
+    validResults.map(({ status }) => status),
+    [0, 0],
+    "each workflow must accept exactly one SDK token",
+  );
+  assert.deepEqual(
+    duplicateResults.map(({ status }) => status),
+    [1, 1],
+    "each workflow must reject two SDK tokens even when they share one line",
+  );
+});
+
 test("Pages CI uses the pinned Node toolchain and preserves deployment", () => {
   const workflow = readWorkflow(".github/workflows/pages.yml");
+  const parsedWorkflow = parseWorkflowSource(
+    workflow,
+    ".github/workflows/pages.yml",
+  );
   assertWorkflowStructure(
-    parseWorkflowSource(workflow, ".github/workflows/pages.yml"),
+    parsedWorkflow,
     { triggers: ["push", "workflow_dispatch"], jobs: ["build", "deploy"] },
   );
   const build = workflowJob(workflow, "build");
@@ -832,6 +1056,7 @@ test("Pages CI uses the pinned Node toolchain and preserves deployment", () => {
     "npm run coverage",
     "npm run build",
   ]);
+  assertTelegramArtifactVerification(parsedWorkflow, "build");
   assert.match(build, /uses: actions\/configure-pages@v6/);
   assert.match(
     build,
@@ -882,6 +1107,10 @@ test("mobile CI covers branch builds without signing credentials", () => {
 
 test("mobile CI validates the web build and coverage gate", () => {
   const workflow = readWorkflow(".github/workflows/mobile.yml");
+  const parsedWorkflow = parseWorkflowSource(
+    workflow,
+    ".github/workflows/mobile.yml",
+  );
   const web = workflowJob(workflow, "web");
 
   assert.match(web, /^  web:\n    runs-on: ubuntu-latest$/m);
@@ -897,12 +1126,18 @@ test("mobile CI validates the web build and coverage gate", () => {
     "npm run coverage",
     "npm run build",
   ]);
+  assertTelegramArtifactVerification(parsedWorkflow, "web");
 });
 
 test("mobile CI tests, lints, and packages the Android debug app", () => {
   const workflow = readWorkflow(".github/workflows/mobile.yml");
+  const parsedWorkflow = parseWorkflowSource(
+    workflow,
+    ".github/workflows/mobile.yml",
+  );
   const android = workflowJob(workflow, "android");
 
+  assert.equal(parsedWorkflow.jobs.android.needs, "web");
   assert.match(android, /^  android:\n    runs-on: ubuntu-latest$/m);
   assert.deepEqual(actionVersions(android, "actions/checkout"), ["v7"]);
   assert.deepEqual(actionVersions(android, "actions/setup-node"), ["v7"]);
@@ -920,6 +1155,10 @@ test("mobile CI tests, lints, and packages the Android debug app", () => {
     "npm run mobile:sync",
     "android/gradlew -p android test lint assembleDebug",
   ]);
+  assertCommitBuildId(
+    namedWorkflowStep(parsedWorkflow, "android", "Sync native projects").step,
+    "Android native sync",
+  );
   assert.deepEqual(
     actionVersions(android, "ReactiveCircus/android-emulator-runner"),
     ["a421e43855164a8197daf9d8d40fe71c6996bb0d"],
@@ -936,8 +1175,13 @@ test("mobile CI tests, lints, and packages the Android debug app", () => {
 
 test("mobile CI builds an unsigned iOS Simulator app and retains failures", () => {
   const workflow = readWorkflow(".github/workflows/mobile.yml");
+  const parsedWorkflow = parseWorkflowSource(
+    workflow,
+    ".github/workflows/mobile.yml",
+  );
   const ios = workflowJob(workflow, "ios");
 
+  assert.equal(parsedWorkflow.jobs.ios.needs, "web");
   assert.match(ios, /^  ios:\n    runs-on: macos-26$/m);
   assert.deepEqual(actionVersions(ios, "actions/checkout"), ["v7"]);
   assert.deepEqual(actionVersions(ios, "actions/setup-node"), ["v7"]);
@@ -950,6 +1194,10 @@ test("mobile CI builds an unsigned iOS Simulator app and retains failures", () =
     "npm ci",
     "npm run mobile:sync",
   ]);
+  assertCommitBuildId(
+    namedWorkflowStep(parsedWorkflow, "ios", "Sync native projects").step,
+    "iOS native sync",
+  );
   assert.match(
     ios,
     /if: \$\{\{ always\(\) && steps\.ios_build\.outcome == 'failure' \}\}\n\s+uses: actions\/upload-artifact@v7\n\s+with:\n\s+name: ios-xcodebuild-log\n\s+path: xcodebuild\.log\n\s+if-no-files-found: error/,
@@ -958,4 +1206,50 @@ test("mobile CI builds an unsigned iOS Simulator app and retains failures", () =
     ios,
     /id: ios_build\n\s+shell: bash\n\s+run: \|\n\s+set -o pipefail\n\s+xcodebuild -project ios\/App\/App\.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build 2>&1 \| tee xcodebuild\.log/,
   );
+});
+
+test("localized READMEs document Telegram Mini App delivery", () => {
+  const publicMiniAppUrl =
+    "https://agent-axiom.github.io/agents-salvo/telegram/";
+  const expectations = [
+    {
+      path: "README.md",
+      publicUrl: /^Telegram Mini App: https:\/\/agent-axiom\.github\.io\/agents-salvo\/telegram\/$/m,
+      automaticAuth: /automatically sends Telegram's signed `initData`/,
+      sharedBuild: /one source tree and one `npm run build`/,
+      delivery: /Pages and the Mini App update immediately[\s\S]*selected commit/,
+    },
+    {
+      path: "README.ru.md",
+      publicUrl: /^Публичный Telegram Mini App: https:\/\/agent-axiom\.github\.io\/agents-salvo\/telegram\/$/m,
+      automaticAuth: /автоматически отправляет подписанный Telegram `initData`/,
+      sharedBuild: /единое дерево исходного кода и одну команду `npm run build`/,
+      sdkLoading: "Telegram SDK загружается только в Telegram shell.",
+      delivery: /Pages и Mini App обновляются сразу[\s\S]*выбранного коммита/,
+    },
+    {
+      path: "README.zh-CN.md",
+      publicUrl: /^Telegram Mini App：https:\/\/agent-axiom\.github\.io\/agents-salvo\/telegram\/$/m,
+      automaticAuth: /自动将 Telegram 签名的 `initData`/,
+      sharedBuild: /共享同一份源代码，并由一次 `npm run build`/,
+      delivery: /Pages 和 Mini App 会立即更新[\s\S]*所选提交/,
+    },
+  ];
+
+  for (const expectation of expectations) {
+    const readme = readFileSync(expectation.path, "utf8");
+    assert.equal(readme.includes(publicMiniAppUrl), true, expectation.path);
+    assert.match(readme, expectation.publicUrl, expectation.path);
+    assert.match(readme, /@BotFather[\s\S]*Main Mini App/, expectation.path);
+    assert.match(readme, expectation.automaticAuth, expectation.path);
+    assert.match(readme, expectation.sharedBuild, expectation.path);
+    if (expectation.sdkLoading) {
+      assert.equal(
+        readme.includes(expectation.sdkLoading),
+        true,
+        expectation.path,
+      );
+    }
+    assert.match(readme, expectation.delivery, expectation.path);
+  }
 });

@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import worker from "../worker/index.js";
-import { getPlayerProfile, recordCompletedMatch } from "../worker/profile.js";
+import {
+  getPlayerProfile,
+  recordCompletedMatch,
+  recordOnlineReplayBatch,
+} from "../worker/profile.js";
 import { createSession } from "../worker/session.js";
 
 const profileUser = {
@@ -207,6 +211,87 @@ test("profile match endpoint rejects client-submitted online results", async () 
 
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "Online results are recorded by the game server" });
+});
+
+test("online replay batches require atomic storage and exact replay-linked participants", async () => {
+  const replay = { id: "expected-replay" };
+  const prepareOnlyDb = { prepare() {} };
+  const atomicDb = {
+    batch() {
+      assert.fail("invalid replay batches must not be written");
+    },
+    prepare() {
+      assert.fail("invalid replay batches must not prepare statements");
+    },
+  };
+
+  await assert.rejects(
+    recordOnlineReplayBatch(prepareOnlyDb, replay, []),
+    /Atomic replay storage is not configured/,
+  );
+  await assert.rejects(
+    recordOnlineReplayBatch(atomicDb, replay, [
+      { playerId: "p1", user: profileUser, payload: completedMatchPayload() },
+    ]),
+    /Two online replay participants are required/,
+  );
+
+  const mismatchedPayload = {
+    ...completedMatchPayload(),
+    mode: "online",
+    replayId: "different-replay",
+  };
+  await assert.rejects(
+    recordOnlineReplayBatch(atomicDb, replay, [
+      { playerId: "p1", user: profileUser, payload: mismatchedPayload },
+      { playerId: "p2", user: rivalUser, payload: mismatchedPayload },
+    ]),
+    /Online replay match linkage is invalid/,
+  );
+});
+
+test("online replay batches reject duplicate participant identities without changing stats or MMR", async () => {
+  const db = new MemoryD1();
+  const { replay, playerMatches } = onlineReplayFixture({
+    id: "duplicate-participants",
+    p2User: profileUser,
+  });
+  const before = await getPlayerProfile(db, profileUser);
+
+  await assert.rejects(
+    recordOnlineReplayBatch(db, replay, playerMatches),
+    /Online replay participant identities are invalid/,
+  );
+
+  const after = await getPlayerProfile(db, profileUser);
+  assert.deepEqual(after.summary, before.summary);
+  assert.deepEqual(after.rating, before.rating);
+  assert.equal(db.matches.length, 0);
+  assert.equal(db.battleReplays.size, 0);
+});
+
+test("online replay batches reject swapped participant identities without changing stats or MMR", async () => {
+  const db = new MemoryD1();
+  const { replay, playerMatches } = onlineReplayFixture({ id: "swapped-participants" });
+  [playerMatches[0].user, playerMatches[1].user] = [playerMatches[1].user, playerMatches[0].user];
+  const before = await Promise.all([
+    getPlayerProfile(db, profileUser),
+    getPlayerProfile(db, rivalUser),
+  ]);
+
+  await assert.rejects(
+    recordOnlineReplayBatch(db, replay, playerMatches),
+    /Online replay participant identities are invalid/,
+  );
+
+  const after = await Promise.all([
+    getPlayerProfile(db, profileUser),
+    getPlayerProfile(db, rivalUser),
+  ]);
+  assert.deepEqual(after.map((profile) => profile.summary), before.map((profile) => profile.summary));
+  assert.deepEqual(after.map((profile) => profile.rating), before.map((profile) => profile.rating));
+  assert.equal(db.matches.length, 0);
+  assert.equal(db.battleReplays.size, 0);
 });
 
 test("profile endpoints fail generically when auth storage is unavailable", async () => {
@@ -598,6 +683,43 @@ function completedMatchPayload() {
   };
 }
 
+function onlineReplayFixture({ id, p1User = profileUser, p2User = rivalUser }) {
+  const finishedAt = "2026-07-11T12:00:00.000Z";
+  const replay = {
+    id,
+    p1UserKey: `${p1User.provider}:${p1User.id}`,
+    p2UserKey: `${p2User.provider}:${p2User.id}`,
+    presetId: "classic",
+    winnerId: "p1",
+    finishedAt,
+    payload: { version: 1 },
+  };
+  return {
+    replay,
+    playerMatches: [
+      onlinePlayerMatch({ replay, playerId: "p1", user: p1User, opponent: p2User.name }),
+      onlinePlayerMatch({ replay, playerId: "p2", user: p2User, opponent: p1User.name }),
+    ],
+  };
+}
+
+function onlinePlayerMatch({ replay, playerId, user, opponent }) {
+  return {
+    playerId,
+    user,
+    payload: {
+      ...completedMatchPayload(),
+      id: `online:${replay.id}:${playerId}`,
+      mode: "online",
+      result: replay.winnerId === playerId ? "win" : "loss",
+      opponent,
+      winnerId: replay.winnerId,
+      playedAt: replay.finishedAt,
+      replayId: replay.id,
+    },
+  };
+}
+
 async function sessionToken(db, user) {
   return (await createSession(db, user)).token;
 }
@@ -607,10 +729,33 @@ class MemoryD1 {
     this.users = new Map();
     this.sessions = new Map();
     this.matches = [];
+    this.battleReplays = new Map();
   }
 
   prepare(sql) {
     return new MemoryStatement(this, sql);
+  }
+
+  async batch(statements) {
+    const snapshot = structuredClone({
+      users: this.users,
+      sessions: this.sessions,
+      matches: this.matches,
+      battleReplays: this.battleReplays,
+    });
+    try {
+      const results = [];
+      for (const statement of statements) {
+        results.push(await statement.run());
+      }
+      return results;
+    } catch (error) {
+      this.users = snapshot.users;
+      this.sessions = snapshot.sessions;
+      this.matches = snapshot.matches;
+      this.battleReplays = snapshot.battleReplays;
+      throw error;
+    }
   }
 }
 
@@ -712,6 +857,22 @@ class MemoryStatement {
       return { success: true };
     }
 
+    if (this.sql.startsWith("INSERT OR IGNORE INTO battle_replays")) {
+      const [id, p1UserKey, p2UserKey, presetId, winnerId, finishedAt, dataJson] = this.params;
+      if (!this.db.battleReplays.has(id)) {
+        this.db.battleReplays.set(id, {
+          id,
+          p1_user_key: p1UserKey,
+          p2_user_key: p2UserKey,
+          preset_id: presetId,
+          winner_id: winnerId,
+          finished_at: finishedAt,
+          data_json: dataJson,
+        });
+      }
+      return { success: true };
+    }
+
     throw new Error(`Unsupported run SQL: ${this.sql}`);
   }
 
@@ -739,6 +900,52 @@ class MemoryStatement {
   }
 
   async rows() {
+    if (this.sql.startsWith("SELECT COUNT(*) AS online_matches")) {
+      const [targetId, targetPlayedAt, userKey, upperPlayedAt, upperId] = this.params;
+      const rows = this.db.matches.filter(
+        (match) =>
+          match.user_key === userKey &&
+          match.mode === "online" &&
+          compareMatchTuple(match, upperPlayedAt, upperId) <= 0,
+      );
+      return [{
+        online_matches: rows.length,
+        online_wins: rows.filter((match) => match.result === "win").length,
+        online_losses: rows.filter((match) => match.result === "loss").length,
+        target_result: rows.find(
+          (match) => match.id === targetId && match.played_at === targetPlayedAt,
+        )?.result ?? null,
+      }];
+    }
+
+    if (this.sql.startsWith("SELECT played_at, id") && this.sql.includes("result = 'loss'")) {
+      const [userKey, upperPlayedAt, upperId] = this.params;
+      const latest = this.db.matches
+        .filter(
+          (match) =>
+            match.user_key === userKey &&
+            match.mode === "online" &&
+            match.result === "loss" &&
+            compareMatchTuple(match, upperPlayedAt, upperId) <= 0,
+        )
+        .sort((first, second) => compareMatchTuple(second, first.played_at, first.id))[0];
+      return latest ? [{ played_at: latest.played_at, id: latest.id }] : [];
+    }
+
+    if (this.sql.startsWith("SELECT COUNT(*) AS current_streak")) {
+      const [userKey, lowerPlayedAt, lowerId, upperPlayedAt, upperId] = this.params;
+      return [{
+        current_streak: this.db.matches.filter(
+          (match) =>
+            match.user_key === userKey &&
+            match.mode === "online" &&
+            match.result === "win" &&
+            compareMatchTuple(match, lowerPlayedAt, lowerId) > 0 &&
+            compareMatchTuple(match, upperPlayedAt, upperId) <= 0,
+        ).length,
+      }];
+    }
+
     if (this.sql.startsWith("SELECT COUNT(*) AS total_matches")) {
       const rows = this.matchesForUser();
       const wins = rows.filter((match) => match.result === "win");
@@ -872,4 +1079,8 @@ class MemoryStatement {
   matchesForUser() {
     return this.db.matches.filter((match) => match.user_key === this.params[0]);
   }
+}
+
+function compareMatchTuple(match, playedAt, id) {
+  return match.played_at.localeCompare(playedAt) || match.id.localeCompare(id);
 }

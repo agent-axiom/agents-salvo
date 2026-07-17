@@ -54,6 +54,7 @@ export function startMobileAppServices({
   hydratePreferences,
   hydrateSecureSession,
   refreshAuth,
+  processLaunch,
   refreshLeaderboard,
   onError,
 }) {
@@ -74,12 +75,18 @@ export function startMobileAppServices({
         : undefined
     ),
   );
+  const launchReady = authReady.then(() => (
+    typeof processLaunch === "function"
+      ? settleOperation(processLaunch, onError).then(() => undefined)
+      : undefined
+  ));
   const done = Promise.all([
     runtimeReady,
     preferencesReady,
     secureSessionReady,
     leaderboardReady,
     authReady,
+    launchReady,
   ]).then(() => undefined);
 
   return {
@@ -88,6 +95,7 @@ export function startMobileAppServices({
     secureSessionReady,
     leaderboardReady,
     authReady,
+    launchReady,
     done,
   };
 }

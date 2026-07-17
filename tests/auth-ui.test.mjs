@@ -2,10 +2,68 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
+import { t } from "../src/i18n.js";
+
 const app = readFileSync("src/app.js", "utf8");
 const index = readFileSync("src/index.html", "utf8");
 const remote = readFileSync("src/remote.js", "utf8");
 const styles = readFileSync("src/styles.css", "utf8");
+
+test("Telegram Mini App copy covers auth, room failure, and account status in every locale", () => {
+  const expected = {
+    en: {
+      "auth.miniAppOpenInTelegram": "Open Salvo in Telegram to sign in.",
+      "auth.miniAppReopen": "This Telegram Mini App session expired. Reopen Salvo to sign in again.",
+      "auth.retry": "Retry",
+      "online.roomUnavailable": "This room is full, closed, or unavailable. Return to the online lobby and try another room.",
+      "auth.miniAppAccountStatus": "Telegram Mini App account confirmed. Your existing profile and online progress are available.",
+    },
+    ru: {
+      "auth.miniAppOpenInTelegram": "Откройте Залп в Telegram, чтобы войти.",
+      "auth.miniAppReopen": "Сеанс Telegram Mini App истёк. Откройте Залп снова, чтобы войти.",
+      "auth.retry": "Повторить",
+      "online.roomUnavailable": "Комната заполнена, закрыта или недоступна. Вернитесь в онлайн-лобби и выберите другую комнату.",
+      "auth.miniAppAccountStatus": "Аккаунт Telegram Mini App подтверждён. Ваш существующий профиль и онлайн-прогресс доступны.",
+    },
+    "zh-CN": {
+      "auth.miniAppOpenInTelegram": "请在 Telegram 中打开 Salvo 以登录。",
+      "auth.miniAppReopen": "Telegram Mini App 会话已过期。请重新打开 Salvo 以登录。",
+      "auth.retry": "重试",
+      "online.roomUnavailable": "此房间已满、已关闭或不可用。请返回在线大厅并尝试其他房间。",
+      "auth.miniAppAccountStatus": "Telegram Mini App 账号已确认。您可以继续使用现有档案和在线进度。",
+    },
+  };
+
+  for (const [language, copy] of Object.entries(expected)) {
+    for (const [key, value] of Object.entries(copy)) {
+      assert.equal(t(language, key), value, `${language} must define ${key}`);
+    }
+  }
+});
+
+test("Telegram runtime consumes content safe areas and the stable viewport", () => {
+  for (const side of ["top", "right", "bottom", "left"]) {
+    assert.match(
+      styles,
+      new RegExp(`--salvo-safe-${side}:\\s*var\\(--tg-content-safe-area-inset-${side},\\s*env\\(safe-area-inset-${side},\\s*0px\\)\\)`),
+    );
+  }
+  assert.match(styles, /html\[data-runtime="telegram"\]\s*\{[\s\S]*?--salvo-safe-top:/);
+  assert.match(styles, /html\[data-runtime="telegram"\] \.shell\s*\{[\s\S]*?min-height:\s*var\(--tg-viewport-stable-height,[^;]+\);/);
+  assert.match(styles, /html\[data-runtime="telegram"\] \.shell\s*\{[\s\S]*?var\(--salvo-safe-top\)[\s\S]*?var\(--salvo-safe-right\)[\s\S]*?var\(--salvo-safe-bottom\)[\s\S]*?var\(--salvo-safe-left\)/);
+  assert.match(styles, /html\[data-runtime="telegram"\] \.modal-backdrop\s*\{[\s\S]*?var\(--salvo-safe-top\)[\s\S]*?var\(--salvo-safe-right\)[\s\S]*?var\(--salvo-safe-bottom\)[\s\S]*?var\(--salvo-safe-left\)/);
+});
+
+test("Telegram phone boards fit without changing web and native replay overflow", () => {
+  const phoneStyles = styles.slice(styles.indexOf("@media (max-width: 720px)"));
+  assert.doesNotMatch(phoneStyles, /(?:^|\n)  body\s*\{/);
+  assert.match(phoneStyles, /\.board-scroll\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;[^}]*overflow-x:\s*clip/);
+  assert.match(phoneStyles, /\.column-headers,[\s\S]*?\.board-grid\s*\{[^}]*minmax\(0,\s*1fr\)/);
+  assert.match(phoneStyles, /html\[data-runtime="telegram"\] \.replay-board-view\s*\{[^}]*overflow-x:\s*clip/);
+  assert.match(phoneStyles, /html\[data-runtime="telegram"\] \.replay-board-view \.board-panel\s*\{[^}]*width:\s*100%/);
+  assert.doesNotMatch(phoneStyles, /(?:^|\n)  \.replay-board-view\s*\{/);
+  assert.doesNotMatch(phoneStyles, /html\[data-runtime="telegram"\] \.replay-board-view \.column-headers,[^}]*font-size/);
+});
 
 test("frontend config exposes the public Telegram bot username only", () => {
   assert.match(index, /telegramBotUsername:\s*"agents_salvo_bot"/);
@@ -29,6 +87,30 @@ test("frontend selects legacy or OIDC Telegram login from worker capability", ()
   assert.match(app, /salvo\.authToken/);
   assert.match(app, /data-action="auth-logout"/);
   assert.doesNotMatch(app, /auth\.mobileSecureLoginPending/);
+});
+
+test("Telegram Mini App auth is isolated from legacy Telegram login startup", () => {
+  assert.match(app, /import \{ createTelegramMiniAppAuthClient \} from "\.\/telegram-mini-app-auth\.js"/);
+  assert.match(app, /platform\.getPlatform\(\) === "telegram"/);
+  assert.match(app, /createTelegramMiniAppAuthClient\(\{/);
+  assert.match(app, /authenticateTelegramMiniApp/);
+  assert.match(app, /platform\.getLaunchData\(\)/);
+  assert.match(app, /miniapp-unavailable/);
+  assert.match(app, /telegramMiniAppClient\.authenticate\(launchData/);
+  assert.match(app, /establishAuthSession\(/);
+  assert.match(app, /telegramMainMiniAppUrl/);
+  assert.match(app, /miniapp-expired/);
+  assert.match(app, /auth\.miniAppOpenInTelegram/);
+  assert.match(app, /auth\.miniAppReopen/);
+  assert.match(app, /action: "auth-miniapp-open"/);
+  assert.match(app, /action: "auth-miniapp-reopen"/);
+});
+
+test("runtime settings metadata validates and escapes the shared build identifier", () => {
+  assert.match(app, /\^\[A-Za-z0-9\._-\]\{1,64\}\$/);
+  assert.match(app, /window\.SALVO_CONFIG\?\.buildId/);
+  assert.match(app, /settings-build-id/);
+  assert.match(app, /escapeHtml\(buildId\)/);
 });
 
 test("Telegram login requires an explicit, readable privacy consent control", () => {
@@ -74,7 +156,9 @@ test("online room actions require a registered Telegram player in the UI", () =>
   assert.match(app, /online\.authRequired/);
   assert.match(app, /data-action="online-create"[^>]*\$\{onlineDisabled\}/);
   assert.match(app, /data-action="online-join"[^>]*\$\{onlineDisabled\}/);
-  assert.match(app, /if \(!isOnlineAuthReady\(\)\) \{\s*state\.online\.error = translate\("online\.authRequired"\);/s);
+  assert.match(app, /if \(!isOnlineAuthReady\(\)\) \{\s*setOnlineError\(translate\("online\.authRequired"\)\);/s);
+  assert.match(app, /function renderOnlineError\(\)/);
+  assert.match(app, /role="alert" aria-live="assertive"/);
 });
 
 test("private replay archive state uses authenticated participant endpoints", () => {

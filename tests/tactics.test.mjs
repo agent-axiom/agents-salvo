@@ -51,6 +51,36 @@ test("analyzeTargetBoard reports salvo pressure when multiple shots remain", () 
   assert.equal(analysis.availableTargets, 98);
 });
 
+test("analyzeTargetBoard recommends hunting after an ordinary miss", () => {
+  const board = {
+    ...createBoard(),
+    shots: [{ row: 0, col: 0, result: "miss" }],
+  };
+
+  const analysis = analyzeTargetBoard(board);
+
+  assert.equal(analysis.recommendationId, "huntPattern");
+  assert.equal(analysis.availableTargets, 99);
+});
+
+test("analyzeTargetBoard deduplicates priority cells shared by separate hits", () => {
+  const board = {
+    ...createBoard(),
+    shots: [
+      { row: 4, col: 4, result: "hit", shipId: "left-ship" },
+      { row: 4, col: 6, result: "hit", shipId: "right-ship" },
+    ],
+  };
+
+  const analysis = analyzeTargetBoard(board);
+
+  assert.equal(analysis.recommendationId, "finishDamaged");
+  assert.equal(
+    analysis.priorityTargets.filter(({ row, col }) => row === 4 && col === 5).length,
+    1,
+  );
+});
+
 test("analyzeTargetBoard shifts to endgame when few targets remain", () => {
   const board = {
     ...createBoard(4),

@@ -339,6 +339,120 @@ test("exchangeTelegramCode rejects oversized token responses", async () => {
   );
 });
 
+test("exchangeTelegramCode rejects declared oversized responses before reading the body", async () => {
+  let bodyRead = false;
+
+  await assertTelegramFailure(() =>
+    exchangeTelegramCode({
+      code: "code",
+      redirectUri,
+      clientId,
+      clientSecret,
+      codeVerifier: "verifier",
+      fetcher: async () => ({
+        ok: true,
+        headers: {
+          get(name) {
+            assert.equal(name, "Content-Length");
+            return String(64 * 1024 + 1);
+          },
+        },
+        body: {
+          getReader() {
+            bodyRead = true;
+            throw new Error("oversized response body must not be read");
+          },
+        },
+      }),
+    }),
+  );
+
+  assert.equal(bodyRead, false);
+});
+
+test("exchangeTelegramCode rejects non-byte response stream chunks", async () => {
+  let releasedLocks = 0;
+
+  await assertTelegramFailure(() =>
+    exchangeTelegramCode({
+      code: "code",
+      redirectUri,
+      clientId,
+      clientSecret,
+      codeVerifier: "verifier",
+      fetcher: async () => ({
+        ok: true,
+        headers: { get: () => null },
+        body: {
+          getReader() {
+            return {
+              async read() {
+                return { done: false, value: "not bytes" };
+              },
+              releaseLock() {
+                releasedLocks += 1;
+              },
+            };
+          },
+        },
+      }),
+    }),
+  );
+
+  assert.equal(releasedLocks, 1);
+});
+
+test("exchangeTelegramCode supports bounded non-stream response bodies", async () => {
+  const payload = { id_token: "signed.id.token", token_type: "Bearer" };
+
+  assert.deepEqual(
+    await exchangeTelegramCode({
+      code: "code",
+      redirectUri,
+      clientId,
+      clientSecret,
+      codeVerifier: "verifier",
+      fetcher: async () => ({
+        status: 200,
+        headers: { get: () => null },
+        body: null,
+        async text() {
+          return JSON.stringify(payload);
+        },
+      }),
+    }),
+    payload,
+  );
+});
+
+test("exchangeTelegramCode rejects invalid non-stream response contracts", async () => {
+  const fetchers = [
+    async () => null,
+    async () => ({ ok: true, headers: { get: () => null }, body: null }),
+    async () => ({
+      ok: true,
+      headers: { get: () => null },
+      body: null,
+      async text() {
+        return JSON.stringify({ id_token: "provider-token", padding: "x".repeat(70 * 1024) });
+      },
+    }),
+  ];
+
+  for (const fetcher of fetchers) {
+    await assertTelegramFailure(() =>
+      exchangeTelegramCode({
+        code: "code",
+        redirectUri,
+        clientId,
+        clientSecret,
+        codeVerifier: "verifier",
+        fetcher,
+      }),
+    );
+  }
+});
+
 test("verifyTelegramIdToken verifies a real RS256 token and normalizes Telegram identity", async () => {
   let jwksLoads = 0;
   const idToken = await signJwt({
@@ -426,7 +540,12 @@ test("verifyTelegramIdToken rejects malformed or padded base64url before loading
     return { keys: [publicJwk] };
   });
 
-  for (const token of [`***.${payload}.AA`, `${header}=.${payload}.AA`, `${header}.${payload}.A`]) {
+  for (const token of [
+    `***.${payload}.AA`,
+    `${header}=.${payload}.AA`,
+    `${header}.${payload}.A`,
+    `${header}.${payload}.AB`,
+  ]) {
     await assertTelegramFailure(() => verifyTelegramIdToken(token, options));
   }
   assert.equal(jwksLoads, 0);
@@ -502,6 +621,14 @@ test("verifyTelegramIdToken redacts JWKS loader errors", async () => {
         }),
       ),
     [token],
+  );
+});
+
+test("verifyTelegramIdToken requires an explicit JWKS loader", async () => {
+  const token = await signJwt();
+
+  await assertTelegramFailure(() =>
+    verifyTelegramIdToken(token, { clientId, nonce, now }),
   );
 });
 

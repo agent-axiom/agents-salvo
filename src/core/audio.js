@@ -1,6 +1,8 @@
+import { assetUrl } from "../asset-url.js";
+
 export const menuMusicTracks = [
-  "./assets/audio/menu-loop.mp3",
-  "./assets/audio/menu-loop-v2.mp3",
+  assetUrl("./assets/audio/menu-loop.mp3"),
+  assetUrl("./assets/audio/menu-loop-v2.mp3"),
 ];
 
 export const soundPresets = {

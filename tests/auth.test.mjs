@@ -59,6 +59,26 @@ test("verifyTelegramLoginPayload rejects tampered Telegram payloads", async () =
   );
 });
 
+test("verifyTelegramLoginPayload rejects non-hex and truncated signatures", async () => {
+  const botToken = "123456:secret-token";
+  const basePayload = {
+    id: "42",
+    first_name: "Ivan",
+    auth_date: "1700000000",
+  };
+
+  for (const hash of ["not-hex", "aa"]) {
+    await assert.rejects(
+      verifyTelegramLoginPayload(
+        { ...basePayload, hash },
+        botToken,
+        { now: 1700000100, maxAgeSeconds: 86400 },
+      ),
+      /Invalid Telegram signature/,
+    );
+  }
+});
+
 test("verifyTelegramLoginPayload rejects stale Telegram payloads", async () => {
   const botToken = "123456:secret-token";
   const payload = {

@@ -1,4 +1,5 @@
 import { chooseAgentShot } from "./core/ai.js";
+import { assetUrl } from "./asset-url.js";
 import { createAudioController } from "./audio.js";
 import {
   createLocalBattleSnapshotStore,
@@ -66,6 +67,16 @@ import { createMobileRuntime } from "./mobile.js";
 import { platform } from "./platform/index.js";
 import { RemoteClient } from "./remote.js";
 import { createTelegramAuthClient } from "./telegram-auth.js";
+import { createTelegramMiniAppAuthClient } from "./telegram-mini-app-auth.js";
+import {
+  parseTelegramStartParam,
+  telegramMainMiniAppUrl,
+  telegramReplayUrl,
+  telegramRoomInviteUrl,
+} from "./telegram-launch.js";
+
+export { assetUrl };
+export { menuMusicTracks } from "./core/audio.js";
 
 export function bootSalvoApp({
   document: appDocument = globalThis.document,
@@ -82,6 +93,10 @@ const navigator = appNavigator;
 const platform = appPlatform;
 const audio = appAudio;
 const fetch = appFetch;
+const isTelegramMiniApp = platform.getPlatform() === "telegram";
+const telegramUnavailableRoomErrorPattern =
+  /^room (?:(?:is )?full|(?:(?:is|was) )?not found|(?:(?:is|was) )?closed|(?:(?:is|was) )?unavailable)$/i;
+const buildId = validateBuildId(window.SALVO_CONFIG?.buildId);
 const telegramAuthBootstrap = platform.isNative()
   ? { type: "none" }
   : captureTelegramAuthBootstrap({ rawUrl: window.location.href, history: window.history });
@@ -97,9 +112,18 @@ const resultReplayClock = createReplayClock({
 });
 let telegramWidgetScheduled = false;
 let platformHydrationRenderScheduled = false;
+let hasExplicitThemePreference = false;
+let closingConfirmationDesired = null;
+let closingConfirmationApplied = null;
+let closingConfirmationOperation = null;
+let backButtonVisibility = null;
+let backButtonVisibilityGeneration = 0;
 let leaveDialogReturnFocus = null;
 let pendingLeaveTransition = null;
 const initialRequestedReplayId = replayIdFromSearch(window.location.search);
+let telegramLaunchRouteCaptured = false;
+let pendingTelegramLaunchRoute = null;
+let telegramLaunchProcessed = false;
 let authEpoch = 0;
 let authCallbacksBlocked = false;
 let activeAuthTicket = null;
@@ -194,7 +218,9 @@ const state = {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     roomCodeInput: "",
     status: "",
+    shareStatus: "",
     error: "",
+    errorKey: "",
     session: null,
     snapshot: null,
     client: null,
@@ -207,7 +233,17 @@ const state = {
 };
 
 let telegramAuthClient = null;
-if (state.auth.workerUrl) {
+let telegramMiniAppClient = null;
+if (state.auth.workerUrl && isTelegramMiniApp) {
+  try {
+    telegramMiniAppClient = createTelegramMiniAppAuthClient({
+      workerUrl: state.auth.workerUrl,
+      fetcher: fetch,
+    });
+  } catch {
+    telegramMiniAppClient = null;
+  }
+} else if (state.auth.workerUrl) {
   try {
     telegramAuthClient = createTelegramAuthClient({
       workerUrl: state.auth.workerUrl,
@@ -256,13 +292,22 @@ const mobileRuntime = createMobileRuntime({
   onNetwork: handleNetwork,
   onDeepLink: handlePlatformDeepLink,
   onBack: handlePlatformBack,
+  onSettings: handlePlatformSettings,
+  onThemeChange: handlePlatformThemeChange,
   pauseAudio: () => audio.pauseForLifecycle(),
   resumeAudio: () => audio.resumeForLifecycle(state.audioEnabled, state.screen === "menu"),
   onRuntimeError: reportRuntimeError,
 });
 
 function getInitialTheme() {
+  const platformTheme = isTelegramMiniApp ? platform.getTheme?.() : null;
+  if (["light", "dark"].includes(platformTheme)) return platformTheme;
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function validateBuildId(value) {
+  const buildIdPattern = /^[A-Za-z0-9._-]{1,64}$/;
+  return typeof value === "string" && buildIdPattern.test(value) ? value : "dev";
 }
 
 function getInitialVisualStyle() {
@@ -284,6 +329,7 @@ function hydratePlatformPreferences() {
     }),
     preferenceCoordinator.hydrate("theme", (theme) => {
       if (["light", "dark"].includes(theme)) {
+        hasExplicitThemePreference = true;
         state.theme = theme;
         schedulePlatformHydrationRender();
       }
@@ -367,8 +413,9 @@ function applyLocalBattleSnapshot(snapshot) {
   state.leaderboardOpen = false;
   state.leaveBattleDialog = false;
   state.online.roomCodeInput = "";
-  state.online.error = "";
+  clearOnlineError();
   state.online.status = "";
+  state.online.shareStatus = "";
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
   resetResultReplayPlayback();
@@ -392,6 +439,19 @@ function handleNetwork(status) {
   render();
 }
 
+function handlePlatformSettings() {
+  state.settingsOpen = true;
+  state.profileOpen = false;
+  state.leaderboardOpen = false;
+  render();
+}
+
+function handlePlatformThemeChange(theme) {
+  if (hasExplicitThemePreference || !["light", "dark"].includes(theme)) return;
+  state.theme = theme;
+  render();
+}
+
 function requireOnline(onOffline) {
   if (hasConfirmedNetworkConnection(state.network)) return true;
   const message = `${translate("network.offline")} ${translate("network.retry")}`;
@@ -405,16 +465,30 @@ function startMobileApp() {
     startRuntime: () => mobileRuntime.start(),
     hydratePreferences: hydratePlatformPreferences,
     hydrateSecureSession,
-    refreshAuth: telegramAuthBootstrap.type === "ticket" ? async () => {} : refreshAuth,
+    refreshAuth: isTelegramMiniApp
+      ? authenticateTelegramMiniApp
+      : telegramAuthBootstrap.type === "ticket" ? async () => {} : refreshAuth,
+    processLaunch: isTelegramMiniApp ? processTelegramMiniAppLaunch : undefined,
     refreshLeaderboard,
     onError: reportRuntimeError,
   });
-  const capabilityReady = services.runtimeReady.then(loadTelegramAuthCapability);
-  const bootstrapReady = Promise.all([
-    services.runtimeReady,
-    services.secureSessionReady,
-    capabilityReady,
-  ]).then(processTelegramAuthBootstrap);
+  if (isTelegramMiniApp) {
+    void services.runtimeReady.then(() => {
+      if (backButtonVisibility !== true) return;
+      backButtonVisibility = null;
+      syncBackButtonVisibility();
+    });
+  }
+  const capabilityReady = isTelegramMiniApp
+    ? services.runtimeReady
+    : services.runtimeReady.then(loadTelegramAuthCapability);
+  const bootstrapReady = isTelegramMiniApp
+    ? services.launchReady
+    : Promise.all([
+        services.runtimeReady,
+        services.secureSessionReady,
+        capabilityReady,
+      ]).then(processTelegramAuthBootstrap);
   const done = Promise.all([services.done, capabilityReady, bootstrapReady]).then(() => undefined);
   return {
     ...services,
@@ -422,6 +496,37 @@ function startMobileApp() {
     bootstrapReady,
     done,
   };
+}
+
+async function processTelegramMiniAppLaunch() {
+  const route = captureTelegramMiniAppLaunchRoute();
+  if (
+    telegramLaunchProcessed
+    || !route
+    || !state.auth.token
+    || !state.auth.user
+  ) return false;
+
+  pendingTelegramLaunchRoute = null;
+  telegramLaunchProcessed = true;
+  let replayHistoryMode = "push";
+  if (route.type === "replay" && initialRequestedReplayId) {
+    replayHistoryMode = route.replayId === initialRequestedReplayId ? "none" : "replace";
+  }
+  await navigateToInternalRoute(route, { joinRoom: true, replayHistoryMode });
+  return true;
+}
+
+function captureTelegramMiniAppLaunchRoute() {
+  if (!telegramLaunchRouteCaptured) {
+    telegramLaunchRouteCaptured = true;
+    try {
+      pendingTelegramLaunchRoute = parseTelegramStartParam(platform.getStartParam());
+    } catch {
+      pendingTelegramLaunchRoute = null;
+    }
+  }
+  return pendingTelegramLaunchRoute;
 }
 
 async function loadTelegramAuthCapability() {
@@ -465,6 +570,87 @@ async function processTelegramAuthBootstrap() {
     return cancelTelegramAuth();
   }
   return false;
+}
+
+async function authenticateTelegramMiniApp() {
+  if (state.auth.token && state.auth.user) {
+    await processTelegramMiniAppLaunch();
+    return true;
+  }
+
+  let launchData = "";
+  let available = false;
+  try {
+    available = platform.isAvailable();
+    launchData = platform.getLaunchData();
+  } catch {
+    available = false;
+  }
+  if (!available || !launchData || !telegramMiniAppClient) {
+    state.auth.method = "miniapp-unavailable";
+    state.auth.error = translate("auth.miniAppOpenInTelegram");
+    state.auth.loading = false;
+    render();
+    return false;
+  }
+
+  state.auth.method = "miniapp";
+  if (!requireOnline(() => {
+    state.auth.error = translate("auth.unavailable");
+  })) return false;
+
+  authCallbacksBlocked = false;
+  const request = captureAuthRequest();
+  const controller = beginPrivateRequest("auth");
+  state.auth.loading = true;
+  state.auth.opening = false;
+  state.auth.error = "";
+  render();
+  try {
+    const authPayload = await telegramMiniAppClient.authenticate(launchData, {
+      signal: controller.signal,
+    });
+    if (!authOperationIsCurrent(request, controller)) return false;
+    const established = await establishAuthSession(
+      authPayload.token,
+      authPayload.user,
+      () => authOperationIsCurrent(request, controller),
+    );
+    if (!established) return false;
+    render();
+    const sessionRequest = captureAuthRequest();
+    await refreshProfile();
+    if (authRequestIsCurrent(sessionRequest, currentAuthRequest())) {
+      const launchProcessed = await processTelegramMiniAppLaunch();
+      if (!launchProcessed) await resumeRequestedReplay();
+    }
+    return true;
+  } catch (error) {
+    if (isAbortError(error) || !authOperationIsCurrent(request, controller)) {
+      return false;
+    }
+    const expired = error?.status === 401;
+    state.auth.method = expired ? "miniapp-expired" : "miniapp";
+    const errorKey = error?.authKey === "auth.secureStorageFailed"
+      ? "auth.secureStorageFailed"
+      : expired
+        ? "auth.miniAppReopen"
+        : "auth.unavailable";
+    await invalidateAuthSession({
+      error: translate(errorKey),
+      preserveRequestedId: true,
+    });
+    render();
+    return false;
+  } finally {
+    if (authOperationIsCurrent(request, controller)) {
+      state.auth.loading = false;
+      finishPrivateRequest("auth", controller);
+      render();
+    } else {
+      finishPrivateRequest("auth", controller);
+    }
+  }
 }
 
 function reportRuntimeError(error) {
@@ -577,6 +763,8 @@ function render() {
   } else {
     leaveDialogFocus.deactivate();
   }
+  syncBackButtonVisibility();
+  syncClosingConfirmation();
   mountTelegramLoginWidget();
   syncMenuMusic();
 }
@@ -761,6 +949,7 @@ function renderSettingsPanel() {
         </select>
       </label>
       ${renderAuthControl()}
+      <small class="settings-build-id">Build: ${escapeHtml(buildId)}</small>
     </section>
   `;
 }
@@ -818,6 +1007,22 @@ function renderAuthControl() {
     `;
   }
 
+  if (state.auth.method === "miniapp-unavailable") {
+    return renderTelegramMiniAppCommand({
+      action: "auth-miniapp-open",
+      errorKey: "auth.miniAppOpenInTelegram",
+      labelKey: "auth.miniAppOpenCommand",
+    });
+  }
+
+  if (state.auth.method === "miniapp-expired") {
+    return renderTelegramMiniAppCommand({
+      action: "auth-miniapp-reopen",
+      errorKey: "auth.miniAppReopen",
+      labelKey: "auth.miniAppReopenCommand",
+    });
+  }
+
   return `
     <div class="auth-control">
       <span>${translate("auth.label")}</span>
@@ -826,6 +1031,47 @@ function renderAuthControl() {
       ${renderTelegramAuthNotices()}
     </div>
   `;
+}
+
+function renderTelegramMiniAppCommand({ action, errorKey, labelKey }) {
+  const command = telegramMiniAppLaunchUrl()
+    ? `<button class="secondary-button auth-retry-button" data-action="${action}">${translate(labelKey)}</button>`
+    : "";
+  return `
+    <div class="auth-control">
+      <span>${translate("auth.label")}</span>
+      <p class="status-line auth-unavailable">${escapeHtml(translate(errorKey))}</p>
+      ${command}
+      ${renderTelegramAuthNotices()}
+    </div>
+  `;
+}
+
+function telegramMiniAppLaunchUrl() {
+  try {
+    const route = captureTelegramMiniAppLaunchRoute();
+    if (route?.type === "room") {
+      return telegramRoomInviteUrl(state.auth.telegramBotUsername, route.roomCode);
+    }
+    if (route?.type === "replay") {
+      return telegramReplayUrl(state.auth.telegramBotUsername, route.replayId);
+    }
+    return telegramMainMiniAppUrl(state.auth.telegramBotUsername);
+  } catch {
+    return "";
+  }
+}
+
+async function openTelegramMainMiniApp() {
+  const url = telegramMiniAppLaunchUrl();
+  if (!url) return false;
+  try {
+    await platform.openExternalUrl(url);
+    return true;
+  } catch (error) {
+    reportRuntimeError(error);
+    return false;
+  }
 }
 
 function renderTelegramAuthNotices() {
@@ -1113,12 +1359,16 @@ function renderArchivedReplayContent() {
         <div><dt>${translate("replayArchive.date")}</dt><dd>${formatReplayDate(replay.finishedAt)}</dd></div>
         <div><dt>${translate("replay.timeline")}</dt><dd>${translate("replay.move", { turn: frame.turn, total: frame.totalTurns })}</dd></div>
       </dl>
-      <button data-action="replay-copy-link">${translate("replayArchive.copyLink")}</button>
+      <button data-action="replay-copy-link">${translate(
+        isTelegramMiniApp ? "online.shareTelegram" : "replayArchive.copyLink",
+      )}</button>
     </div>
     ${
       state.replayArchive.copyStatus
         ? `<p class="replay-copy-status ${state.replayArchive.copyStatus === "error" ? "is-error" : ""}" role="status">${translate(
-            state.replayArchive.copyStatus === "copied" ? "replayArchive.copied" : "replayArchive.copyFailed",
+            state.replayArchive.copyStatus === "copied"
+              ? "replayArchive.copied"
+              : isTelegramMiniApp ? "share.failed" : "replayArchive.copyFailed",
           )}</p>`
         : ""
     }
@@ -1501,11 +1751,11 @@ function renderLeaderboard(leaderboard) {
 
 function menuArtworkSource() {
   if (state.visualStyle !== "render") {
-    return "./assets/salvo-board-action.png";
+    return assetUrl("./assets/salvo-board-action.png");
   }
   return state.theme === "dark"
-    ? "./assets/images/backgrounds/main-menu-hero-dark-no-ui.png"
-    : "./assets/images/backgrounds/main-menu-hero-no-ui.png";
+    ? assetUrl("./assets/images/backgrounds/main-menu-hero-dark-no-ui.png")
+    : assetUrl("./assets/images/backgrounds/main-menu-hero-no-ui.png");
 }
 
 function renderPresetSelector() {
@@ -1879,7 +2129,9 @@ function renderOnlineLobby() {
         <div class="section-heading">
           <span>${translate("mode.online")}</span>
           <h2>${translate("online.title")}</h2>
-          <p>${isOnlineAuthReady() ? translate("online.authReady") : translate("online.authHint")}</p>
+          <p>${isOnlineAuthReady()
+            ? translate(isTelegramMiniApp ? "auth.miniAppAccountStatus" : "online.authReady")
+            : translate("online.authHint")}</p>
         </div>
         <p class="status-line">${translate(`preset.${state.presetId}.name`)}</p>
         <div class="setup-primary-actions">
@@ -1897,7 +2149,8 @@ function renderOnlineLobby() {
           </label>
           <button data-action="online-join" ${onlineDisabled}>${translate("online.join")}</button>
         </div>
-        ${state.online.error ? `<p class="error-line">${translate("online.error", { message: state.online.error })}</p>` : ""}
+        ${renderOnlineShareStatus()}
+        ${renderOnlineError()}
       </aside>
       <section class="board-stage">
         ${renderBoard(state.setupBoard, { kind: "setup", title: translate("game.yourFleet") })}
@@ -1934,7 +2187,8 @@ function renderOnlineRoom(snapshot) {
           <button data-action="share-telegram">${translate("online.shareTelegram")}</button>
         </div>
         ${renderOnlineStatus(snapshot)}
-        ${state.online.error ? `<p class="error-line">${translate("online.error", { message: state.online.error })}</p>` : ""}
+        ${renderOnlineShareStatus()}
+        ${renderOnlineError()}
       </aside>
       <section class="board-stage">
         ${snapshot ? renderOnlineSnapshot(snapshot) : renderBoard(state.setupBoard, { kind: "setup", title: translate("game.yourFleet") })}
@@ -2286,7 +2540,11 @@ function renderResultModal({ winnerId, playerId = winnerId, log, newGameAction, 
         ${
           state.resultCopyStatus
             ? `<p class="result-share-status status-line" role="status">${translate(
-                state.resultCopyStatus === "copied" ? "result.copySuccess" : "share.failed",
+                state.resultCopyStatus === "copied"
+                  ? "result.copySuccess"
+                  : state.resultCopyStatus === "invite-copied"
+                    ? "online.inviteCopied"
+                    : state.resultCopyStatus === "link-copied" ? "share.linkCopied" : "share.failed",
               )}</p>`
             : ""
         }
@@ -2910,7 +3168,12 @@ root.addEventListener("click", async (event) => {
   if (action === "share-telegram") await shareRoom();
   if (action === "battle-tab") selectBattleTab(button.dataset.tab);
   if (action === "auth-telegram-oidc") await startTelegramOidc();
-  if (action === "auth-telegram-retry") await loadTelegramAuthCapability();
+  if (action === "auth-telegram-retry") {
+    await (isTelegramMiniApp ? authenticateTelegramMiniApp() : loadTelegramAuthCapability());
+  }
+  if (action === "auth-miniapp-open" || action === "auth-miniapp-reopen") {
+    await openTelegramMainMiniApp();
+  }
   if (action === "auth-logout") await logoutAuth();
   if (action === "refresh-profile") await refreshProfile();
   if (action === "refresh-leaderboard") await refreshLeaderboard();
@@ -2982,8 +3245,9 @@ function showOnline() {
   state.setupHover = null;
   state.setupError = "";
   state.online.roomCodeInput = "";
-  state.online.error = "";
+  clearOnlineError();
   state.online.status = "";
+  state.online.shareStatus = "";
   state.battleTab = "target";
   state.tacticalAdvisorOpen = true;
   state.resultModalDismissed = null;
@@ -3008,6 +3272,14 @@ function startTraining(scenarioId = state.training.scenarioId) {
 }
 
 async function handlePlatformBack() {
+  if (state.leaveBattleDialog) {
+    cancelLeaveBattle();
+    return true;
+  }
+  if (isResultModalVisible()) {
+    closeResultModal();
+    return true;
+  }
   if (state.settingsOpen) {
     state.settingsOpen = false;
     render();
@@ -3023,7 +3295,16 @@ async function handlePlatformBack() {
     render();
     return true;
   }
-  if (["archive", "replay"].includes(state.screen)) {
+  if (isTacticalAdvisorVisible()) {
+    state.tacticalAdvisorOpen = false;
+    render();
+    return true;
+  }
+  if (state.screen === "replay") {
+    await backToReplayArchive();
+    return true;
+  }
+  if (state.screen === "archive") {
     await goToMenu();
     return true;
   }
@@ -3031,6 +3312,21 @@ async function handlePlatformBack() {
     return requestLeaveBattle();
   }
   return false;
+}
+
+function isResultModalVisible() {
+  const resultKey = currentResultKey();
+  return Boolean(resultKey && state.resultModalDismissed !== resultKey);
+}
+
+function isTacticalAdvisorVisible() {
+  return Boolean(
+    state.tacticalAdvisorOpen
+    && (
+      state.screen === "playing"
+      || (state.screen === "online" && state.online.snapshot)
+    )
+  );
 }
 
 async function requestLeaveBattle(transition = null) {
@@ -3058,6 +3354,70 @@ function hasUnfinishedBattle() {
   if (state.screen === "training") return state.training.session?.phase !== "finished";
   if (state.screen === "online") return state.online.snapshot?.phase !== "finished";
   return false;
+}
+
+function syncClosingConfirmation(forceApply = false) {
+  if (!isTelegramMiniApp || typeof platform.setClosingConfirmation !== "function") return;
+  closingConfirmationDesired = hasUnfinishedBattle();
+  if (
+    closingConfirmationOperation
+    || (!forceApply && closingConfirmationApplied === closingConfirmationDesired)
+  ) return;
+
+  const attempted = closingConfirmationDesired;
+  let providerOperation;
+  try {
+    providerOperation = platform.setClosingConfirmation(attempted);
+  } catch (error) {
+    reportRuntimeError(error);
+    return;
+  }
+
+  closingConfirmationOperation = Promise.resolve(providerOperation).then(
+    () => {
+      closingConfirmationApplied = attempted;
+      closingConfirmationOperation = null;
+      if (closingConfirmationDesired !== closingConfirmationApplied) {
+        syncClosingConfirmation();
+      }
+    },
+    (error) => {
+      closingConfirmationOperation = null;
+      reportRuntimeError(error);
+      if (closingConfirmationDesired !== attempted) {
+        syncClosingConfirmation(true);
+      }
+    },
+  );
+}
+
+function syncBackButtonVisibility() {
+  if (!isTelegramMiniApp || typeof platform.setBackButtonVisible !== "function") return;
+  const enabled = Boolean(
+    state.screen !== "menu"
+    || state.leaveBattleDialog
+    || isResultModalVisible()
+    || state.settingsOpen
+    || state.profileOpen
+    || state.leaderboardOpen
+    || isTacticalAdvisorVisible()
+  );
+  if (backButtonVisibility === enabled) return;
+
+  backButtonVisibility = enabled;
+  const generation = ++backButtonVisibilityGeneration;
+  let operation;
+  try {
+    operation = platform.setBackButtonVisible(enabled);
+  } catch (error) {
+    if (generation === backButtonVisibilityGeneration) backButtonVisibility = null;
+    reportRuntimeError(error);
+    return;
+  }
+  void Promise.resolve(operation).catch((error) => {
+    if (generation === backButtonVisibilityGeneration) backButtonVisibility = null;
+    reportRuntimeError(error);
+  });
 }
 
 function cancelLeaveBattle() {
@@ -3098,16 +3458,27 @@ async function handlePlatformDeepLink(rawUrl) {
     }
     return redeemTelegramTicket(route.ticket);
   }
+  return navigateToInternalRoute(route);
+}
+
+async function navigateToInternalRoute(
+  route,
+  { joinRoom = false, replayHistoryMode = "push" } = {},
+) {
   return requestLeaveBattle(async () => {
     try {
       if (route.type === "room") {
-        return await appNavigation.run(() => {
+        return await appNavigation.run(async () => {
           showOnline();
           state.online.roomCodeInput = route.roomCode;
           render();
+          if (joinRoom) await onlineJoin();
         });
       }
-      return await openArchivedReplay(route.replayId, { source: "direct" });
+      return await openArchivedReplay(route.replayId, {
+        source: "direct",
+        historyMode: replayHistoryMode,
+      });
     } catch {
       return false;
     }
@@ -3130,8 +3501,9 @@ function applyMenuState({ updateHistory }) {
   state.mode = null;
   state.game = null;
   state.training.session = null;
-  state.online.error = "";
+  clearOnlineError();
   state.online.status = "";
+  state.online.shareStatus = "";
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
   resetResultReplayPlayback();
@@ -3178,7 +3550,7 @@ async function openReplayArchive({ historyMode = "push" } = {}) {
   });
 }
 
-async function openArchivedReplay(id, { source = "direct" } = {}) {
+async function openArchivedReplay(id, { source = "direct", historyMode = "push" } = {}) {
   const replayId = replayIdFromSearch(`?replay=${encodeURIComponent(id || "")}`);
   if (!replayId) {
     return false;
@@ -3199,7 +3571,9 @@ async function openArchivedReplay(id, { source = "direct" } = {}) {
     state.replayArchive.openedFromArchive = source === "archive";
     state.archive.requestId += 1;
     state.archive.loading = false;
-    updateReplayHistory(replayId, "push", "replay", { replaySource: source });
+    if (historyMode !== "none") {
+      updateReplayHistory(replayId, historyMode, "replay", { replaySource: source });
+    }
     await loadArchivedReplay(replayId);
   });
 }
@@ -3268,6 +3642,20 @@ function selectArchivedReplayTab(tab) {
 
 async function copyArchivedReplayLink() {
   const replayId = state.replayArchive.requestedId;
+  if (isTelegramMiniApp) {
+    let url = "";
+    try {
+      url = telegramReplayUrl(state.auth.telegramBotUsername, replayId);
+    } catch {
+      // Invalid launch configuration falls through to the existing error status.
+    }
+    const outcome = url
+      ? await shareWithTelegramFallback(translate("replayArchive.title"), url)
+      : { shared: false, copied: false };
+    state.replayArchive.copyStatus = outcome.shared ? "" : outcome.copied ? "copied" : "error";
+    render();
+    return;
+  }
   const url = replayUrlForId(canonicalReplayBaseUrl, replayId);
   if (!url) {
     return;
@@ -3353,6 +3741,7 @@ function closeLeaderboardPopover() {
 }
 
 async function toggleTheme() {
+  hasExplicitThemePreference = true;
   state.theme = state.theme === "dark" ? "light" : "dark";
   render();
   await preferenceCoordinator.write("theme", state.theme);
@@ -3770,15 +4159,15 @@ function runAgentTurns(game) {
 
 async function onlineCreate() {
   if (!requireOnline((message) => {
-    state.online.error = message;
+    setOnlineError(message);
   })) return;
   if (!isOnlineAuthReady()) {
-    state.online.error = translate("online.authRequired");
+    setOnlineError(translate("online.authRequired"));
     render();
     return;
   }
   if (!hasFullFleet(state.setupBoard)) {
-    state.online.error = translate("setup.needFleet");
+    setOnlineError(translate("setup.needFleet"));
     render();
     return;
   }
@@ -3802,15 +4191,15 @@ async function onlineCreate() {
 
 async function onlineJoin() {
   if (!requireOnline((message) => {
-    state.online.error = message;
+    setOnlineError(message);
   })) return;
   if (!isOnlineAuthReady()) {
-    state.online.error = translate("online.authRequired");
+    setOnlineError(translate("online.authRequired"));
     render();
     return;
   }
   if (!hasFullFleet(state.setupBoard)) {
-    state.online.error = translate("setup.needFleet");
+    setOnlineError(translate("setup.needFleet"));
     render();
     return;
   }
@@ -3835,7 +4224,7 @@ async function onlineJoin() {
       state.setupSelectedShipId = firstUnplacedShipId(board);
       render();
     },
-    onError: handleOnlineConnectionError,
+    onError: handleOnlineJoinError,
   });
 }
 
@@ -3843,21 +4232,32 @@ function prepareOnlineConnection() {
   state.online.session = null;
   state.online.snapshot = null;
   state.online.status = "";
-  state.online.error = "";
+  state.online.shareStatus = "";
+  clearOnlineError();
   render();
 }
 
-function handleOnlineConnectionError(error) {
+function handleOnlineConnectionError(error, errorKey = "") {
   state.online.session = null;
   state.online.snapshot = null;
   state.online.status = "";
-  state.online.error = error.message;
+  state.online.shareStatus = "";
+  setOnlineError(error, errorKey);
   render();
+}
+
+function handleOnlineJoinError(error) {
+  const message = String(error?.message ?? "");
+  if (isTelegramMiniApp && telegramUnavailableRoomErrorPattern.test(message.trim())) {
+    handleOnlineConnectionError(error, "online.roomUnavailable");
+    return;
+  }
+  handleOnlineConnectionError(error);
 }
 
 async function onlineRematch() {
   if (!requireOnline((message) => {
-    state.online.error = message;
+    setOnlineError(message);
   })) return;
   await withOnlineError(async () => {
     const snapshot = state.online.snapshot;
@@ -3878,7 +4278,7 @@ async function onlineRematch() {
 
 function handleOnlineShot(coordinate) {
   if (!requireOnline((message) => {
-    state.online.error = message;
+    setOnlineError(message);
   })) return;
   playSound("shot");
   withOnlineError(async () => {
@@ -3933,8 +4333,8 @@ async function shareBattleSummary() {
   }
   const report = buildBattleReport(context.log, context.winnerId, context.playerId);
   const summaryText = buildBattleSummaryText(report, context);
-  const shared = await shareWithTelegramFallback(summaryText, canonicalReplayBaseUrl);
-  state.resultCopyStatus = shared ? "" : "share-failed";
+  const outcome = await shareWithTelegramFallback(summaryText, canonicalReplayBaseUrl);
+  state.resultCopyStatus = outcome.shared ? "" : outcome.copied ? "link-copied" : "share-failed";
   render();
 }
 
@@ -3945,9 +4345,28 @@ async function shareRoom() {
   }
   const showingResult = Boolean(currentBattleResultContext());
   const text = translate("online.shareText", { code: roomCode });
-  const shared = await shareWithTelegramFallback(text, canonicalReplayBaseUrl);
-  state.online.error = shared ? "" : translate("share.failed");
-  if (showingResult) state.resultCopyStatus = shared ? "" : "share-failed";
+  let url = canonicalReplayBaseUrl;
+  if (isTelegramMiniApp) {
+    try {
+      url = telegramRoomInviteUrl(state.auth.telegramBotUsername, roomCode);
+    } catch {
+      url = "";
+    }
+  }
+  state.online.shareStatus = "";
+  if (showingResult) state.resultCopyStatus = "";
+  render();
+  const outcome = url
+    ? await shareWithTelegramFallback(text, url)
+    : { shared: false, copied: false };
+  state.online.shareStatus = outcome.shared
+    ? ""
+    : outcome.copied ? "invite-copied" : "share-failed";
+  if (showingResult) {
+    state.resultCopyStatus = outcome.shared
+      ? ""
+      : outcome.copied ? "invite-copied" : "share-failed";
+  }
   render();
 }
 
@@ -3958,14 +4377,16 @@ async function shareWithTelegramFallback(text, url) {
       text: text,
       url: url,
     });
-    if (result.shared) return true;
+    if (result.shared) return { shared: true, copied: false };
+    if (result.copied) return { shared: false, copied: true };
+    if (isTelegramMiniApp) return { shared: false, copied: false };
     const telegramUrl = new URL("https://t.me/share/url");
     telegramUrl.searchParams.set("url", url);
     telegramUrl.searchParams.set("text", text);
     await platform.openExternalUrl(telegramUrl.toString());
-    return true;
+    return { shared: true, copied: false };
   } catch {
-    return false;
+    return { shared: false, copied: false };
   }
 }
 
@@ -3986,7 +4407,7 @@ function remoteHandlers() {
       render();
     },
     onError(error) {
-      state.online.error = error.message;
+      setOnlineError(error);
       render();
     },
     onMessage(message) {
@@ -3999,7 +4420,7 @@ function remoteHandlers() {
         }
       }
       if (message.type === "error") {
-        state.online.error = message.message;
+        setOnlineError(message.message);
       }
       render();
     },
@@ -4007,7 +4428,7 @@ function remoteHandlers() {
 }
 
 function mountTelegramLoginWidget() {
-  if (platform.isNative() || state.auth.method !== "legacy") {
+  if (isTelegramMiniApp || platform.isNative() || state.auth.method !== "legacy") {
     return;
   }
   const slot = document.querySelector("#telegram-login-slot");
@@ -4951,10 +5372,10 @@ function syncMenuMusic() {
 
 async function withOnlineError(action) {
   try {
-    state.online.error = "";
+    clearOnlineError();
     await action();
   } catch (error) {
-    state.online.error = error.message;
+    setOnlineError(error);
     render();
   }
 }
@@ -4968,7 +5389,26 @@ function resetOnlineConnectionState() {
   state.online.session = null;
   state.online.snapshot = null;
   state.online.status = "";
+  state.online.shareStatus = "";
+  clearOnlineError();
+}
+
+function clearOnlineError() {
   state.online.error = "";
+  state.online.errorKey = "";
+}
+
+function setOnlineError(error, errorKey = "") {
+  state.online.error = typeof error === "string" ? error : String(error?.message ?? "");
+  state.online.errorKey = errorKey;
+}
+
+function renderOnlineError() {
+  const message = state.online.errorKey
+    ? translate(state.online.errorKey)
+    : state.online.error;
+  if (!message) return "";
+  return `<p class="error-line" role="alert" aria-live="assertive" aria-atomic="true">${translate("online.error", { message })}</p>`;
 }
 
 function currentPreset() {
@@ -5140,7 +5580,9 @@ function shipSprite(cell, kind, board, coordinate) {
   const orientation = shipOrientation(ship);
   const state = shipState(ship);
   const direction = orientation === "horizontal" ? "h" : "v";
-  const path = `./assets/images/ships/ship-${ship.length}-${direction}-${state}.png`;
+  const path = assetUrl(
+    `./assets/images/ships/ship-${ship.length}-${direction}-${state}.png`,
+  );
   return `<span class="ship-sprite ship-sprite-${direction}" style="--ship-cells: ${ship.length}; --ship-image: url('${path}')" aria-hidden="true"></span>`;
 }
 
@@ -5177,18 +5619,18 @@ function markerSprite(cell, kind) {
   }
   const path =
     cell.markerType === "mine"
-      ? "./assets/images/special/mine.png"
-      : "./assets/images/special/minesweeper-2-h-normal.png";
+      ? assetUrl("./assets/images/special/mine.png")
+      : assetUrl("./assets/images/special/minesweeper-2-h-normal.png");
   return `<span class="marker-sprite marker-sprite-${cell.markerType}" style="--marker-image: url('${path}')" aria-hidden="true"></span>`;
 }
 
 function shotSprite(cell, kind, board, coordinate) {
   const paths = {
-    miss: "./assets/images/markers/miss-blue-dot.png",
-    hit: "./assets/images/effects/hit-explosion-smoke.png",
-    sunk: "./assets/images/effects/sunk-destruction-smoke.png",
-    mine: "./assets/images/special/mine-triggered.png",
-    sweeper: "./assets/images/special/mine-disabled.png",
+    miss: assetUrl("./assets/images/markers/miss-blue-dot.png"),
+    hit: assetUrl("./assets/images/effects/hit-explosion-smoke.png"),
+    sunk: assetUrl("./assets/images/effects/sunk-destruction-smoke.png"),
+    mine: assetUrl("./assets/images/special/mine-triggered.png"),
+    sweeper: assetUrl("./assets/images/special/mine-disabled.png"),
   };
   const path = paths[cell.shot];
   if (!path) {
@@ -5259,6 +5701,7 @@ function onlineStatusText(status) {
     connecting: "online.connecting",
     connected: "online.connected",
     copied: "online.copied",
+    "invite-copied": "online.inviteCopied",
     disconnected: "online.disconnected",
   };
   return translate(keys[status] ?? "online.waiting");
@@ -5298,6 +5741,13 @@ function renderOnlineStatus(snapshot) {
   }
 
   return lines.map((line) => `<p class="status-line">${line}</p>`).join("");
+}
+
+function renderOnlineShareStatus() {
+  if (!state.online.shareStatus) return "";
+  const failed = state.online.shareStatus === "share-failed";
+  const message = translate(failed ? "share.failed" : "online.inviteCopied");
+  return `<p class="status-line online-share-status${failed ? " is-error" : ""}" role="${failed ? "alert" : "status"}">${message}</p>`;
 }
 
 function currentResultKey() {

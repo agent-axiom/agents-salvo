@@ -27,6 +27,32 @@ test("coverage uses separate truthful core and actual-app gates", () => {
   assert.match(scripts["coverage:app"], /tests\/app-behavior\.test\.mjs/);
 });
 
+test("coverage enforces critical files with explicit focused gates", () => {
+  const scripts = packageJson.scripts;
+  assert.equal(
+    scripts.coverage,
+    [
+      "npm run coverage:core",
+      "npm run coverage:app",
+      "npm run coverage:critical:build-publication",
+      "npm run coverage:critical:build",
+      "npm run coverage:critical:worker",
+    ].join(" && "),
+  );
+  assert.equal(
+    scripts["coverage:critical:build-publication"],
+    "SALVO_APP_CHILD_COVERAGE=isolated node --experimental-test-coverage --test-coverage-include=scripts/build-publication.mjs --test-coverage-lines=98 --test tests/telegram-build.test.mjs",
+  );
+  assert.equal(
+    scripts["coverage:critical:build"],
+    "SALVO_APP_CHILD_COVERAGE=isolated node --experimental-test-coverage --test-coverage-include=scripts/build.mjs --test-coverage-lines=98 --test tests/telegram-build.test.mjs",
+  );
+  assert.equal(
+    scripts["coverage:critical:worker"],
+    "node --experimental-test-coverage --test-coverage-include=worker/index.js --test-coverage-lines=98 --test tests/worker.test.mjs tests/profile.test.mjs tests/telegram-mini-app-worker.test.mjs tests/telegram-oidc-worker.test.mjs",
+  );
+});
+
 test("main menu is a focused game hub with agent play as the primary action", () => {
   assert.match(app, /class="game-hub"/);
   assert.match(app, /class="hub-primary"/);
@@ -344,8 +370,9 @@ test("result modal can copy and share a battle summary through the platform", ()
   assert.match(app, /platform\.openExternalUrl\(telegramUrl\.toString\(\)\)/);
   assert.match(app, /resultCopyStatus:\s*""/);
   assert.match(app, /state\.resultCopyStatus = "copied"/);
-  assert.match(app, /state\.resultCopyStatus = shared \? "" : "share-failed"/);
+  assert.match(app, /state\.resultCopyStatus = outcome\.shared \? "" : outcome\.copied \? "link-copied" : "share-failed"/);
   assert.match(app, /class="result-share-status status-line"/);
+  assert.match(i18n, /"share\.linkCopied"/);
   assert.match(i18n, /"result\.copySummary"/);
   assert.match(i18n, /"result\.copySuccess"/);
   assert.match(i18n, /"result\.shareSummary"/);
@@ -744,14 +771,31 @@ test("network state renders an offline banner and guards remote work", () => {
   assert.ok(offlineGuard >= 0 && offlineGuard < scriptRequest, "Telegram widget must stop before its offline script request");
 });
 
-test("native back navigation uses ordered overlays and a destructive-leave dialog", () => {
+test("platform back navigation uses ordered dialogs, overlays, and destructive leave", () => {
   const back = sourceBetween("async function handlePlatformBack", "async function requestLeaveBattle");
+  const leaveDialog = back.indexOf("state.leaveBattleDialog");
+  const resultDialog = back.indexOf("isResultModalVisible()");
   const settings = back.indexOf("state.settingsOpen");
   const profile = back.indexOf("state.profileOpen");
   const leaderboard = back.indexOf("state.leaderboardOpen");
-  const detail = back.indexOf('["archive", "replay"]');
+  const coaching = back.indexOf("isTacticalAdvisorVisible()");
+  const replay = back.indexOf('state.screen === "replay"');
+  const archive = back.indexOf('state.screen === "archive"');
   const battle = back.indexOf('["setup", "playing", "pass", "training", "online"]');
-  assert.ok(settings >= 0 && settings < profile && profile < leaderboard && leaderboard < detail && detail < battle);
+  assert.ok(
+    leaveDialog >= 0
+    && leaveDialog < resultDialog
+    && resultDialog < settings
+    && settings < profile
+    && profile < leaderboard
+    && leaderboard < coaching
+    && coaching < replay
+    && replay < archive
+    && archive < battle,
+  );
+  assert.match(back, /cancelLeaveBattle\(\)/);
+  assert.match(back, /closeResultModal\(\)/);
+  assert.match(back, /backToReplayArchive\(\)/);
   assert.match(back, /return false/);
   assert.match(app, /leaveBattleDialog:\s*false/);
   assert.match(app, /function renderLeaveBattleDialog/);
@@ -814,10 +858,19 @@ test("room and summary sharing await platform share with Telegram fallback", () 
   assert.match(app, /async function shareRoom/);
   assert.match(app, /async function shareBattleSummary/);
   assert.match(app, /const result = await platform\.share\(\{/);
-  assert.match(app, /if \(result\.shared\) return true/);
+  assert.match(app, /if \(result\.shared\) return \{ shared: true, copied: false \}/);
+  assert.match(app, /if \(result\.copied\) return \{ shared: false, copied: true \}/);
   assert.match(app, /await platform\.openExternalUrl\(telegramUrl\.toString\(\)\)/);
-  assert.match(app, /translate\("share\.failed"\)/);
-  assert.match(app, /state\.online\.error = shared \? "" : translate\("share\.failed"\)/);
+  assert.match(app, /translate\(failed \? "share\.failed" : "online\.inviteCopied"\)/);
+  assert.match(
+    app,
+    /state\.online\.shareStatus = outcome\.shared\s*\? ""\s*:\s*outcome\.copied \? "invite-copied" : "share-failed"/,
+  );
+  assert.doesNotMatch(
+    sourceBetween("async function shareRoom", "async function shareWithTelegramFallback"),
+    /state\.online\.(?:status|error)/,
+  );
+  assert.match(i18n, /"online\.inviteCopied"/);
   assert.match(app, /if \(action === "share-battle-summary"\) await shareBattleSummary\(\)/);
   assert.match(app, /if \(action === "share-telegram"\) await shareRoom\(\)/);
 });

@@ -101,6 +101,22 @@ test("createSession uses deterministic 32-byte randomness and stores only the to
   assert.equal(db.serializedRows().includes(token), false);
 });
 
+test("createSession rejects invalid entropy before writing auth state", async (t) => {
+  const db = memoryD1(t);
+
+  for (const randomBytes of [
+    () => new Uint8Array(31),
+    () => "not bytes",
+  ]) {
+    await assert.rejects(
+      createSession(db, telegramUser, { now, randomBytes }),
+      /Session randomness must contain 32 bytes/,
+    );
+  }
+  assert.equal(db.queryOne("SELECT COUNT(*) AS count FROM auth_sessions").count, 0);
+  assert.equal(db.queryOne("SELECT COUNT(*) AS count FROM users").count, 0);
+});
+
 test("resolveSession returns a normalized public user for an active session", async (t) => {
   const db = memoryD1(t);
   const { token } = await createSession(db, { ...telegramUser, id: 42 }, {
@@ -183,6 +199,17 @@ test("revokeSession removes only the matching hashed token", async (t) => {
     message: "Session invalid",
   });
   assert.deepEqual(await resolveSession(db, second.token, { now: now + 1 }), telegramUser);
+});
+
+test("revokeSession ignores malformed tokens without accessing storage", async () => {
+  const inaccessibleDb = {
+    prepare() {
+      assert.fail("malformed tokens must not reach auth storage");
+    },
+  };
+
+  await revokeSession(inaccessibleDb, undefined);
+  await revokeSession(inaccessibleDb, "malformed.token");
 });
 
 test("resolveSession gives the same error for unknown and malformed tokens", async (t) => {

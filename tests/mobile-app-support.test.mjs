@@ -76,6 +76,40 @@ test("startup begins runtime while preferences remain pending and gates network 
   await startup.done;
 });
 
+test("startup processes a launch exactly once after authentication settles", async () => {
+  const authentication = deferred();
+  const calls = [];
+  const startup = startMobileAppServices({
+    async startRuntime() {
+      calls.push("runtime");
+    },
+    async hydratePreferences() {},
+    async hydrateSecureSession() {},
+    async refreshAuth() {
+      calls.push("auth-start");
+      await authentication.promise;
+      calls.push("auth-settled");
+    },
+    async processLaunch() {
+      calls.push("launch");
+    },
+    async refreshLeaderboard() {},
+    onError(error) {
+      assert.fail(error);
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ["runtime", "auth-start"]);
+
+  authentication.resolve();
+  await Promise.all([startup.launchReady, startup.done]);
+  assert.deepEqual(calls, ["runtime", "auth-start", "auth-settled", "launch"]);
+
+  await startup.launchReady;
+  assert.equal(calls.filter((call) => call === "launch").length, 1);
+});
+
 test("network requests stay fail closed until a connected platform sample", () => {
   const initial = createUnknownNetworkState();
   assert.deepEqual(initial, {

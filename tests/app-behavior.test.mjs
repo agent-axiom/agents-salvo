@@ -43,6 +43,46 @@ test("actual app cleans and redeems web Telegram bootstrap callbacks", async () 
   await runScenarioInChild("auth-bootstrap");
 });
 
+test("actual app authenticates Telegram Mini App launch data automatically", async () => {
+  await runScenarioInChild("telegram-bootstrap");
+});
+
+test("actual app routes Telegram room and replay launches after authentication", async () => {
+  await runScenarioInChild("telegram-launch-routing");
+});
+
+test("actual app retains Telegram room and replay launches across auth retry", async () => {
+  await runScenarioInChild("telegram-launch-retry");
+});
+
+test("actual app makes valid Telegram launch params authoritative over URL replays", async () => {
+  await runScenarioInChild("telegram-launch-authority");
+});
+
+test("actual app shares Telegram launches without changing web canonical links", async () => {
+  await runScenarioInChild("telegram-launch-sharing");
+});
+
+test("actual app preserves online connection status while Telegram sharing settles", async () => {
+  await runScenarioInChild("telegram-share-status-race");
+});
+
+test("actual app keeps Telegram Mini App auth failures recoverable and race-safe", async () => {
+  await runScenarioInChild("telegram-auth-recovery");
+});
+
+test("actual app connects Telegram runtime controls through mobile lifecycle cleanup", async () => {
+  await runScenarioInChild("telegram-runtime");
+});
+
+test("actual app contains rejected haptics without interrupting gameplay renders", async () => {
+  await runScenarioInChild("haptic-runtime");
+});
+
+test("actual app honors Telegram theme precedence and renders safe build metadata", async () => {
+  await runScenarioInChild("telegram-theme-build");
+});
+
 test("actual app retries Telegram capability and rejects failed secure persistence", async () => {
   await runScenarioInChild("auth-recovery");
 });

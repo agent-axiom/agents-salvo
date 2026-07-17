@@ -6,6 +6,8 @@
 
 Публичная версия: https://agent-axiom.github.io/agents-salvo/
 
+Публичный Telegram Mini App: https://agent-axiom.github.io/agents-salvo/telegram/
+
 ![Иллюстрация бумажного поля Залпа](src/assets/salvo-board-action.png)
 
 ## Возможности
@@ -33,6 +35,16 @@ npm start
 ```
 
 После `npm start` открыть `http://localhost:5173`.
+
+## Telegram Mini App
+
+В [@BotFather](https://t.me/BotFather) нужно выбрать бота «Залпа», открыть настройку Main Mini App и указать URL `https://agent-axiom.github.io/agents-salvo/telegram/`.
+
+При запуске внутри Telegram Mini App автоматически отправляет подписанный Telegram `initData` в Cloudflare Worker. Worker проверяет подпись и срок действия данных, а затем создаёт существующую сессию «Залпа», поэтому отдельный вход не требуется.
+
+Браузер, Telegram Mini App, iOS-приложение и Android-приложение используют единое дерево исходного кода и одну команду `npm run build`. Эта сборка создаёт обычный и Telegram HTML shell с общими хешированными JavaScript bundle и stylesheet; Telegram SDK загружается только в Telegram shell.
+
+Pages и Mini App обновляются сразу после публикации Pages artifact. Нативные приложения не загружают Pages при старте: каждый APK или iOS app содержит сборку выбранного коммита и меняется только после упаковки и выпуска этого коммита.
 
 ## Разработка приложений для iOS и Android
 
@@ -90,7 +102,7 @@ API-публикация доступна после появления перв
 2. В Settings -> Pages выбрать GitHub Actions.
 3. Запустить workflow `Deploy GitHub Pages` или сделать push в `main`.
 
-Workflow прогоняет `npm test`, собирает `dist` и публикует его как Pages artifact.
+Workflow прогоняет тесты и coverage gates, собирает `dist`, проверяет оба HTML shell и общие хешированные артефакты и публикует результат как Pages artifact.
 
 ## Online backend
 

@@ -7,6 +7,9 @@ export function createMobileRuntime({
   onNetwork,
   onDeepLink,
   onBack,
+  onSettings = () => {},
+  onThemeChange = () => {},
+  onViewportChange = () => {},
   pauseAudio,
   resumeAudio,
   onRuntimeError,
@@ -17,6 +20,7 @@ export function createMobileRuntime({
   let lifecycleTail = Promise.resolve();
   let networkEventVersion = 0;
   let networkTail = Promise.resolve();
+  let platformReady = false;
   let started = false;
   let transitionTail = Promise.resolve();
 
@@ -107,11 +111,20 @@ export function createMobileRuntime({
 
   const registerSubscriptions = async () => {
     const removers = [];
+    const registerOptional = async (name, listener) => {
+      const subscribe = platform[name];
+      if (typeof subscribe !== "function") return;
+      const remove = await subscribe.call(platform, listener);
+      if (typeof remove === "function") removers.push(remove);
+    };
     try {
       removers.push(await platform.onNetworkChange(handleNetworkChange));
       removers.push(await platform.onDeepLink(onDeepLink));
       removers.push(await platform.onBack(onBack));
       removers.push(await platform.onLifecycleChange(handleLifecycle));
+      await registerOptional("onSettings", onSettings);
+      await registerOptional("onThemeChange", onThemeChange);
+      await registerOptional("onViewportChange", onViewportChange);
       return removers;
     } catch (error) {
       const cleanup = await removeSubscriptions(removers);
@@ -151,6 +164,10 @@ export function createMobileRuntime({
       const status = await platform.getNetworkStatus();
       if (networkEventVersion === versionBeforeSample) {
         await queueNetworkDelivery(status, false);
+      }
+      if (!platformReady && typeof platform.ready === "function") {
+        await platform.ready();
+        platformReady = true;
       }
     } catch (error) {
       const cleanup = await removeSubscriptions(removers);
