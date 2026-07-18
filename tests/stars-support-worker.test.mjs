@@ -39,7 +39,7 @@ test("Stars support service exports its public limits and factory", () => {
 test("Stars support factory exposes create, lookup, and Telegram update operations", () => {
   const service = starsSupportModule.createStarsSupportService({
     db: { prepare() {} },
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
   });
 
   assert.deepEqual(Object.keys(service).sort(), ["createInvoice", "getInvoice", "handleUpdate"]);
@@ -826,6 +826,75 @@ test("handleUpdate conditionally records an exact authoritative successful payme
   }
 });
 
+test("handleUpdate snapshots a successful D1 mutation result field once", async (t) => {
+  const database = memoryD1(t);
+  insertPendingInvoice(database, pendingInvoice);
+  const reads = new Map();
+  const changesMeta = Object.defineProperty({}, "changes", {
+    get() {
+      reads.set("changes", (reads.get("changes") ?? 0) + 1);
+      return reads.get("changes") === 1 ? 1 : 0;
+    },
+  });
+  const updateResult = Object.defineProperties({}, {
+    success: {
+      get() {
+        reads.set("success", (reads.get("success") ?? 0) + 1);
+        return reads.get("success") === 1;
+      },
+    },
+    meta: {
+      get() {
+        reads.set("meta", (reads.get("meta") ?? 0) + 1);
+        return reads.get("meta") === 1 ? changesMeta : { changes: 0 };
+      },
+    },
+  });
+  const db = {
+    prepare(sql) {
+      const statement = database.prepare(sql);
+      if (!/^\s*UPDATE\s/u.test(sql)) {
+        return statement;
+      }
+      return {
+        bind(...params) {
+          const bound = statement.bind(...params);
+          return {
+            async run() {
+              await bound.run();
+              return updateResult;
+            },
+          };
+        },
+      };
+    },
+  };
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: fakeBotApi(),
+    now: () => serviceNow + 30,
+  });
+
+  const result = await service.handleUpdate({
+    message: {
+      from: { id: Number(pendingInvoice.telegramUserId) },
+      successful_payment: {
+        currency: "XTR",
+        total_amount: pendingInvoice.amount,
+        invoice_payload: pendingInvoice.invoicePayload,
+        telegram_payment_charge_id: "tg_charge_stateful_result",
+      },
+    },
+  });
+
+  assert.deepEqual(result, {
+    kind: "successful_payment",
+    paid: true,
+    duplicate: false,
+  });
+  assert.deepEqual(Object.fromEntries(reads), { success: 1, meta: 1, changes: 1 });
+});
+
 test("handleUpdate accepts exact successful-payment redelivery without another mutation", async (t) => {
   const database = memoryD1(t);
   const chargeId = "tg_charge_duplicate_exact";
@@ -848,7 +917,7 @@ test("handleUpdate accepts exact successful-payment redelivery without another m
   let nowCalls = 0;
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now() {
       nowCalls += 1;
       return serviceNow + 30;
@@ -932,7 +1001,7 @@ test("handleUpdate verifies exact paid state after a zero-change conditional upd
   };
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now: () => serviceNow + 30,
   });
 
@@ -989,7 +1058,7 @@ test("handleUpdate detects a Telegram charge already used by another invoice", a
   );
   const service = starsSupportModule.createStarsSupportService({
     db: database,
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now: () => serviceNow + 30,
   });
 
@@ -1019,68 +1088,197 @@ test("handleUpdate detects a Telegram charge already used by another invoice", a
   assert.equal(serialized.includes(pendingInvoice.invoicePayload), false);
 });
 
+test("handleUpdate snapshots charge-owner recovery rows once inside the redaction boundary", async (t) => {
+  const chargeId = "tg_charge_owner_getters";
+  const update = {
+    message: {
+      from: { id: Number(pendingInvoice.telegramUserId) },
+      successful_payment: {
+        currency: "XTR",
+        total_amount: pendingInvoice.amount,
+        invoice_payload: pendingInvoice.invoicePayload,
+        telegram_payment_charge_id: chargeId,
+      },
+    },
+  };
+
+  for (const field of ["invoice_payload", "telegram_payment_charge_id"]) {
+    await t.test(`throwing ${field}`, async (t) => {
+      const database = memoryD1(t);
+      insertPendingInvoice(database, pendingInvoice);
+      let getterReads = 0;
+      const chargeOwner = Object.defineProperty(
+        {
+          invoice_payload: `pay_${"O".repeat(43)}`,
+          telegram_payment_charge_id: chargeId,
+        },
+        field,
+        {
+          enumerable: true,
+          get() {
+            getterReads += 1;
+            throw new Error(`${field} pay_private charge_private`);
+          },
+        },
+      );
+      const db = recoveryDb(database, chargeOwner);
+      const service = starsSupportModule.createStarsSupportService({
+        db,
+        botApi: fakeBotApi(),
+        now: () => serviceNow + 30,
+      });
+
+      await assertRejectsWithPublicError(service.handleUpdate(update), {
+        category: "service_unavailable",
+        status: 503,
+        message: "Stars support is unavailable",
+      });
+      assert.equal(getterReads, 1);
+    });
+  }
+
+  await t.test("stateful permanent conflict", async (t) => {
+    const database = memoryD1(t);
+    insertPendingInvoice(database, pendingInvoice);
+    const otherPayload = `pay_${"O".repeat(43)}`;
+    let payloadReads = 0;
+    let chargeReads = 0;
+    const chargeOwner = Object.defineProperties({}, {
+      invoice_payload: {
+        enumerable: true,
+        get() {
+          payloadReads += 1;
+          return payloadReads === 1 ? otherPayload : pendingInvoice.invoicePayload;
+        },
+      },
+      telegram_payment_charge_id: {
+        enumerable: true,
+        get() {
+          chargeReads += 1;
+          return chargeReads === 1 ? chargeId : "changed_charge";
+        },
+      },
+    });
+    const service = starsSupportModule.createStarsSupportService({
+      db: recoveryDb(database, chargeOwner),
+      botApi: fakeBotApi(),
+      now: () => serviceNow + 30,
+    });
+
+    assert.deepEqual(await service.handleUpdate(update), { kind: "ignored" });
+    assert.equal(payloadReads, 1);
+    assert.equal(chargeReads, 1);
+  });
+});
+
 test("handleUpdate treats a contradictory D1 update result as retryable uncertainty", async (t) => {
-  const database = memoryD1(t);
-  insertPendingInvoice(database, pendingInvoice);
-  let reads = 0;
-  const db = {
-    prepare(sql) {
-      if (/^\s*UPDATE\s/u.test(sql)) {
-        return {
-          bind() {
+  const getterReads = new Map();
+  const throwingGetter = (key, target, property) =>
+    Object.defineProperty(target, property, {
+      get() {
+        getterReads.set(key, (getterReads.get(key) ?? 0) + 1);
+        throw new Error(`${key} pay_private charge_private`);
+      },
+    });
+  const throwingSuccess = throwingGetter("success", {}, "success");
+  const throwingMeta = throwingGetter("meta", { success: true }, "meta");
+  const throwingChanges = throwingGetter("changes", {}, "changes");
+  let statefulMetaReads = 0;
+  let statefulChangesReads = 0;
+  const statefulChanges = Object.defineProperty({}, "changes", {
+    get() {
+      statefulChangesReads += 1;
+      return statefulChangesReads === 1 ? 0 : 1;
+    },
+  });
+  const statefulMeta = Object.defineProperty({ success: true }, "meta", {
+    get() {
+      statefulMetaReads += 1;
+      return statefulMetaReads === 1 ? statefulChanges : { changes: 1 };
+    },
+  });
+  const scenarios = [
+    { name: "success false", result: { success: false, meta: { changes: 1 } } },
+    { name: "missing success", result: { meta: { changes: 1 } } },
+    { name: "throwing success getter", result: throwingSuccess, verify: () => assert.equal(getterReads.get("success"), 1) },
+    { name: "throwing meta getter", result: throwingMeta, verify: () => assert.equal(getterReads.get("meta"), 1) },
+    {
+      name: "throwing changes getter",
+      result: { success: true, meta: throwingChanges },
+      verify: () => assert.equal(getterReads.get("changes"), 1),
+    },
+    {
+      name: "stateful meta and changes getters",
+      result: statefulMeta,
+      verify() {
+        assert.equal(statefulMetaReads, 1);
+        assert.equal(statefulChangesReads, 1);
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async (t) => {
+      const database = memoryD1(t);
+      insertPendingInvoice(database, pendingInvoice);
+      let reads = 0;
+      const db = {
+        prepare(sql) {
+          if (/^\s*UPDATE\s/u.test(sql)) {
             return {
-              async run() {
-                return { success: false, meta: { changes: 1 } };
+              bind() {
+                return { run: async () => scenario.result };
               },
             };
-          },
-        };
-      }
-      const statement = database.prepare(sql);
-      return {
-        bind(...params) {
-          const bound = statement.bind(...params);
+          }
+          const statement = database.prepare(sql);
           return {
-            async first() {
-              reads += 1;
-              return bound.first();
+            bind(...params) {
+              const bound = statement.bind(...params);
+              return {
+                async first() {
+                  reads += 1;
+                  return bound.first();
+                },
+              };
             },
           };
         },
       };
-    },
-  };
-  const service = starsSupportModule.createStarsSupportService({
-    db,
-    botApi: { createInvoiceLink() {} },
-    now: () => serviceNow + 30,
-  });
+      const service = starsSupportModule.createStarsSupportService({
+        db,
+        botApi: fakeBotApi(),
+        now: () => serviceNow + 30,
+      });
 
-  await assertRejectsWithPublicError(
-    service.handleUpdate({
-      message: {
-        from: { id: Number(pendingInvoice.telegramUserId) },
-        successful_payment: {
-          currency: "XTR",
-          total_amount: pendingInvoice.amount,
-          invoice_payload: pendingInvoice.invoicePayload,
-          telegram_payment_charge_id: "tg_charge_contradictory_result",
-        },
-      },
-    }),
-    { category: "service_unavailable", status: 503, message: "Stars support is unavailable" },
-  );
+      await assertRejectsWithPublicError(
+        service.handleUpdate({
+          message: {
+            from: { id: Number(pendingInvoice.telegramUserId) },
+            successful_payment: {
+              currency: "XTR",
+              total_amount: pendingInvoice.amount,
+              invoice_payload: pendingInvoice.invoicePayload,
+              telegram_payment_charge_id: "tg_charge_contradictory_result",
+            },
+          },
+        }),
+        { category: "service_unavailable", status: 503, message: "Stars support is unavailable" },
+      );
 
-  assert.equal(reads, 3);
-  assert.deepEqual(
-    database.queryOne(
-      `SELECT status, paid_at, telegram_payment_charge_id
-         FROM star_support_payments
-        WHERE invoice_payload = ?`,
-      pendingInvoice.invoicePayload,
-    ),
-    { status: "pending", paid_at: null, telegram_payment_charge_id: null },
-  );
+      assert.equal(reads, 3);
+      assert.deepEqual(
+        database.queryOne(
+          `SELECT status, paid_at, telegram_payment_charge_id
+             FROM star_support_payments
+            WHERE invoice_payload = ?`,
+          pendingInvoice.invoicePayload,
+        ),
+        { status: "pending", paid_at: null, telegram_payment_charge_id: null },
+      );
+      scenario.verify?.();
+    });
+  }
 });
 
 test("handleUpdate ignores malformed successful-payment structures before D1", async () => {
@@ -1238,7 +1436,7 @@ test("handleUpdate snapshots successful-payment getters once and ignores provide
   stateful(update, "message", message, null, "update_message");
   const service = starsSupportModule.createStarsSupportService({
     db: database,
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now: () => serviceNow + 30,
   });
 
@@ -1318,7 +1516,7 @@ test("handleUpdate fails closed for payment mismatches and terminal rows without
       };
       const service = starsSupportModule.createStarsSupportService({
         db,
-        botApi: { createInvoiceLink() {} },
+        botApi: fakeBotApi(),
         now() {
           nowCalls += 1;
           return serviceNow + 30;
@@ -1398,7 +1596,7 @@ test("handleUpdate rejects malformed stored payment rows without rewriting them"
           };
         },
       },
-      botApi: { createInvoiceLink() {} },
+      botApi: fakeBotApi(),
       now() {
         nowCalls += 1;
         return serviceNow + 30;
@@ -1439,7 +1637,7 @@ test("handleUpdate redacts transient successful-payment D1 failures", async (t) 
         };
       },
     },
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now: () => serviceNow + 30,
   });
   const validUpdate = {
@@ -1480,7 +1678,7 @@ test("handleUpdate redacts transient successful-payment D1 failures", async (t) 
     };
     const service = starsSupportModule.createStarsSupportService({
       db,
-      botApi: { createInvoiceLink() {} },
+      botApi: fakeBotApi(),
       now: () => serviceNow + 30,
     });
 
@@ -1528,7 +1726,7 @@ test("handleUpdate accepts an ambiguous D1 failure only after exact paid re-read
   };
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now: () => serviceNow + 30,
   });
 
@@ -1552,6 +1750,177 @@ test("handleUpdate accepts an ambiguous D1 failure only after exact paid re-read
   });
 });
 
+test("handleUpdate snapshots every ambiguous-recovery payment row field once", async () => {
+  const chargeId = "tg_charge_stateful_recovery";
+  const reads = new Map();
+  const statefulRow = {};
+  const field = (key, value, later = Symbol("changed")) => {
+    Object.defineProperty(statefulRow, key, {
+      enumerable: true,
+      get() {
+        const count = (reads.get(key) ?? 0) + 1;
+        reads.set(key, count);
+        return count === 1 ? value : later;
+      },
+    });
+  };
+  field("invoice_id", pendingInvoice.invoiceId, "inv_bad");
+  field("invoice_payload", pendingInvoice.invoicePayload, "pay_bad");
+  field("user_key", pendingInvoice.userKey, "telegram:1");
+  field("telegram_user_id", pendingInvoice.telegramUserId, "1");
+  field("amount", pendingInvoice.amount, 1);
+  field("currency", "XTR", "USD");
+  field("status", "paid", "pending");
+  field("created_at", pendingInvoice.createdAt, -1);
+  field("expires_at", pendingInvoice.expiresAt, -1);
+  field("paid_at", serviceNow + 30, null);
+  field("failed_at", null, serviceNow);
+  field("refunded_at", null, serviceNow);
+  field("telegram_payment_charge_id", chargeId, "different_charge");
+  const pendingRow = {
+    invoice_id: pendingInvoice.invoiceId,
+    invoice_payload: pendingInvoice.invoicePayload,
+    user_key: pendingInvoice.userKey,
+    telegram_user_id: pendingInvoice.telegramUserId,
+    amount: pendingInvoice.amount,
+    currency: "XTR",
+    status: "pending",
+    created_at: pendingInvoice.createdAt,
+    expires_at: pendingInvoice.expiresAt,
+    paid_at: null,
+    failed_at: null,
+    refunded_at: null,
+    telegram_payment_charge_id: null,
+  };
+  let payloadReads = 0;
+  let chargeOwnerReads = 0;
+  const db = {
+    prepare(sql) {
+      if (/^\s*UPDATE\s/u.test(sql)) {
+        return {
+          bind() {
+            return { run: async () => ({ success: false, meta: { changes: 1 } }) };
+          },
+        };
+      }
+      if (/WHERE telegram_payment_charge_id = \?/u.test(sql)) {
+        chargeOwnerReads += 1;
+        throw new Error("exact paid recovery must not query charge ownership");
+      }
+      return {
+        bind() {
+          return {
+            async first() {
+              payloadReads += 1;
+              return payloadReads === 1 ? pendingRow : statefulRow;
+            },
+          };
+        },
+      };
+    },
+  };
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: fakeBotApi(),
+    now: () => serviceNow + 30,
+  });
+
+  const result = await service.handleUpdate({
+    message: {
+      from: { id: Number(pendingInvoice.telegramUserId) },
+      successful_payment: {
+        currency: "XTR",
+        total_amount: pendingInvoice.amount,
+        invoice_payload: pendingInvoice.invoicePayload,
+        telegram_payment_charge_id: chargeId,
+      },
+    },
+  });
+
+  assert.deepEqual(result, {
+    kind: "successful_payment",
+    paid: true,
+    duplicate: true,
+  });
+  assert.equal(chargeOwnerReads, 0);
+  for (const key of Object.keys(statefulRow)) {
+    assert.equal(reads.get(key), 1, key);
+  }
+});
+
+test("handleUpdate treats a different charge on the recovered paid invoice as permanent", async () => {
+  const incomingChargeId = "tg_charge_recovery_incoming";
+  const paidRow = {
+    invoice_id: pendingInvoice.invoiceId,
+    invoice_payload: pendingInvoice.invoicePayload,
+    user_key: pendingInvoice.userKey,
+    telegram_user_id: pendingInvoice.telegramUserId,
+    amount: pendingInvoice.amount,
+    currency: "XTR",
+    status: "paid",
+    created_at: pendingInvoice.createdAt,
+    expires_at: pendingInvoice.expiresAt,
+    paid_at: serviceNow + 30,
+    failed_at: null,
+    refunded_at: null,
+    telegram_payment_charge_id: "tg_charge_recovery_existing",
+  };
+  const pendingRow = {
+    ...paidRow,
+    status: "pending",
+    paid_at: null,
+    telegram_payment_charge_id: null,
+  };
+  let payloadReads = 0;
+  let chargeOwnerReads = 0;
+  const db = {
+    prepare(sql) {
+      if (/^\s*UPDATE\s/u.test(sql)) {
+        return {
+          bind() {
+            return { run: async () => ({ success: false, meta: { changes: 1 } }) };
+          },
+        };
+      }
+      if (/WHERE telegram_payment_charge_id = \?/u.test(sql)) {
+        chargeOwnerReads += 1;
+        throw new Error("permanent same-invoice conflict must not retry charge lookup");
+      }
+      return {
+        bind() {
+          return {
+            async first() {
+              payloadReads += 1;
+              return payloadReads === 1 ? pendingRow : paidRow;
+            },
+          };
+        },
+      };
+    },
+  };
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: fakeBotApi(),
+    now: () => serviceNow + 30,
+  });
+
+  const result = await service.handleUpdate({
+    message: {
+      from: { id: Number(pendingInvoice.telegramUserId) },
+      successful_payment: {
+        currency: "XTR",
+        total_amount: pendingInvoice.amount,
+        invoice_payload: pendingInvoice.invoicePayload,
+        telegram_payment_charge_id: incomingChargeId,
+      },
+    },
+  });
+
+  assert.deepEqual(result, { kind: "ignored" });
+  assert.equal(payloadReads, 2);
+  assert.equal(chargeOwnerReads, 0);
+});
+
 test("handleUpdate never records paid_at before the stored invoice creation time", async (t) => {
   const database = memoryD1(t);
   insertPendingInvoice(database, pendingInvoice);
@@ -1566,7 +1935,7 @@ test("handleUpdate never records paid_at before the stored invoice creation time
   };
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now: () => pendingInvoice.createdAt - 1,
   });
 
@@ -1704,7 +2073,7 @@ test("createInvoice persists an owner-bound pending row before requesting the li
   const randomSizes = [];
   const providerCalls = [];
   let nowCalls = 0;
-  const botApi = {
+  const botApi = fakeBotApi({
     async createInvoiceLink(invoice) {
       providerCalls.push(invoice);
       assert.deepEqual(
@@ -1730,7 +2099,7 @@ test("createInvoice persists an owner-bound pending row before requesting the li
       );
       return "https://t.me/$salvo-support-test";
     },
-  };
+  });
   const service = starsSupportModule.createStarsSupportService({
     db,
     botApi,
@@ -1809,11 +2178,11 @@ test("createInvoice snapshots stateful Telegram identity getters exactly once", 
   );
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: {
+    botApi: fakeBotApi({
       async createInvoiceLink() {
         return "https://t.me/$snapshot-user";
       },
-    },
+    }),
     now: () => serviceNow,
     randomBytes: (size) => new Uint8Array(size).fill(21),
   });
@@ -1837,12 +2206,12 @@ test("createInvoice accepts support presets and custom amount bounds", async (t)
   const providerAmounts = [];
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: {
+    botApi: fakeBotApi({
       async createInvoiceLink({ amount }) {
         providerAmounts.push(amount);
         return `https://t.me/$amount-${amount}`;
       },
-    },
+    }),
     now: () => serviceNow,
     randomBytes(size) {
       randomCall += 1;
@@ -1868,12 +2237,12 @@ test("createInvoice owns localized Telegram invoice text", async (t) => {
   const providerCalls = [];
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: {
+    botApi: fakeBotApi({
       async createInvoiceLink(invoice) {
         providerCalls.push(invoice);
         return `https://t.me/$localized-${providerCalls.length}`;
       },
-    },
+    }),
     now: () => serviceNow,
     randomBytes(size) {
       randomCall += 1;
@@ -1928,11 +2297,11 @@ test("createInvoice rejects malformed users, amounts, and locales before side ef
         sideEffects += 1;
       },
     },
-    botApi: {
+    botApi: fakeBotApi({
       createInvoiceLink() {
         sideEffects += 1;
       },
-    },
+    }),
     now() {
       sideEffects += 1;
       return serviceNow;
@@ -2006,11 +2375,11 @@ test("createInvoice rejects boxed and coercible locales before side effects", as
         sideEffects += 1;
       },
     },
-    botApi: {
+    botApi: fakeBotApi({
       createInvoiceLink() {
         sideEffects += 1;
       },
-    },
+    }),
     now() {
       sideEffects += 1;
       return serviceNow;
@@ -2032,7 +2401,7 @@ test("createInvoice rejects boxed and coercible locales before side effects", as
 
 test("Stars support factory validates dependencies with a redacted error", () => {
   const validDb = { prepare() {} };
-  const validBotApi = { createInvoiceLink() {} };
+  const validBotApi = fakeBotApi();
   const invalidOptions = [
     undefined,
     null,
@@ -2040,6 +2409,7 @@ test("Stars support factory validates dependencies with a redacted error", () =>
     {},
     { db: {}, botApi: validBotApi },
     { db: validDb, botApi: {} },
+    { db: validDb, botApi: { createInvoiceLink() {} } },
     { db: validDb, botApi: validBotApi, now: 42 },
     { db: validDb, botApi: validBotApi, now: null },
     { db: validDb, botApi: validBotApi, randomBytes: 42 },
@@ -2076,6 +2446,17 @@ test("Stars support factory validates dependencies with a redacted error", () =>
         },
       }),
     },
+    {
+      db: validDb,
+      botApi: Object.defineProperties({}, {
+        createInvoiceLink: { value() {} },
+        answerPreCheckoutQuery: {
+          get() {
+            throw new Error("123456:secret-bot-token pre-checkout");
+          },
+        },
+      }),
+    },
   ]) {
     assertThrowsWithPublicError(
       () => starsSupportModule.createStarsSupportService(options),
@@ -2105,11 +2486,11 @@ test("createInvoice rejects unsafe clock and randomness results before persisten
           databaseCalls += 1;
         },
       },
-      botApi: {
+      botApi: fakeBotApi({
         createInvoiceLink() {
           providerCalls += 1;
         },
-      },
+      }),
       now() {
         nowCalls += 1;
         return value;
@@ -2151,11 +2532,11 @@ test("createInvoice rejects unsafe clock and randomness results before persisten
           databaseCalls += 1;
         },
       },
-      botApi: {
+      botApi: fakeBotApi({
         createInvoiceLink() {
           providerCalls += 1;
         },
-      },
+      }),
       now: () => serviceNow,
       randomBytes: makeRandomBytes(),
     });
@@ -2175,12 +2556,12 @@ test("createInvoice uses secure clock and randomness defaults", async (t) => {
   const before = Math.floor(Date.now() / 1000);
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: {
+    botApi: fakeBotApi({
       async createInvoiceLink({ payload }) {
         providerPayload = payload;
         return "https://t.me/$default-dependencies";
       },
-    },
+    }),
   });
 
   const result = await service.createInvoice({
@@ -2213,7 +2594,7 @@ test("createInvoice redacts throwing request getters as invalid input", async ()
         sideEffects += 1;
       },
     },
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now() {
       sideEffects += 1;
       return serviceNow;
@@ -2254,11 +2635,11 @@ test("createInvoice redacts D1 insert failures and never calls the provider", as
     };
     const service = starsSupportModule.createStarsSupportService({
       db,
-      botApi: {
+      botApi: fakeBotApi({
         createInvoiceLink() {
           providerCalls += 1;
         },
-      },
+      }),
       now: () => serviceNow,
       randomBytes: (size) => new Uint8Array(size),
     });
@@ -2279,11 +2660,11 @@ test("createInvoice marks provider failures failed without leaking provider deta
   let nowCalls = 0;
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: {
+    botApi: fakeBotApi({
       async createInvoiceLink() {
         throw new Error(`bot token 123456:secret ${privatePayload} telegram:${authenticatedUser.id}`);
       },
-    },
+    }),
     now() {
       nowCalls += 1;
       return serviceNow;
@@ -2346,7 +2727,7 @@ test("createInvoice rejects invalid provider URLs and marks each row failed", as
       const invoiceId = `inv_${Buffer.from(invoiceBytes).toString("base64url")}`;
       const service = starsSupportModule.createStarsSupportService({
         db,
-        botApi: { createInvoiceLink: async () => invalidUrl },
+        botApi: fakeBotApi({ createInvoiceLink: async () => invalidUrl }),
         now: () => serviceNow,
         randomBytes: (size) =>
           size === 16 ? invoiceBytes : new Uint8Array(32).fill(index + 33),
@@ -2373,7 +2754,7 @@ test("createInvoice cleanup is conditional and does not overwrite a paid row", a
   const invoiceId = `inv_${Buffer.from(invoiceBytes).toString("base64url")}`;
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: {
+    botApi: fakeBotApi({
       async createInvoiceLink() {
         db.execute(
           `UPDATE star_support_payments
@@ -2385,7 +2766,7 @@ test("createInvoice cleanup is conditional and does not overwrite a paid row", a
         );
         throw new Error("provider response lost after payment");
       },
-    },
+    }),
     now: () => serviceNow,
     randomBytes: (size) => (size === 16 ? invoiceBytes : new Uint8Array(32).fill(13)),
   });
@@ -2423,11 +2804,11 @@ test("createInvoice keeps provider errors generic when failed-row cleanup also f
   };
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: {
+    botApi: fakeBotApi({
       async createInvoiceLink() {
         throw new Error("123456:secret-token pay_private");
       },
-    },
+    }),
     now: () => serviceNow,
     randomBytes: (size) => new Uint8Array(size).fill(14),
   });
@@ -2467,7 +2848,7 @@ test("getInvoice selects by invoice and derived owner in one query", async (t) =
   let nowCalls = 0;
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now() {
       nowCalls += 1;
       return serviceNow + 30;
@@ -2538,7 +2919,7 @@ test("getInvoice snapshots a stateful request invoice ID exactly once", async (t
   });
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now: () => serviceNow,
   });
 
@@ -2608,7 +2989,7 @@ test("getInvoice projects pending, expired, failed, paid, and refunded rows", as
   }
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now: () => serviceNow,
   });
 
@@ -2638,7 +3019,7 @@ test("getInvoice makes wrong-owner and unknown invoices indistinguishable", asyn
   });
   const service = starsSupportModule.createStarsSupportService({
     db,
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now: () => serviceNow,
   });
   const expected = {
@@ -2671,7 +3052,7 @@ test("getInvoice validates the user and exact public invoice ID before side effe
         sideEffects += 1;
       },
     },
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now() {
       sideEffects += 1;
       return serviceNow;
@@ -2725,7 +3106,7 @@ test("getInvoice redacts throwing request getters as invalid input", async () =>
         sideEffects += 1;
       },
     },
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now() {
       sideEffects += 1;
       return serviceNow;
@@ -2761,7 +3142,7 @@ test("getInvoice rejects unsafe clock values before querying D1", async () => {
           databaseCalls += 1;
         },
       },
-      botApi: { createInvoiceLink() {} },
+      botApi: fakeBotApi(),
       now,
     });
 
@@ -2793,7 +3174,7 @@ test("getInvoice redacts D1 read failures", async () => {
         };
       },
     },
-    botApi: { createInvoiceLink() {} },
+    botApi: fakeBotApi(),
     now: () => serviceNow,
   });
 
@@ -2854,7 +3235,7 @@ test("getInvoice rejects malformed stored rows with a redacted service error", a
           };
         },
       },
-      botApi: { createInvoiceLink() {} },
+      botApi: fakeBotApi(),
       now: () => serviceNow,
     });
 
@@ -3057,6 +3438,40 @@ test("payment records do not depend on player profile tables", (t) => {
   assert.equal(db.queryOne("SELECT COUNT(*) AS count FROM users").count, 0);
   assert.equal(db.queryOne("SELECT COUNT(*) AS count FROM star_support_payments").count, 1);
 });
+
+function recoveryDb(database, chargeOwner) {
+  return {
+    prepare(sql) {
+      if (/^\s*UPDATE\s/u.test(sql)) {
+        return {
+          bind() {
+            return {
+              async run() {
+                throw new Error("ambiguous update failure");
+              },
+            };
+          },
+        };
+      }
+      if (/WHERE telegram_payment_charge_id = \?/u.test(sql)) {
+        return {
+          bind() {
+            return { first: async () => chargeOwner };
+          },
+        };
+      }
+      return database.prepare(sql);
+    },
+  };
+}
+
+function fakeBotApi(overrides = {}) {
+  return {
+    createInvoiceLink() {},
+    answerPreCheckoutQuery() {},
+    ...overrides,
+  };
+}
 
 function memoryD1(t) {
   const db = new MemoryD1();

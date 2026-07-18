@@ -59,6 +59,7 @@ export function createStarsSupportService(options) {
     if (
       typeof prepare !== "function" ||
       typeof createInvoiceLink !== "function" ||
+      typeof answerPreCheckoutQuery !== "function" ||
       typeof now !== "function" ||
       typeof randomBytes !== "function"
     ) {
@@ -244,7 +245,7 @@ async function handlePreCheckout({
     } catch {
       row = null;
     }
-    const pendingRow = normalizePendingPaymentRow(row, query.payload);
+    const pendingRow = normalizePendingPaymentRow(snapshotPaymentRow(row), query.payload);
     approved =
       pendingRow !== null &&
       pendingRow.telegramUserId === String(query.payerId) &&
@@ -275,17 +276,14 @@ async function handleSuccessfulPayment({ payment, db, prepare, now }) {
   } catch {
     throw serviceUnavailableError();
   }
-  const paidRow = normalizePaidPaymentRow(row, payment.payload);
-  if (
-    paidRow !== null &&
-    paidRow.telegramUserId === String(payment.payerId) &&
-    paidRow.amount === payment.amount &&
-    paidRow.currency === payment.currency &&
-    paidRow.chargeId === payment.chargeId
-  ) {
-    return { kind: "successful_payment", paid: true, duplicate: true };
+  const storedRow = snapshotPaymentRow(row);
+  const paidRow = normalizePaidPaymentRow(storedRow, payment.payload);
+  if (paidRowMatchesPayment(paidRow, payment)) {
+    return paidRow.chargeId === payment.chargeId
+      ? { kind: "successful_payment", paid: true, duplicate: true }
+      : { kind: "ignored" };
   }
-  const pendingRow = normalizePendingPaymentRow(row, payment.payload);
+  const pendingRow = normalizePendingPaymentRow(storedRow, payment.payload);
   if (
     pendingRow === null ||
     pendingRow.telegramUserId !== String(payment.payerId) ||
@@ -326,7 +324,7 @@ async function handleSuccessfulPayment({ payment, db, prepare, now }) {
   } catch {
     return recoverSuccessfulPayment({ payment, db, prepare });
   }
-  if (result?.success === false || d1Changes(result) !== 1) {
+  if (!isSuccessfulD1Update(result)) {
     return recoverSuccessfulPayment({ payment, db, prepare });
   }
   return { kind: "successful_payment", paid: true, duplicate: false };
@@ -339,15 +337,11 @@ async function recoverSuccessfulPayment({ payment, db, prepare }) {
   } catch {
     throw serviceUnavailableError();
   }
-  const paidRow = normalizePaidPaymentRow(row, payment.payload);
-  if (
-    paidRow !== null &&
-    paidRow.telegramUserId === String(payment.payerId) &&
-    paidRow.amount === payment.amount &&
-    paidRow.currency === payment.currency &&
-    paidRow.chargeId === payment.chargeId
-  ) {
-    return { kind: "successful_payment", paid: true, duplicate: true };
+  const paidRow = normalizePaidPaymentRow(snapshotPaymentRow(row), payment.payload);
+  if (paidRowMatchesPayment(paidRow, payment)) {
+    return paidRow.chargeId === payment.chargeId
+      ? { kind: "successful_payment", paid: true, duplicate: true }
+      : { kind: "ignored" };
   }
   let chargeOwner;
   try {
@@ -359,15 +353,25 @@ async function recoverSuccessfulPayment({ payment, db, prepare }) {
   } catch {
     throw serviceUnavailableError();
   }
+  const chargeOwnerSnapshot = snapshotChargeOwner(chargeOwner);
   if (
-    isRecord(chargeOwner) &&
-    chargeOwner.telegram_payment_charge_id === payment.chargeId &&
-    isPrivateInvoicePayload(chargeOwner.invoice_payload) &&
-    chargeOwner.invoice_payload !== payment.payload
+    chargeOwnerSnapshot !== null &&
+    chargeOwnerSnapshot.telegram_payment_charge_id === payment.chargeId &&
+    isPrivateInvoicePayload(chargeOwnerSnapshot.invoice_payload) &&
+    chargeOwnerSnapshot.invoice_payload !== payment.payload
   ) {
     return { kind: "ignored" };
   }
   throw serviceUnavailableError();
+}
+
+function paidRowMatchesPayment(row, payment) {
+  return (
+    row !== null &&
+    row.telegramUserId === String(payment.payerId) &&
+    row.amount === payment.amount &&
+    row.currency === payment.currency
+  );
 }
 
 async function readPaymentByPayload({ db, prepare, payload }) {
@@ -396,8 +400,58 @@ async function readPaymentByChargeId({ db, prepare, chargeId }) {
     .first();
 }
 
-function d1Changes(result) {
-  return typeof result?.meta?.changes === "number" ? result.meta.changes : null;
+function isSuccessfulD1Update(result) {
+  try {
+    if (!isRecord(result)) {
+      return false;
+    }
+    const success = result.success;
+    const meta = result.meta;
+    if (success !== true || !isRecord(meta)) {
+      return false;
+    }
+    const changes = meta.changes;
+    return changes === 1;
+  } catch {
+    return false;
+  }
+}
+
+function snapshotPaymentRow(row) {
+  return snapshotRecord(row, [
+    "invoice_id",
+    "invoice_payload",
+    "user_key",
+    "telegram_user_id",
+    "amount",
+    "currency",
+    "status",
+    "created_at",
+    "expires_at",
+    "paid_at",
+    "failed_at",
+    "refunded_at",
+    "telegram_payment_charge_id",
+  ]);
+}
+
+function snapshotChargeOwner(row) {
+  return snapshotRecord(row, ["invoice_payload", "telegram_payment_charge_id"]);
+}
+
+function snapshotRecord(record, fields) {
+  try {
+    if (!isRecord(record)) {
+      return null;
+    }
+    const snapshot = {};
+    for (const field of fields) {
+      snapshot[field] = record[field];
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
 }
 
 function snapshotTelegramUpdate(update) {
@@ -584,9 +638,6 @@ async function answerPreCheckout({
         errorMessage: preCheckoutRejectionText[localeFromLanguageCode(languageCode)],
       };
   try {
-    if (typeof answerPreCheckoutQuery !== "function") {
-      throw serviceUnavailableError();
-    }
     await answerPreCheckoutQuery.call(botApi, answer);
   } catch {
     throw serviceUnavailableError();
