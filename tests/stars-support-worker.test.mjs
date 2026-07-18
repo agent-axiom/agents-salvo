@@ -77,6 +77,15 @@ test("payment migration rejects duplicate invoice IDs", (t) => {
   );
 });
 
+test("payment migration rejects null invoice IDs", (t) => {
+  const db = memoryD1(t);
+
+  assert.throws(
+    () => insertPayment(db, { invoiceId: null }),
+    /NOT NULL constraint failed: star_support_payments\.invoice_id/,
+  );
+});
+
 test("payment migration rejects duplicate invoice payloads", (t) => {
   const db = memoryD1(t);
   insertPayment(db, { invoiceId: "inv_first", invoicePayload: "pay_duplicate" });
@@ -135,6 +144,19 @@ test("payment migration rejects amounts outside the supported range", (t) => {
       `amount ${amount} should be rejected`,
     );
   }
+});
+
+test("payment migration uses strict typing to reject fractional amounts", (t) => {
+  const db = memoryD1(t);
+
+  assert.throws(
+    () => insertPayment(db, { amount: 1.5 }),
+    /cannot store REAL value in INTEGER column star_support_payments\.amount/,
+  );
+  assert.equal(
+    db.queryOne("SELECT strict FROM pragma_table_list WHERE name = 'star_support_payments'").strict,
+    1,
+  );
 });
 
 test("payment migration rejects currencies other than XTR", (t) => {

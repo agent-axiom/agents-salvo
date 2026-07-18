@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS star_support_payments (
-  invoice_id TEXT PRIMARY KEY,
+  invoice_id TEXT NOT NULL PRIMARY KEY,
   invoice_payload TEXT NOT NULL UNIQUE,
   user_key TEXT NOT NULL,
   telegram_user_id TEXT NOT NULL,
@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS star_support_payments (
   telegram_payment_charge_id TEXT UNIQUE,
   CHECK ((status = 'paid' AND paid_at IS NOT NULL AND telegram_payment_charge_id IS NOT NULL)
       OR status <> 'paid')
-);
+) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_star_support_owner_created
   ON star_support_payments (user_key, created_at DESC);
