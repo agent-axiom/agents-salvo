@@ -136,6 +136,53 @@ test("createInvoice persists an owner-bound pending row before requesting the li
   assert.equal(JSON.stringify(result).includes(`telegram:${authenticatedUser.id}`), false);
 });
 
+test("createInvoice snapshots stateful Telegram identity getters exactly once", async (t) => {
+  const db = memoryD1(t);
+  let providerReads = 0;
+  let idReads = 0;
+  const user = Object.defineProperties(
+    { name: authenticatedUser.name },
+    {
+      provider: {
+        enumerable: true,
+        get() {
+          providerReads += 1;
+          return providerReads === 1 ? "telegram" : "other";
+        },
+      },
+      id: {
+        enumerable: true,
+        get() {
+          idReads += 1;
+          return idReads <= 3 ? authenticatedUser.id : "1";
+        },
+      },
+    },
+  );
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: {
+      async createInvoiceLink() {
+        return "https://t.me/$snapshot-user";
+      },
+    },
+    now: () => serviceNow,
+    randomBytes: (size) => new Uint8Array(size).fill(21),
+  });
+
+  await service.createInvoice({ user, amount: 8, locale: "en" });
+
+  assert.equal(providerReads, 1);
+  assert.equal(idReads, 1);
+  assert.deepEqual(
+    db.queryOne("SELECT user_key, telegram_user_id FROM star_support_payments"),
+    {
+      user_key: `telegram:${authenticatedUser.id}`,
+      telegram_user_id: authenticatedUser.id,
+    },
+  );
+});
+
 test("createInvoice accepts support presets and custom amount bounds", async (t) => {
   const db = memoryD1(t);
   let randomCall = 0;
@@ -300,6 +347,38 @@ test("createInvoice rejects malformed users, amounts, and locales before side ef
     status: 400,
     message: "Invalid Stars support request",
   });
+  assert.equal(sideEffects, 0);
+});
+
+test("createInvoice rejects boxed and coercible locales before side effects", async () => {
+  let sideEffects = 0;
+  const service = starsSupportModule.createStarsSupportService({
+    db: {
+      prepare() {
+        sideEffects += 1;
+      },
+    },
+    botApi: {
+      createInvoiceLink() {
+        sideEffects += 1;
+      },
+    },
+    now() {
+      sideEffects += 1;
+      return serviceNow;
+    },
+    randomBytes(size) {
+      sideEffects += 1;
+      return new Uint8Array(size);
+    },
+  });
+
+  for (const locale of [new String("en"), { toString: () => "ru" }]) {
+    await assertRejectsWithPublicError(
+      service.createInvoice({ user: authenticatedUser, amount: 8, locale }),
+      { category: "invalid_request", status: 400, message: "Invalid Stars support request" },
+    );
+  }
   assert.equal(sideEffects, 0);
 });
 
@@ -594,6 +673,14 @@ test("createInvoice rejects invalid provider URLs and marks each row failed", as
     "http://t.me/$invoice",
     "https://telegram.me/$invoice",
     "https://t.me/",
+    "https://t.me/salvo",
+    "https://t.me/$invoice?ref=salvo",
+    "https://t.me/$invoice#support",
+    "https://t.me/$bad.slug",
+    "https://t.me/$bad/slug",
+    "https://t.me/$",
+    `https://t.me/$${"A".repeat(129)}`,
+    "https://t.me:443/$invoice",
     "https://t.me.evil.example/$invoice",
     "https://evil.example/t.me/$invoice",
     " https://t.me/$invoice",
@@ -777,6 +864,41 @@ test("getInvoice selects by invoice and derived owner in one query", async (t) =
   ]) {
     assert.equal(serialized.includes(privateValue), false);
   }
+});
+
+test("getInvoice snapshots a stateful request invoice ID exactly once", async (t) => {
+  const db = memoryD1(t);
+  const requestedInvoiceId = "inv_SSSSSSSSSSSSSSSSSSSSSS";
+  const switchedInvoiceId = "inv_TTTTTTTTTTTTTTTTTTTTTT";
+  insertPayment(db, {
+    invoiceId: requestedInvoiceId,
+    invoicePayload: "pay_snapshot_requested",
+    amount: 8,
+  });
+  insertPayment(db, {
+    invoiceId: switchedInvoiceId,
+    invoicePayload: "pay_snapshot_switched",
+    amount: 360,
+  });
+  let invoiceIdReads = 0;
+  const request = Object.defineProperty({ user: authenticatedUser }, "invoiceId", {
+    enumerable: true,
+    get() {
+      invoiceIdReads += 1;
+      return invoiceIdReads <= 2 ? requestedInvoiceId : switchedInvoiceId;
+    },
+  });
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: { createInvoiceLink() {} },
+    now: () => serviceNow,
+  });
+
+  const result = await service.getInvoice(request);
+
+  assert.equal(invoiceIdReads, 1);
+  assert.equal(result.invoiceId, requestedInvoiceId);
+  assert.equal(result.amount, 8);
 });
 
 test("getInvoice projects pending, expired, failed, paid, and refunded rows", async (t) => {

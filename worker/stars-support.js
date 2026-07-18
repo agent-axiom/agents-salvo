@@ -2,6 +2,7 @@ export const starsAmountLimits = Object.freeze({ min: 1, max: 10_000 });
 export const starsInvoiceTtlSeconds = 15 * 60;
 
 const telegramMaximumUserId = 2 ** 52 - 1;
+const telegramInvoiceUrlPattern = /^https:\/\/t\.me\/\$[A-Za-z0-9_-]{1,128}$/u;
 const internalInvoiceStatuses = new Set(["pending", "paid", "failed", "refunded"]);
 const invoiceText = Object.freeze({
   en: Object.freeze({
@@ -163,6 +164,7 @@ function normalizeCreateRequest(request) {
       !Number.isInteger(amount) ||
       amount < starsAmountLimits.min ||
       amount > starsAmountLimits.max ||
+      typeof locale !== "string" ||
       !Object.hasOwn(invoiceText, locale)
     ) {
       throw invalidRequestError();
@@ -186,15 +188,17 @@ function normalizeGetRequest(request) {
     if (!isRecord(request)) {
       throw invalidRequestError();
     }
-    const userId = validatedTelegramUserId(request.user);
+    const user = request.user;
+    const invoiceId = request.invoiceId;
+    const userId = validatedTelegramUserId(user);
     if (
-      typeof request.invoiceId !== "string" ||
-      !/^inv_[A-Za-z0-9_-]{22}$/.test(request.invoiceId)
+      typeof invoiceId !== "string" ||
+      !/^inv_[A-Za-z0-9_-]{22}$/.test(invoiceId)
     ) {
       throw invalidRequestError();
     }
     return {
-      invoiceId: request.invoiceId,
+      invoiceId,
       userKey: `telegram:${userId}`,
     };
   } catch (error) {
@@ -206,19 +210,23 @@ function normalizeGetRequest(request) {
 }
 
 function validatedTelegramUserId(user) {
+  if (!isRecord(user)) {
+    throw invalidRequestError();
+  }
+  const provider = user.provider;
+  const id = user.id;
   if (
-    !isRecord(user) ||
-    user.provider !== "telegram" ||
-    typeof user.id !== "string" ||
-    !/^[1-9]\d*$/.test(user.id)
+    provider !== "telegram" ||
+    typeof id !== "string" ||
+    !/^[1-9]\d*$/.test(id)
   ) {
     throw invalidRequestError();
   }
-  const numericId = Number(user.id);
+  const numericId = Number(id);
   if (!Number.isSafeInteger(numericId) || numericId > telegramMaximumUserId) {
     throw invalidRequestError();
   }
-  return user.id;
+  return id;
 }
 
 function isRecord(value) {
@@ -304,26 +312,12 @@ async function markInvoiceFailed({ db, prepare, invoiceId, userKey, failedAt }) 
 }
 
 function isTelegramInvoiceUrl(value) {
-  if (
-    typeof value !== "string" ||
-    value.trim() !== value ||
-    /[\u0000-\u001F\u007F]/.test(value)
-  ) {
-    return false;
-  }
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === "https:" &&
-      url.hostname === "t.me" &&
-      url.port === "" &&
-      url.username === "" &&
-      url.password === "" &&
-      url.pathname !== "/"
-    );
-  } catch {
-    return false;
-  }
+  return (
+    typeof value === "string" &&
+    value.trim() === value &&
+    !/[\u0000-\u001F\u007F]/.test(value) &&
+    telegramInvoiceUrlPattern.test(value)
+  );
 }
 
 function normalizeStoredInvoice(row, expectedInvoiceId) {
