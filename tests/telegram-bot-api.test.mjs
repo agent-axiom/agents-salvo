@@ -88,6 +88,34 @@ test("client rejects missing, blank, and oversized tokens and unsafe configurati
   }
 });
 
+test("client rejects malformed or URL-altering bot tokens", () => {
+  const unsafeTokens = [
+    " 123456789:secret",
+    "123456789:secret ",
+    "123456789:sec ret",
+    "123456789:sec\tret",
+    "123456789:sec\nret",
+    "123456789:sec/ret",
+    "123456789:sec?ret",
+    "123456789:sec#ret",
+    "0:secret",
+    "-123:secret",
+    "0123:secret",
+    "123:",
+    ":secret",
+    "123:secret:extra",
+    `${"9".repeat(17)}:secret`,
+    `123:${"a".repeat(129)}`,
+  ];
+
+  for (const unsafeToken of unsafeTokens) {
+    assertGenericThrow(
+      () => createTelegramBotApiClient({ botToken: unsafeToken }),
+      [unsafeToken],
+    );
+  }
+});
+
 test("client redacts configuration getter failures", () => {
   const configurationSecret = "configuration-getter-secret";
   const configuration = {
@@ -251,6 +279,61 @@ test("requests reject non-2xx responses without reading or exposing the provider
   assert.equal(bodyRead, false);
 });
 
+test("requests finish canceling unread non-2xx bodies before rejecting", async () => {
+  let cancellations = 0;
+  let cancellationFinished = false;
+  let bodyReads = 0;
+  const client = createTelegramBotApiClient({
+    botToken,
+    fetcher: async () => ({
+      ok: false,
+      status: 503,
+      headers: { get: () => null },
+      body: {
+        async cancel() {
+          cancellations += 1;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          cancellationFinished = true;
+        },
+        getReader() {
+          bodyReads += 1;
+          throw new Error("non-2xx body must remain unread");
+        },
+      },
+    }),
+  });
+
+  await assertGenericReject(() => client.createInvoiceLink(validInvoice()), [botToken]);
+
+  assert.equal(cancellations, 1);
+  assert.equal(cancellationFinished, true);
+  assert.equal(bodyReads, 0);
+});
+
+test("requests redact unread-body cancellation failures on non-2xx responses", async () => {
+  const cancellationSecret = "non-2xx-cancellation-secret";
+  let cancellations = 0;
+  const client = createTelegramBotApiClient({
+    botToken,
+    fetcher: async () => ({
+      status: 500,
+      headers: { get: () => null },
+      body: {
+        async cancel() {
+          cancellations += 1;
+          throw new Error(cancellationSecret);
+        },
+      },
+    }),
+  });
+
+  await assertGenericReject(
+    () => client.createInvoiceLink(validInvoice()),
+    [cancellationSecret, botToken],
+  );
+  assert.equal(cancellations, 1);
+});
+
 test("requests reject malformed JSON, ok false, and malformed response envelopes", async () => {
   const providerSecret = "secret-provider-description";
   const responses = [
@@ -330,6 +413,46 @@ test("requests reject oversized Content-Length before reading the response body"
 
   await assertGenericReject(() => client.createInvoiceLink(validInvoice()), [botToken]);
   assert.equal(bodyRead, false);
+});
+
+test("requests cancel unread bodies for invalid and oversized Content-Length", async () => {
+  const cancellationSecret = "content-length-cancellation-secret";
+
+  for (const contentLength of ["invalid", "129"]) {
+    let cancellations = 0;
+    let cancellationFinished = false;
+    let bodyReads = 0;
+    const client = createTelegramBotApiClient({
+      botToken,
+      maxResponseBytes: 128,
+      fetcher: async () => ({
+        status: 200,
+        headers: { get: () => contentLength },
+        body: {
+          async cancel() {
+            cancellations += 1;
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            cancellationFinished = true;
+            if (contentLength === "invalid") {
+              throw new Error(cancellationSecret);
+            }
+          },
+          getReader() {
+            bodyReads += 1;
+            throw new Error("rejected Content-Length body must remain unread");
+          },
+        },
+      }),
+    });
+
+    await assertGenericReject(
+      () => client.createInvoiceLink(validInvoice()),
+      [cancellationSecret, botToken],
+    );
+    assert.equal(cancellations, 1);
+    assert.equal(cancellationFinished, true);
+    assert.equal(bodyReads, 0);
+  }
 });
 
 test("requests bound streamed response bytes and cancel an oversized body", async () => {
@@ -522,8 +645,8 @@ test("sendMessage sends the exact body and does not expose Telegram's message ob
   assert.notEqual(await client.sendMessage({ chatId, text }), telegramMessage);
 });
 
-test("sendMessage preserves safe integer strings and accepts the Telegram text limit", async () => {
-  const chatId = "9007199254740991";
+test("sendMessage preserves canonical integer strings and accepts the Telegram text limit", async () => {
+  const chatIds = ["9007199254740991", "-1001234567890"];
   const text = "🚀".repeat(4096);
   const requestBodies = [];
   const client = createTelegramBotApiClient({
@@ -534,9 +657,14 @@ test("sendMessage preserves safe integer strings and accepts the Telegram text l
     },
   });
 
-  await client.sendMessage({ chatId, text });
+  for (const chatId of chatIds) {
+    await client.sendMessage({ chatId, text });
+  }
 
-  assert.deepEqual(requestBodies, [{ chat_id: chatId, text, disable_web_page_preview: true }]);
+  assert.deepEqual(
+    requestBodies,
+    chatIds.map((chatId) => ({ chat_id: chatId, text, disable_web_page_preview: true })),
+  );
 });
 
 test("sendMessage validates chat IDs and bounded nonblank text before fetching", async () => {
@@ -556,10 +684,17 @@ test("sendMessage validates chat IDs and bounded nonblank text before fetching",
     { ...validMessage, chatId: undefined },
     { ...validMessage, chatId: null },
     { ...validMessage, chatId: true },
+    { ...validMessage, chatId: 0 },
     { ...validMessage, chatId: 1.5 },
     { ...validMessage, chatId: Number.MAX_SAFE_INTEGER + 1 },
     { ...validMessage, chatId: "" },
     { ...validMessage, chatId: " \t " },
+    { ...validMessage, chatId: "0" },
+    { ...validMessage, chatId: "-0" },
+    { ...validMessage, chatId: "00" },
+    { ...validMessage, chatId: "01" },
+    { ...validMessage, chatId: "-01" },
+    { ...validMessage, chatId: `${"0".repeat(16)}1` },
     { ...validMessage, chatId: "+42" },
     { ...validMessage, chatId: "42.0" },
     { ...validMessage, chatId: "9007199254740992" },

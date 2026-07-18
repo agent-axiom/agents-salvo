@@ -1,8 +1,9 @@
 const apiOrigin = "https://api.telegram.org";
 const requestErrorMessage = "Telegram Bot API request failed";
-const maxBotTokenBytes = 256;
 const maxTimeoutMs = 60_000;
 const maxConfiguredResponseBytes = 1024 * 1024;
+const botTokenPattern = /^([1-9]\d{0,15}):[A-Za-z0-9_-]{1,128}$/;
+const canonicalChatIdPattern = /^-?[1-9]\d{0,15}$/;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -25,7 +26,7 @@ function createClient(options) {
     maxResponseBytes = 64 * 1024,
   } = options;
   if (
-    !isBoundedNonblankString(botToken, maxBotTokenBytes, true) ||
+    !isValidBotToken(botToken) ||
     typeof fetcher !== "function" ||
     !isPositiveIntegerAtMost(timeoutMs, maxTimeoutMs) ||
     !isPositiveIntegerAtMost(maxResponseBytes, maxConfiguredResponseBytes)
@@ -47,6 +48,7 @@ function createClient(options) {
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!isSuccessfulResponse(response)) {
+        await cancelUnreadResponseBody(response);
         throw requestError();
       }
       const payload = JSON.parse(await readBoundedResponseText(response, maxResponseBytes));
@@ -165,13 +167,21 @@ function requestError() {
   return new Error(requestErrorMessage);
 }
 
+function isValidBotToken(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const match = botTokenPattern.exec(value);
+  return match !== null && Number.isSafeInteger(Number(match[1]));
+}
+
 function isSafeChatId(value) {
-  if (Number.isSafeInteger(value)) {
-    return true;
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value !== 0;
   }
   return (
     typeof value === "string" &&
-    /^-?\d+$/.test(value) &&
+    canonicalChatIdPattern.test(value) &&
     Number.isSafeInteger(Number(value))
   );
 }
@@ -207,10 +217,12 @@ async function readBoundedResponseText(response, maximumBytes) {
   const contentLength = response.headers?.get?.("Content-Length");
   if (contentLength !== null && contentLength !== undefined) {
     if (typeof contentLength !== "string" || !/^\d+$/.test(contentLength)) {
+      await cancelUnreadResponseBody(response);
       throw requestError();
     }
     const parsedLength = Number(contentLength);
     if (!Number.isSafeInteger(parsedLength) || parsedLength > maximumBytes) {
+      await cancelUnreadResponseBody(response);
       throw requestError();
     }
   }
@@ -266,6 +278,14 @@ async function readBoundedResponseText(response, maximumBytes) {
     throw requestError();
   }
   return responseText;
+}
+
+async function cancelUnreadResponseBody(response) {
+  try {
+    await response?.body?.cancel?.();
+  } catch {
+    // The original request failure remains the only outward error.
+  }
 }
 
 function isTelegramInvoiceUrl(value) {
