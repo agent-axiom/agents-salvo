@@ -2,8 +2,14 @@ export const starsAmountLimits = Object.freeze({ min: 1, max: 10_000 });
 export const starsInvoiceTtlSeconds = 15 * 60;
 
 const telegramMaximumUserId = 2 ** 52 - 1;
+const textEncoder = new TextEncoder();
 const telegramInvoiceUrlPattern = /^https:\/\/t\.me\/\$[A-Za-z0-9_-]{1,128}$/u;
 const internalInvoiceStatuses = new Set(["pending", "paid", "failed", "refunded"]);
+const preCheckoutRejectionText = Object.freeze({
+  en: "Payment unavailable. Please create a new invoice.",
+  ru: "Платеж недоступен. Создайте новый счет.",
+  zh: "付款不可用，请创建新账单。",
+});
 const invoiceText = Object.freeze({
   en: Object.freeze({
     title: "Support Salvo",
@@ -36,6 +42,7 @@ export function createStarsSupportService(options) {
   let botApi;
   let prepare;
   let createInvoiceLink;
+  let answerPreCheckoutQuery;
   let now;
   let randomBytes;
   try {
@@ -46,6 +53,7 @@ export function createStarsSupportService(options) {
     botApi = options.botApi;
     prepare = db?.prepare;
     createInvoiceLink = botApi?.createInvoiceLink;
+    answerPreCheckoutQuery = botApi?.answerPreCheckoutQuery;
     now = options.now === undefined ? currentEpochSeconds : options.now;
     randomBytes = options.randomBytes === undefined ? secureRandomBytes : options.randomBytes;
     if (
@@ -148,7 +156,545 @@ export function createStarsSupportService(options) {
         paidAt: invoice.paidAt,
       };
     },
+    async handleUpdate(update) {
+      return handleTelegramUpdate({
+        update,
+        db,
+        botApi,
+        prepare,
+        answerPreCheckoutQuery,
+        now,
+      });
+    },
   };
+}
+
+async function handleTelegramUpdate({
+  update,
+  db,
+  botApi,
+  prepare,
+  answerPreCheckoutQuery,
+  now,
+}) {
+  const snapshot = snapshotTelegramUpdate(update);
+  const hasAnswerablePreCheckout = isBoundedOpaqueId(snapshot.preCheckout.id);
+  if (
+    hasAnswerablePreCheckout &&
+    (snapshot.uncertain || snapshot.hasSuccessfulPayment)
+  ) {
+    await answerPreCheckout({
+      botApi,
+      answerPreCheckoutQuery,
+      id: snapshot.preCheckout.id,
+      approved: false,
+      languageCode: snapshot.preCheckout.languageCode,
+    });
+    return { kind: "pre_checkout", approved: false };
+  }
+  if (hasAnswerablePreCheckout) {
+    return handlePreCheckout({
+      query: snapshot.preCheckout,
+      db,
+      botApi,
+      prepare,
+      answerPreCheckoutQuery,
+      now,
+    });
+  }
+  if (snapshot.uncertain || snapshot.hasPreCheckout) {
+    return { kind: "ignored" };
+  }
+  if (snapshot.hasSuccessfulPayment && snapshot.successfulPayment.valid) {
+    return handleSuccessfulPayment({
+      payment: snapshot.successfulPayment,
+      db,
+      prepare,
+      now,
+    });
+  }
+  return { kind: "ignored" };
+}
+
+async function handlePreCheckout({
+  query,
+  db,
+  botApi,
+  prepare,
+  answerPreCheckoutQuery,
+  now,
+}) {
+  let approved = false;
+  if (query.valid) {
+    let currentTime;
+    let row;
+    try {
+      currentTime = readCurrentTime(now);
+      row = await prepare
+        .call(
+          db,
+          `SELECT invoice_id, invoice_payload, user_key, telegram_user_id,
+                  amount, currency, status, created_at, expires_at,
+                  paid_at, failed_at, refunded_at, telegram_payment_charge_id
+             FROM star_support_payments
+            WHERE invoice_payload = ?`,
+        )
+        .bind(query.payload)
+        .first();
+    } catch {
+      row = null;
+    }
+    const pendingRow = normalizePendingPaymentRow(row, query.payload);
+    approved =
+      pendingRow !== null &&
+      pendingRow.telegramUserId === String(query.payerId) &&
+      pendingRow.amount === query.amount &&
+      pendingRow.currency === query.currency &&
+      pendingRow.createdAt <= currentTime &&
+      currentTime < pendingRow.expiresAt;
+  }
+
+  await answerPreCheckout({
+    botApi,
+    answerPreCheckoutQuery,
+    id: query.id,
+    approved,
+    languageCode: query.languageCode,
+  });
+  return { kind: "pre_checkout", approved };
+}
+
+async function handleSuccessfulPayment({ payment, db, prepare, now }) {
+  let row;
+  try {
+    row = await readPaymentByPayload({
+      db,
+      prepare,
+      payload: payment.payload,
+    });
+  } catch {
+    throw serviceUnavailableError();
+  }
+  const paidRow = normalizePaidPaymentRow(row, payment.payload);
+  if (
+    paidRow !== null &&
+    paidRow.telegramUserId === String(payment.payerId) &&
+    paidRow.amount === payment.amount &&
+    paidRow.currency === payment.currency &&
+    paidRow.chargeId === payment.chargeId
+  ) {
+    return { kind: "successful_payment", paid: true, duplicate: true };
+  }
+  const pendingRow = normalizePendingPaymentRow(row, payment.payload);
+  if (
+    pendingRow === null ||
+    pendingRow.telegramUserId !== String(payment.payerId) ||
+    pendingRow.amount !== payment.amount ||
+    pendingRow.currency !== payment.currency
+  ) {
+    return { kind: "ignored" };
+  }
+
+  const paidAt = readCurrentTime(now);
+  if (paidAt < pendingRow.createdAt) {
+    throw serviceUnavailableError();
+  }
+  let result;
+  try {
+    result = await prepare
+      .call(
+        db,
+        `UPDATE star_support_payments
+            SET status = 'paid', paid_at = ?, telegram_payment_charge_id = ?
+          WHERE invoice_payload = ?
+            AND status = 'pending'
+            AND user_key = ?
+            AND telegram_user_id = ?
+            AND currency = ?
+            AND amount = ?`,
+      )
+      .bind(
+        paidAt,
+        payment.chargeId,
+        payment.payload,
+        `telegram:${payment.payerId}`,
+        String(payment.payerId),
+        payment.currency,
+        payment.amount,
+      )
+      .run();
+  } catch {
+    return recoverSuccessfulPayment({ payment, db, prepare });
+  }
+  if (result?.success === false || d1Changes(result) !== 1) {
+    return recoverSuccessfulPayment({ payment, db, prepare });
+  }
+  return { kind: "successful_payment", paid: true, duplicate: false };
+}
+
+async function recoverSuccessfulPayment({ payment, db, prepare }) {
+  let row;
+  try {
+    row = await readPaymentByPayload({ db, prepare, payload: payment.payload });
+  } catch {
+    throw serviceUnavailableError();
+  }
+  const paidRow = normalizePaidPaymentRow(row, payment.payload);
+  if (
+    paidRow !== null &&
+    paidRow.telegramUserId === String(payment.payerId) &&
+    paidRow.amount === payment.amount &&
+    paidRow.currency === payment.currency &&
+    paidRow.chargeId === payment.chargeId
+  ) {
+    return { kind: "successful_payment", paid: true, duplicate: true };
+  }
+  let chargeOwner;
+  try {
+    chargeOwner = await readPaymentByChargeId({
+      db,
+      prepare,
+      chargeId: payment.chargeId,
+    });
+  } catch {
+    throw serviceUnavailableError();
+  }
+  if (
+    isRecord(chargeOwner) &&
+    chargeOwner.telegram_payment_charge_id === payment.chargeId &&
+    isPrivateInvoicePayload(chargeOwner.invoice_payload) &&
+    chargeOwner.invoice_payload !== payment.payload
+  ) {
+    return { kind: "ignored" };
+  }
+  throw serviceUnavailableError();
+}
+
+async function readPaymentByPayload({ db, prepare, payload }) {
+  return prepare
+    .call(
+      db,
+      `SELECT invoice_id, invoice_payload, user_key, telegram_user_id,
+              amount, currency, status, created_at, expires_at,
+              paid_at, failed_at, refunded_at, telegram_payment_charge_id
+         FROM star_support_payments
+        WHERE invoice_payload = ?`,
+    )
+    .bind(payload)
+    .first();
+}
+
+async function readPaymentByChargeId({ db, prepare, chargeId }) {
+  return prepare
+    .call(
+      db,
+      `SELECT invoice_payload, telegram_payment_charge_id
+         FROM star_support_payments
+        WHERE telegram_payment_charge_id = ?`,
+    )
+    .bind(chargeId)
+    .first();
+}
+
+function d1Changes(result) {
+  return typeof result?.meta?.changes === "number" ? result.meta.changes : null;
+}
+
+function snapshotTelegramUpdate(update) {
+  if (!isRecord(update)) {
+    return {
+      uncertain: true,
+      hasPreCheckout: false,
+      hasSuccessfulPayment: false,
+      preCheckout: { id: undefined, valid: false },
+      successfulPayment: { valid: false },
+    };
+  }
+  const queryRead = readProperty(update, "pre_checkout_query");
+  const messageRead = readProperty(update, "message");
+  const preCheckout = snapshotPreCheckoutQuery(queryRead);
+  const successfulMessage = snapshotSuccessfulPaymentMessage(messageRead);
+  return {
+    uncertain: !queryRead.ok || !messageRead.ok || successfulMessage.uncertain,
+    hasPreCheckout: !queryRead.ok || queryRead.value !== undefined,
+    hasSuccessfulPayment: successfulMessage.present,
+    preCheckout,
+    successfulPayment: successfulMessage.payment,
+  };
+}
+
+function snapshotPreCheckoutQuery(queryRead) {
+  if (!queryRead.ok || !isRecord(queryRead.value)) {
+    return { id: undefined, valid: false };
+  }
+  const query = queryRead.value;
+  const id = readProperty(query, "id");
+  const from = readProperty(query, "from");
+  const currency = readProperty(query, "currency");
+  const amount = readProperty(query, "total_amount");
+  const payload = readProperty(query, "invoice_payload");
+  let payerId = { ok: false, value: undefined };
+  let languageCode = { ok: false, value: undefined };
+  if (from.ok && isRecord(from.value)) {
+    payerId = readProperty(from.value, "id");
+    languageCode = readProperty(from.value, "language_code");
+  }
+  const valid =
+    id.ok &&
+    isBoundedOpaqueId(id.value) &&
+    from.ok &&
+    isRecord(from.value) &&
+    payerId.ok &&
+    isTelegramNumericId(payerId.value) &&
+    languageCode.ok &&
+    isOptionalLanguageCode(languageCode.value) &&
+    currency.ok &&
+    currency.value === "XTR" &&
+    amount.ok &&
+    isStarsAmount(amount.value) &&
+    payload.ok &&
+    isPrivateInvoicePayload(payload.value);
+
+  return {
+    id: id.value,
+    payerId: payerId.value,
+    languageCode: languageCode.value,
+    currency: currency.value,
+    amount: amount.value,
+    payload: payload.value,
+    valid,
+  };
+}
+
+function snapshotSuccessfulPaymentMessage(messageRead) {
+  if (!messageRead.ok) {
+    return { uncertain: true, present: false, payment: { valid: false } };
+  }
+  if (!isRecord(messageRead.value)) {
+    return { uncertain: false, present: false, payment: { valid: false } };
+  }
+  const message = messageRead.value;
+  const from = readProperty(message, "from");
+  const successfulPayment = readProperty(message, "successful_payment");
+  if (!successfulPayment.ok) {
+    return { uncertain: true, present: true, payment: { valid: false } };
+  }
+  const present = successfulPayment.value !== undefined;
+  if (!isRecord(successfulPayment.value)) {
+    return { uncertain: false, present, payment: { valid: false } };
+  }
+  const payment = successfulPayment.value;
+  const currency = readProperty(payment, "currency");
+  const amount = readProperty(payment, "total_amount");
+  const payload = readProperty(payment, "invoice_payload");
+  const chargeId = readProperty(payment, "telegram_payment_charge_id");
+  let payerId = { ok: false, value: undefined };
+  if (from.ok && isRecord(from.value)) {
+    payerId = readProperty(from.value, "id");
+  }
+  const valid =
+    from.ok &&
+    isRecord(from.value) &&
+    payerId.ok &&
+    isTelegramNumericId(payerId.value) &&
+    currency.ok &&
+    currency.value === "XTR" &&
+    amount.ok &&
+    isStarsAmount(amount.value) &&
+    payload.ok &&
+    isPrivateInvoicePayload(payload.value) &&
+    chargeId.ok &&
+    isBoundedOpaqueId(chargeId.value);
+
+  return {
+    uncertain: false,
+    present,
+    payment: {
+      payerId: payerId.value,
+      currency: currency.value,
+      amount: amount.value,
+      payload: payload.value,
+      chargeId: chargeId.value,
+      valid,
+    },
+  };
+}
+
+function readProperty(record, key) {
+  try {
+    return { ok: true, value: record[key] };
+  } catch {
+    return { ok: false, value: undefined };
+  }
+}
+
+function isBoundedOpaqueId(value) {
+  return (
+    typeof value === "string" &&
+    textEncoder.encode(value).byteLength <= 256 &&
+    /\S/u.test(value) &&
+    !/[\u0000-\u001F\u007F]/u.test(value)
+  );
+}
+
+function isTelegramNumericId(value) {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value > 0 &&
+    value <= telegramMaximumUserId
+  );
+}
+
+function isOptionalLanguageCode(value) {
+  return (
+    value === undefined ||
+    (typeof value === "string" &&
+      value.length >= 2 &&
+      value.length <= 35 &&
+      /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/u.test(value))
+  );
+}
+
+function isStarsAmount(value) {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= starsAmountLimits.min &&
+    value <= starsAmountLimits.max
+  );
+}
+
+function isPrivateInvoicePayload(value) {
+  return typeof value === "string" && /^pay_[A-Za-z0-9_-]{43}$/u.test(value);
+}
+
+async function answerPreCheckout({
+  botApi,
+  answerPreCheckoutQuery,
+  id,
+  approved,
+  languageCode,
+}) {
+  const answer = approved
+    ? { id, ok: true }
+    : {
+        id,
+        ok: false,
+        errorMessage: preCheckoutRejectionText[localeFromLanguageCode(languageCode)],
+      };
+  try {
+    if (typeof answerPreCheckoutQuery !== "function") {
+      throw serviceUnavailableError();
+    }
+    await answerPreCheckoutQuery.call(botApi, answer);
+  } catch {
+    throw serviceUnavailableError();
+  }
+}
+
+function normalizePendingPaymentRow(row, expectedPayload) {
+  try {
+    if (
+      !isRecord(row) ||
+      typeof row.invoice_id !== "string" ||
+      !/^inv_[A-Za-z0-9_-]{22}$/u.test(row.invoice_id) ||
+      row.invoice_payload !== expectedPayload ||
+      !/^pay_[A-Za-z0-9_-]{43}$/u.test(row.invoice_payload) ||
+      typeof row.telegram_user_id !== "string" ||
+      !/^[1-9]\d*$/u.test(row.telegram_user_id) ||
+      !Number.isSafeInteger(Number(row.telegram_user_id)) ||
+      Number(row.telegram_user_id) > telegramMaximumUserId ||
+      row.user_key !== `telegram:${row.telegram_user_id}` ||
+      typeof row.amount !== "number" ||
+      !Number.isInteger(row.amount) ||
+      row.amount < starsAmountLimits.min ||
+      row.amount > starsAmountLimits.max ||
+      row.currency !== "XTR" ||
+      row.status !== "pending" ||
+      row.paid_at !== null ||
+      row.failed_at !== null ||
+      row.refunded_at !== null ||
+      row.telegram_payment_charge_id !== null
+    ) {
+      return null;
+    }
+    validatedTimestamp(row.created_at);
+    validatedTimestamp(row.expires_at);
+    if (row.expires_at <= row.created_at) {
+      return null;
+    }
+    return {
+      telegramUserId: row.telegram_user_id,
+      amount: row.amount,
+      currency: row.currency,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizePaidPaymentRow(row, expectedPayload) {
+  try {
+    if (
+      !hasValidPaymentIdentity(row, expectedPayload) ||
+      row.status !== "paid" ||
+      row.failed_at !== null ||
+      row.refunded_at !== null ||
+      !isBoundedOpaqueId(row.telegram_payment_charge_id)
+    ) {
+      return null;
+    }
+    validatedTimestamp(row.created_at);
+    validatedTimestamp(row.expires_at);
+    validatedTimestamp(row.paid_at);
+    if (
+      row.expires_at <= row.created_at ||
+      row.paid_at < row.created_at
+    ) {
+      return null;
+    }
+    return {
+      telegramUserId: row.telegram_user_id,
+      amount: row.amount,
+      currency: row.currency,
+      chargeId: row.telegram_payment_charge_id,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function hasValidPaymentIdentity(row, expectedPayload) {
+  return (
+    isRecord(row) &&
+    typeof row.invoice_id === "string" &&
+    /^inv_[A-Za-z0-9_-]{22}$/u.test(row.invoice_id) &&
+    row.invoice_payload === expectedPayload &&
+    isPrivateInvoicePayload(row.invoice_payload) &&
+    typeof row.telegram_user_id === "string" &&
+    /^[1-9]\d*$/u.test(row.telegram_user_id) &&
+    Number.isSafeInteger(Number(row.telegram_user_id)) &&
+    Number(row.telegram_user_id) <= telegramMaximumUserId &&
+    row.user_key === `telegram:${row.telegram_user_id}` &&
+    isStarsAmount(row.amount) &&
+    row.currency === "XTR"
+  );
+}
+
+function localeFromLanguageCode(languageCode) {
+  if (typeof languageCode === "string") {
+    const normalized = languageCode.toLowerCase();
+    if (normalized.startsWith("ru")) {
+      return "ru";
+    }
+    if (normalized.startsWith("zh")) {
+      return "zh";
+    }
+  }
+  return "en";
 }
 
 function normalizeCreateRequest(request) {

@@ -36,15 +36,1663 @@ test("Stars support service exports its public limits and factory", () => {
   assert.equal(typeof starsSupportModule.createStarsSupportService, "function");
 });
 
-test("Stars support factory exposes create and lookup operations", () => {
+test("Stars support factory exposes create, lookup, and Telegram update operations", () => {
   const service = starsSupportModule.createStarsSupportService({
     db: { prepare() {} },
     botApi: { createInvoiceLink() {} },
   });
 
-  assert.deepEqual(Object.keys(service).sort(), ["createInvoice", "getInvoice"]);
+  assert.deepEqual(Object.keys(service).sort(), ["createInvoice", "getInvoice", "handleUpdate"]);
   assert.equal(typeof service.createInvoice, "function");
   assert.equal(typeof service.getInvoice, "function");
+  assert.equal(typeof service.handleUpdate, "function");
+});
+
+test("handleUpdate approves an exact pending Stars pre-checkout without mutating it", async (t) => {
+  const database = memoryD1(t);
+  insertPendingInvoice(database, pendingInvoice);
+  const queries = [];
+  const db = {
+    prepare(sql) {
+      const statement = database.prepare(sql);
+      return {
+        bind(...params) {
+          queries.push({ sql, params });
+          return statement.bind(...params);
+        },
+      };
+    },
+  };
+  const answers = [];
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: {
+      createInvoiceLink() {},
+      async answerPreCheckoutQuery(answer) {
+        answers.push(answer);
+      },
+    },
+    now: () => serviceNow,
+  });
+  const before = database.queryOne(
+    "SELECT * FROM star_support_payments WHERE invoice_payload = ?",
+    pendingInvoice.invoicePayload,
+  );
+
+  const result = await service.handleUpdate({
+    update_id: 123,
+    pre_checkout_query: {
+      id: "pre-checkout-valid-1",
+      from: {
+        id: Number(pendingInvoice.telegramUserId),
+        is_bot: false,
+        first_name: "Supporter",
+        language_code: "en-US",
+      },
+      currency: "XTR",
+      total_amount: pendingInvoice.amount,
+      invoice_payload: pendingInvoice.invoicePayload,
+      shipping_option_id: "ignored",
+      order_info: { email: "ignored@example.test" },
+    },
+  });
+
+  assert.deepEqual(answers, [{ id: "pre-checkout-valid-1", ok: true }]);
+  assert.equal(queries.length, 1);
+  assert.match(queries[0].sql, /WHERE invoice_payload = \?/u);
+  assert.deepEqual(queries[0].params, [pendingInvoice.invoicePayload]);
+  assert.deepEqual(
+    database.queryOne(
+      "SELECT * FROM star_support_payments WHERE invoice_payload = ?",
+      pendingInvoice.invoicePayload,
+    ),
+    before,
+  );
+  assert.deepEqual(result, { kind: "pre_checkout", approved: true });
+  assert.deepEqual(Object.keys(result), ["kind", "approved"]);
+  const serialized = JSON.stringify(result);
+  assert.equal(serialized.includes(pendingInvoice.invoicePayload), false);
+  assert.equal(serialized.includes(pendingInvoice.telegramUserId), false);
+});
+
+test("handleUpdate rejects an unknown valid pre-checkout payload with owned text", async (t) => {
+  const database = memoryD1(t);
+  insertPendingInvoice(database, pendingInvoice);
+  const unknownPayload = `pay_${"C".repeat(43)}`;
+  const answers = [];
+  const service = starsSupportModule.createStarsSupportService({
+    db: database,
+    botApi: {
+      createInvoiceLink() {},
+      async answerPreCheckoutQuery(answer) {
+        answers.push(answer);
+      },
+    },
+    now: () => serviceNow,
+  });
+  const before = database.queryAll("SELECT * FROM star_support_payments");
+
+  const result = await service.handleUpdate({
+    pre_checkout_query: {
+      id: "pre-checkout-unknown",
+      from: { id: Number(pendingInvoice.telegramUserId), language_code: "en" },
+      currency: "XTR",
+      total_amount: pendingInvoice.amount,
+      invoice_payload: unknownPayload,
+    },
+  });
+
+  assert.deepEqual(answers, [
+    {
+      id: "pre-checkout-unknown",
+      ok: false,
+      errorMessage: "Payment unavailable. Please create a new invoice.",
+    },
+  ]);
+  assert.deepEqual(database.queryAll("SELECT * FROM star_support_payments"), before);
+  assert.deepEqual(result, { kind: "pre_checkout", approved: false });
+  const serialized = JSON.stringify(result);
+  assert.equal(serialized.includes(unknownPayload), false);
+  assert.equal(serialized.includes(pendingInvoice.telegramUserId), false);
+});
+
+test("handleUpdate rejects non-payable pre-checkout rows without rewriting them", async (t) => {
+  const cases = [
+    {
+      name: "expired",
+      payment: { createdAt: serviceNow - 10, expiresAt: serviceNow },
+    },
+    {
+      name: "created in the future",
+      payment: { createdAt: serviceNow + 1, expiresAt: serviceNow + 901 },
+    },
+    {
+      name: "wrong payer",
+      payment: { telegramUserId: "8710001169", userKey: "telegram:8710001169" },
+    },
+    {
+      name: "wrong amount",
+      query: { total_amount: pendingInvoice.amount + 1 },
+    },
+    {
+      name: "failed",
+      payment: { status: "failed", failedAt: serviceNow - 1 },
+    },
+    {
+      name: "paid",
+      payment: {
+        status: "paid",
+        paidAt: serviceNow - 1,
+        telegramPaymentChargeId: "charge_already_paid",
+      },
+    },
+    {
+      name: "refunded",
+      payment: {
+        status: "refunded",
+        paidAt: serviceNow - 2,
+        refundedAt: serviceNow - 1,
+        telegramPaymentChargeId: "charge_already_refunded",
+      },
+    },
+    {
+      name: "inconsistent owner key",
+      payment: { userKey: "telegram:8710001169" },
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (t) => {
+      const database = memoryD1(t);
+      insertPayment(database, {
+        invoiceId: pendingInvoice.invoiceId,
+        invoicePayload: pendingInvoice.invoicePayload,
+        ...scenario.payment,
+      });
+      const before = database.queryOne(
+        "SELECT * FROM star_support_payments WHERE invoice_payload = ?",
+        pendingInvoice.invoicePayload,
+      );
+      const answers = [];
+      const service = starsSupportModule.createStarsSupportService({
+        db: database,
+        botApi: {
+          createInvoiceLink() {},
+          async answerPreCheckoutQuery(answer) {
+            answers.push(answer);
+          },
+        },
+        now: () => serviceNow,
+      });
+
+      const result = await service.handleUpdate({
+        pre_checkout_query: {
+          id: `pre-checkout-${scenario.name}`,
+          from: { id: Number(pendingInvoice.telegramUserId), language_code: "en" },
+          currency: "XTR",
+          total_amount: pendingInvoice.amount,
+          invoice_payload: pendingInvoice.invoicePayload,
+          ...scenario.query,
+        },
+      });
+
+      assert.equal(answers.length, 1);
+      assert.deepEqual(answers[0], {
+        id: `pre-checkout-${scenario.name}`,
+        ok: false,
+        errorMessage: "Payment unavailable. Please create a new invoice.",
+      });
+      assert.deepEqual(result, { kind: "pre_checkout", approved: false });
+      assert.deepEqual(
+        database.queryOne(
+          "SELECT * FROM star_support_payments WHERE invoice_payload = ?",
+          pendingInvoice.invoicePayload,
+        ),
+        before,
+      );
+    });
+  }
+});
+
+test("handleUpdate answers a valid pre-checkout ID when the private payload is malformed", async () => {
+  let databaseCalls = 0;
+  let nowCalls = 0;
+  const answers = [];
+  const service = starsSupportModule.createStarsSupportService({
+    db: {
+      prepare() {
+        databaseCalls += 1;
+        throw new Error("D1 must not receive malformed payloads");
+      },
+    },
+    botApi: {
+      createInvoiceLink() {},
+      async answerPreCheckoutQuery(answer) {
+        answers.push(answer);
+      },
+    },
+    now() {
+      nowCalls += 1;
+      return serviceNow;
+    },
+  });
+
+  const result = await service.handleUpdate({
+    pre_checkout_query: {
+      id: "pre-checkout-malformed-payload",
+      from: { id: Number(pendingInvoice.telegramUserId), language_code: "en" },
+      currency: "XTR",
+      total_amount: pendingInvoice.amount,
+      invoice_payload: "pay_client_supplied",
+    },
+  });
+
+  assert.equal(databaseCalls, 0);
+  assert.equal(nowCalls, 0);
+  assert.deepEqual(answers, [
+    {
+      id: "pre-checkout-malformed-payload",
+      ok: false,
+      errorMessage: "Payment unavailable. Please create a new invoice.",
+    },
+  ]);
+  assert.deepEqual(result, { kind: "pre_checkout", approved: false });
+});
+
+test("handleUpdate ignores a pre-checkout ID over the 256-byte Bot API bound", async () => {
+  let databaseCalls = 0;
+  const answers = [];
+  const service = starsSupportModule.createStarsSupportService({
+    db: {
+      prepare() {
+        databaseCalls += 1;
+        throw new Error("invalid IDs must not reach D1");
+      },
+    },
+    botApi: {
+      createInvoiceLink() {},
+      async answerPreCheckoutQuery(answer) {
+        answers.push(answer);
+      },
+    },
+    now: () => serviceNow,
+  });
+
+  const result = await service.handleUpdate({
+    pre_checkout_query: {
+      id: "💫".repeat(65),
+      from: { id: Number(pendingInvoice.telegramUserId) },
+      currency: "XTR",
+      total_amount: pendingInvoice.amount,
+      invoice_payload: pendingInvoice.invoicePayload,
+    },
+  });
+
+  assert.equal(databaseCalls, 0);
+  assert.deepEqual(answers, []);
+  assert.deepEqual(result, { kind: "ignored" });
+});
+
+test("handleUpdate structurally rejects malformed pre-checkout fields before D1", async () => {
+  const cases = [
+    { name: "null from", query: { from: null } },
+    { name: "array from", query: { from: [] } },
+    { name: "zero payer", query: { from: { id: 0, language_code: "en" } } },
+    {
+      name: "unsafe payer",
+      query: { from: { id: 2 ** 52, language_code: "en" } },
+    },
+    { name: "string payer", query: { from: { id: "8710001168", language_code: "en" } } },
+    { name: "invalid language type", query: { from: { id: 8710001168, language_code: 42 } } },
+    {
+      name: "oversize language",
+      query: { from: { id: 8710001168, language_code: "x".repeat(36) } },
+    },
+    { name: "wrong currency", query: { currency: "USD" } },
+    { name: "boxed currency", query: { currency: new String("XTR") } },
+    { name: "zero amount", query: { total_amount: 0 } },
+    { name: "large amount", query: { total_amount: 10_001 } },
+    { name: "fractional amount", query: { total_amount: 1.5 } },
+    { name: "string amount", query: { total_amount: "88" } },
+    { name: "NaN amount", query: { total_amount: Number.NaN } },
+    { name: "short payload", query: { invoice_payload: `pay_${"A".repeat(42)}` } },
+    { name: "long payload", query: { invoice_payload: `pay_${"A".repeat(44)}` } },
+    { name: "public invoice ID", query: { invoice_payload: pendingInvoice.invoiceId } },
+    { name: "coercible payload", query: { invoice_payload: { toString: () => pendingInvoice.invoicePayload } } },
+  ];
+  let databaseCalls = 0;
+  let nowCalls = 0;
+  const answers = [];
+  const service = starsSupportModule.createStarsSupportService({
+    db: {
+      prepare() {
+        databaseCalls += 1;
+        throw new Error("malformed queries must not reach D1");
+      },
+    },
+    botApi: {
+      createInvoiceLink() {},
+      async answerPreCheckoutQuery(answer) {
+        answers.push(answer);
+      },
+    },
+    now() {
+      nowCalls += 1;
+      return serviceNow;
+    },
+  });
+
+  for (const [index, scenario] of cases.entries()) {
+    const id = `pre-checkout-malformed-${index}`;
+    const result = await service.handleUpdate({
+      pre_checkout_query: {
+        id,
+        from: { id: Number(pendingInvoice.telegramUserId), language_code: "en" },
+        currency: "XTR",
+        total_amount: pendingInvoice.amount,
+        invoice_payload: pendingInvoice.invoicePayload,
+        ...scenario.query,
+      },
+    });
+    assert.deepEqual(result, { kind: "pre_checkout", approved: false }, scenario.name);
+    assert.deepEqual(
+      answers.at(-1),
+      {
+        id,
+        ok: false,
+        errorMessage: "Payment unavailable. Please create a new invoice.",
+      },
+      scenario.name,
+    );
+  }
+
+  assert.equal(answers.length, cases.length);
+  assert.equal(databaseCalls, 0);
+  assert.equal(nowCalls, 0);
+});
+
+test("handleUpdate ignores malformed pre-checkout IDs it cannot safely answer", async () => {
+  const invalidIds = [
+    null,
+    undefined,
+    "",
+    " \t ",
+    "query\ncontrol",
+    "i".repeat(257),
+    "💫".repeat(65),
+    42,
+    new String("pre-checkout-boxed"),
+  ];
+  let databaseCalls = 0;
+  let nowCalls = 0;
+  let botApiCalls = 0;
+  const service = starsSupportModule.createStarsSupportService({
+    db: {
+      prepare() {
+        databaseCalls += 1;
+      },
+    },
+    botApi: {
+      createInvoiceLink() {},
+      answerPreCheckoutQuery() {
+        botApiCalls += 1;
+      },
+    },
+    now() {
+      nowCalls += 1;
+      return serviceNow;
+    },
+  });
+
+  for (const id of invalidIds) {
+    assert.deepEqual(
+      await service.handleUpdate({
+        pre_checkout_query: {
+          id,
+          from: { id: Number(pendingInvoice.telegramUserId) },
+          currency: "XTR",
+          total_amount: pendingInvoice.amount,
+          invoice_payload: pendingInvoice.invoicePayload,
+        },
+      }),
+      { kind: "ignored" },
+    );
+  }
+  for (const update of [null, [], {}, { pre_checkout_query: null }, { pre_checkout_query: [] }]) {
+    assert.deepEqual(await service.handleUpdate(update), { kind: "ignored" });
+  }
+
+  assert.equal(databaseCalls, 0);
+  assert.equal(nowCalls, 0);
+  assert.equal(botApiCalls, 0);
+});
+
+test("handleUpdate localizes bounded pre-checkout rejection text from Telegram language", async () => {
+  const answers = [];
+  const service = starsSupportModule.createStarsSupportService({
+    db: {
+      prepare() {
+        return {
+          bind() {
+            return { first: async () => null };
+          },
+        };
+      },
+    },
+    botApi: {
+      createInvoiceLink() {},
+      async answerPreCheckoutQuery(answer) {
+        answers.push(answer);
+      },
+    },
+    now: () => serviceNow,
+  });
+  const cases = [
+    ["ru-RU", "Платеж недоступен. Создайте новый счет."],
+    ["RU", "Платеж недоступен. Создайте новый счет."],
+    ["zh-Hans", "付款不可用，请创建新账单。"],
+    ["ZH", "付款不可用，请创建新账单。"],
+    ["fr", "Payment unavailable. Please create a new invoice."],
+    [undefined, "Payment unavailable. Please create a new invoice."],
+  ];
+
+  for (const [index, [languageCode, expectedMessage]] of cases.entries()) {
+    const result = await service.handleUpdate({
+      pre_checkout_query: {
+        id: `pre-checkout-locale-${index}`,
+        from: {
+          id: Number(pendingInvoice.telegramUserId),
+          ...(languageCode === undefined ? {} : { language_code: languageCode }),
+        },
+        currency: "XTR",
+        total_amount: pendingInvoice.amount,
+        invoice_payload: `pay_${String(index).repeat(43)}`,
+      },
+    });
+    assert.deepEqual(result, { kind: "pre_checkout", approved: false });
+    assert.equal(answers.at(-1).errorMessage, expectedMessage);
+    assert.ok(Array.from(answers.at(-1).errorMessage).length <= 200);
+    assert.equal(answers.at(-1).errorMessage.includes(pendingInvoice.invoicePayload), false);
+  }
+});
+
+test("handleUpdate snapshots every pre-checkout update getter exactly once", async (t) => {
+  const database = memoryD1(t);
+  insertPendingInvoice(database, pendingInvoice);
+  const reads = new Map();
+  const stateful = (object, key, first, later, label = key) =>
+    Object.defineProperty(object, key, {
+      enumerable: true,
+      get() {
+        const count = (reads.get(label) ?? 0) + 1;
+        reads.set(label, count);
+        return count === 1 ? first : later;
+      },
+    });
+  const from = {};
+  stateful(from, "id", Number(pendingInvoice.telegramUserId), 1, "payer_id");
+  stateful(from, "language_code", "en", "ru", "language");
+  const query = {};
+  stateful(query, "id", "pre-checkout-getters", "");
+  stateful(query, "from", from, null);
+  stateful(query, "currency", "XTR", "USD");
+  stateful(query, "total_amount", pendingInvoice.amount, 1);
+  stateful(query, "invoice_payload", pendingInvoice.invoicePayload, "pay_attacker");
+  let preCheckoutReads = 0;
+  let messageReads = 0;
+  const update = Object.defineProperties({}, {
+    pre_checkout_query: {
+      enumerable: true,
+      get() {
+        preCheckoutReads += 1;
+        return preCheckoutReads === 1 ? query : null;
+      },
+    },
+    message: {
+      enumerable: true,
+      get() {
+        messageReads += 1;
+        return undefined;
+      },
+    },
+  });
+  const answers = [];
+  const service = starsSupportModule.createStarsSupportService({
+    db: database,
+    botApi: {
+      createInvoiceLink() {},
+      async answerPreCheckoutQuery(answer) {
+        answers.push(answer);
+      },
+    },
+    now: () => serviceNow,
+  });
+
+  const result = await service.handleUpdate(update);
+
+  assert.deepEqual(result, { kind: "pre_checkout", approved: true });
+  assert.deepEqual(answers, [{ id: "pre-checkout-getters", ok: true }]);
+  assert.equal(preCheckoutReads, 1);
+  assert.equal(messageReads, 1);
+  for (const key of ["id", "from", "currency", "total_amount", "invoice_payload", "payer_id", "language"]) {
+    assert.equal(reads.get(key), 1, key);
+  }
+});
+
+test("handleUpdate rejects throwing pre-checkout getters once without leaking them", async () => {
+  let databaseCalls = 0;
+  const answers = [];
+  let currencyReads = 0;
+  const query = Object.defineProperty(
+    {
+      id: "pre-checkout-throwing-getter",
+      from: { id: Number(pendingInvoice.telegramUserId), language_code: "ru" },
+      total_amount: pendingInvoice.amount,
+      invoice_payload: pendingInvoice.invoicePayload,
+    },
+    "currency",
+    {
+      enumerable: true,
+      get() {
+        currencyReads += 1;
+        throw new Error("pay_private charge_private SELECT user_key");
+      },
+    },
+  );
+  const service = starsSupportModule.createStarsSupportService({
+    db: {
+      prepare() {
+        databaseCalls += 1;
+      },
+    },
+    botApi: {
+      createInvoiceLink() {},
+      async answerPreCheckoutQuery(answer) {
+        answers.push(answer);
+      },
+    },
+    now: () => serviceNow,
+  });
+
+  const result = await service.handleUpdate({ pre_checkout_query: query });
+
+  assert.equal(currencyReads, 1);
+  assert.equal(databaseCalls, 0);
+  assert.deepEqual(result, { kind: "pre_checkout", approved: false });
+  assert.deepEqual(answers, [
+    {
+      id: "pre-checkout-throwing-getter",
+      ok: false,
+      errorMessage: "Платеж недоступен. Создайте новый счет.",
+    },
+  ]);
+  assert.equal(JSON.stringify(answers).includes("pay_private"), false);
+});
+
+test("handleUpdate rejects pre-checkout D1 and clock uncertainty after one answer", async (t) => {
+  const cases = [
+    {
+      name: "D1 read failure",
+      db: {
+        prepare() {
+          return {
+            bind() {
+              return {
+                async first() {
+                  throw new Error("SELECT invoice_payload charge_secret");
+                },
+              };
+            },
+          };
+        },
+      },
+      now: () => serviceNow,
+    },
+    {
+      name: "clock failure",
+      db: {
+        prepare() {
+          throw new Error("D1 should not be reached after clock failure");
+        },
+      },
+      now() {
+        throw new Error("clock user_key secret");
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const answers = [];
+      const service = starsSupportModule.createStarsSupportService({
+        db: scenario.db,
+        botApi: {
+          createInvoiceLink() {},
+          async answerPreCheckoutQuery(answer) {
+            answers.push(answer);
+          },
+        },
+        now: scenario.now,
+      });
+      const result = await service.handleUpdate({
+        pre_checkout_query: {
+          id: `pre-checkout-${scenario.name}`,
+          from: { id: Number(pendingInvoice.telegramUserId) },
+          currency: "XTR",
+          total_amount: pendingInvoice.amount,
+          invoice_payload: pendingInvoice.invoicePayload,
+        },
+      });
+
+      assert.deepEqual(result, { kind: "pre_checkout", approved: false });
+      assert.equal(answers.length, 1);
+      assert.equal(answers[0].ok, false);
+    });
+  }
+});
+
+test("handleUpdate redacts a failed pre-checkout Bot API answer", async () => {
+  let answerCalls = 0;
+  const service = starsSupportModule.createStarsSupportService({
+    db: {
+      prepare() {
+        return {
+          bind() {
+            return { first: async () => null };
+          },
+        };
+      },
+    },
+    botApi: {
+      createInvoiceLink() {},
+      async answerPreCheckoutQuery() {
+        answerCalls += 1;
+        throw new Error("timeout bot-token pay_private charge_private");
+      },
+    },
+    now: () => serviceNow,
+  });
+
+  await assertRejectsWithPublicError(
+    service.handleUpdate({
+      pre_checkout_query: {
+        id: "pre-checkout-timeout",
+        from: { id: Number(pendingInvoice.telegramUserId) },
+        currency: "XTR",
+        total_amount: pendingInvoice.amount,
+        invoice_payload: pendingInvoice.invoicePayload,
+      },
+    }),
+    { category: "service_unavailable", status: 503, message: "Stars support is unavailable" },
+  );
+  assert.equal(answerCalls, 1);
+});
+
+test("handleUpdate conditionally records an exact authoritative successful payment", async (t) => {
+  const database = memoryD1(t);
+  insertPendingInvoice(database, pendingInvoice);
+  const statements = [];
+  const db = {
+    prepare(sql) {
+      const statement = database.prepare(sql);
+      return {
+        bind(...params) {
+          statements.push({ sql, params });
+          return statement.bind(...params);
+        },
+      };
+    },
+  };
+  let providerChargeReads = 0;
+  const successfulPayment = Object.defineProperty(
+    {
+      currency: "XTR",
+      total_amount: pendingInvoice.amount,
+      invoice_payload: pendingInvoice.invoicePayload,
+      telegram_payment_charge_id: "tg:charge/exact_-123",
+    },
+    "provider_payment_charge_id",
+    {
+      enumerable: true,
+      get() {
+        providerChargeReads += 1;
+        throw new Error("provider charge must be ignored");
+      },
+    },
+  );
+  let nowCalls = 0;
+  let botApiCalls = 0;
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: {
+      createInvoiceLink() {},
+      answerPreCheckoutQuery() {
+        botApiCalls += 1;
+      },
+    },
+    now() {
+      nowCalls += 1;
+      return serviceNow + 30;
+    },
+  });
+
+  const result = await service.handleUpdate({
+    update_id: 456,
+    message: {
+      message_id: 789,
+      from: { id: Number(pendingInvoice.telegramUserId), language_code: "en" },
+      successful_payment: successfulPayment,
+      text: "ignored",
+    },
+  });
+
+  assert.equal(providerChargeReads, 0);
+  assert.equal(nowCalls, 1);
+  assert.equal(botApiCalls, 0);
+  assert.equal(statements.length, 2);
+  assert.match(statements[0].sql, /WHERE invoice_payload = \?/u);
+  assert.deepEqual(statements[0].params, [pendingInvoice.invoicePayload]);
+  assert.match(statements[1].sql, /SET status = 'paid'/u);
+  assert.match(statements[1].sql, /status = 'pending'/u);
+  assert.match(statements[1].sql, /telegram_user_id = \?/u);
+  assert.match(statements[1].sql, /currency = \?/u);
+  assert.match(statements[1].sql, /amount = \?/u);
+  assert.deepEqual(
+    database.queryOne(
+      `SELECT status, paid_at, telegram_payment_charge_id
+         FROM star_support_payments
+        WHERE invoice_payload = ?`,
+      pendingInvoice.invoicePayload,
+    ),
+    {
+      status: "paid",
+      paid_at: serviceNow + 30,
+      telegram_payment_charge_id: "tg:charge/exact_-123",
+    },
+  );
+  assert.deepEqual(result, {
+    kind: "successful_payment",
+    paid: true,
+    duplicate: false,
+  });
+  assert.deepEqual(Object.keys(result), ["kind", "paid", "duplicate"]);
+  const serialized = JSON.stringify(result);
+  for (const privateValue of [
+    pendingInvoice.invoicePayload,
+    pendingInvoice.telegramUserId,
+    "tg:charge/exact_-123",
+  ]) {
+    assert.equal(serialized.includes(privateValue), false);
+  }
+});
+
+test("handleUpdate accepts exact successful-payment redelivery without another mutation", async (t) => {
+  const database = memoryD1(t);
+  const chargeId = "tg_charge_duplicate_exact";
+  insertPayment(database, {
+    invoiceId: pendingInvoice.invoiceId,
+    invoicePayload: pendingInvoice.invoicePayload,
+    status: "paid",
+    paidAt: serviceNow + 10,
+    telegramPaymentChargeId: chargeId,
+  });
+  let updateStatements = 0;
+  const db = {
+    prepare(sql) {
+      if (/^\s*UPDATE\s/u.test(sql)) {
+        updateStatements += 1;
+      }
+      return database.prepare(sql);
+    },
+  };
+  let nowCalls = 0;
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: { createInvoiceLink() {} },
+    now() {
+      nowCalls += 1;
+      return serviceNow + 30;
+    },
+  });
+  const before = database.queryOne(
+    "SELECT * FROM star_support_payments WHERE invoice_payload = ?",
+    pendingInvoice.invoicePayload,
+  );
+
+  const result = await service.handleUpdate({
+    message: {
+      from: { id: Number(pendingInvoice.telegramUserId) },
+      successful_payment: {
+        currency: "XTR",
+        total_amount: pendingInvoice.amount,
+        invoice_payload: pendingInvoice.invoicePayload,
+        telegram_payment_charge_id: chargeId,
+      },
+    },
+  });
+
+  assert.equal(updateStatements, 0);
+  assert.equal(nowCalls, 0);
+  assert.deepEqual(
+    database.queryOne(
+      "SELECT * FROM star_support_payments WHERE invoice_payload = ?",
+      pendingInvoice.invoicePayload,
+    ),
+    before,
+  );
+  assert.deepEqual(result, {
+    kind: "successful_payment",
+    paid: true,
+    duplicate: true,
+  });
+  assert.deepEqual(Object.keys(result), ["kind", "paid", "duplicate"]);
+});
+
+test("handleUpdate verifies exact paid state after a zero-change conditional update race", async (t) => {
+  const database = memoryD1(t);
+  insertPendingInvoice(database, pendingInvoice);
+  const chargeId = "tg_charge_race_exact";
+  let updateAttempts = 0;
+  let reads = 0;
+  const db = {
+    prepare(sql) {
+      if (/^\s*UPDATE\s/u.test(sql)) {
+        return {
+          bind() {
+            return {
+              async run() {
+                updateAttempts += 1;
+                database.execute(
+                  `UPDATE star_support_payments
+                      SET status = 'paid', paid_at = ?, telegram_payment_charge_id = ?
+                    WHERE invoice_payload = ? AND status = 'pending'`,
+                  serviceNow + 30,
+                  chargeId,
+                  pendingInvoice.invoicePayload,
+                );
+                return { success: true, meta: { changes: 0 } };
+              },
+            };
+          },
+        };
+      }
+      const statement = database.prepare(sql);
+      return {
+        bind(...params) {
+          const bound = statement.bind(...params);
+          return {
+            async first() {
+              reads += 1;
+              return bound.first();
+            },
+          };
+        },
+      };
+    },
+  };
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: { createInvoiceLink() {} },
+    now: () => serviceNow + 30,
+  });
+
+  const result = await service.handleUpdate({
+    message: {
+      from: { id: Number(pendingInvoice.telegramUserId) },
+      successful_payment: {
+        currency: "XTR",
+        total_amount: pendingInvoice.amount,
+        invoice_payload: pendingInvoice.invoicePayload,
+        telegram_payment_charge_id: chargeId,
+      },
+    },
+  });
+
+  assert.equal(updateAttempts, 1);
+  assert.equal(reads, 2);
+  assert.deepEqual(result, {
+    kind: "successful_payment",
+    paid: true,
+    duplicate: true,
+  });
+  assert.deepEqual(
+    database.queryOne(
+      `SELECT status, paid_at, telegram_payment_charge_id
+         FROM star_support_payments
+        WHERE invoice_payload = ?`,
+      pendingInvoice.invoicePayload,
+    ),
+    {
+      status: "paid",
+      paid_at: serviceNow + 30,
+      telegram_payment_charge_id: chargeId,
+    },
+  );
+});
+
+test("handleUpdate detects a Telegram charge already used by another invoice", async (t) => {
+  const database = memoryD1(t);
+  const chargeId = "tg_charge_unique_conflict";
+  insertPendingInvoice(database, pendingInvoice);
+  insertPayment(database, {
+    invoiceId: `inv_${"D".repeat(22)}`,
+    invoicePayload: `pay_${"E".repeat(43)}`,
+    userKey: "telegram:8710001169",
+    telegramUserId: "8710001169",
+    status: "paid",
+    paidAt: serviceNow + 10,
+    telegramPaymentChargeId: chargeId,
+  });
+  const before = database.queryOne(
+    "SELECT * FROM star_support_payments WHERE invoice_payload = ?",
+    pendingInvoice.invoicePayload,
+  );
+  const service = starsSupportModule.createStarsSupportService({
+    db: database,
+    botApi: { createInvoiceLink() {} },
+    now: () => serviceNow + 30,
+  });
+
+  const result = await service.handleUpdate({
+    message: {
+      from: { id: Number(pendingInvoice.telegramUserId) },
+      successful_payment: {
+        currency: "XTR",
+        total_amount: pendingInvoice.amount,
+        invoice_payload: pendingInvoice.invoicePayload,
+        telegram_payment_charge_id: chargeId,
+      },
+    },
+  });
+
+  assert.deepEqual(result, { kind: "ignored" });
+  assert.deepEqual(Object.keys(result), ["kind"]);
+  assert.deepEqual(
+    database.queryOne(
+      "SELECT * FROM star_support_payments WHERE invoice_payload = ?",
+      pendingInvoice.invoicePayload,
+    ),
+    before,
+  );
+  const serialized = JSON.stringify(result);
+  assert.equal(serialized.includes(chargeId), false);
+  assert.equal(serialized.includes(pendingInvoice.invoicePayload), false);
+});
+
+test("handleUpdate treats a contradictory D1 update result as retryable uncertainty", async (t) => {
+  const database = memoryD1(t);
+  insertPendingInvoice(database, pendingInvoice);
+  let reads = 0;
+  const db = {
+    prepare(sql) {
+      if (/^\s*UPDATE\s/u.test(sql)) {
+        return {
+          bind() {
+            return {
+              async run() {
+                return { success: false, meta: { changes: 1 } };
+              },
+            };
+          },
+        };
+      }
+      const statement = database.prepare(sql);
+      return {
+        bind(...params) {
+          const bound = statement.bind(...params);
+          return {
+            async first() {
+              reads += 1;
+              return bound.first();
+            },
+          };
+        },
+      };
+    },
+  };
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: { createInvoiceLink() {} },
+    now: () => serviceNow + 30,
+  });
+
+  await assertRejectsWithPublicError(
+    service.handleUpdate({
+      message: {
+        from: { id: Number(pendingInvoice.telegramUserId) },
+        successful_payment: {
+          currency: "XTR",
+          total_amount: pendingInvoice.amount,
+          invoice_payload: pendingInvoice.invoicePayload,
+          telegram_payment_charge_id: "tg_charge_contradictory_result",
+        },
+      },
+    }),
+    { category: "service_unavailable", status: 503, message: "Stars support is unavailable" },
+  );
+
+  assert.equal(reads, 3);
+  assert.deepEqual(
+    database.queryOne(
+      `SELECT status, paid_at, telegram_payment_charge_id
+         FROM star_support_payments
+        WHERE invoice_payload = ?`,
+      pendingInvoice.invoicePayload,
+    ),
+    { status: "pending", paid_at: null, telegram_payment_charge_id: null },
+  );
+});
+
+test("handleUpdate ignores malformed successful-payment structures before D1", async () => {
+  const validPayment = {
+    currency: "XTR",
+    total_amount: pendingInvoice.amount,
+    invoice_payload: pendingInvoice.invoicePayload,
+    telegram_payment_charge_id: "tg_charge_structural",
+  };
+  const cases = [
+    { name: "null message", update: { message: null } },
+    { name: "array message", update: { message: [] } },
+    { name: "top-level payment", update: { successful_payment: validPayment } },
+    { name: "null payment", update: { message: { from: { id: 8710001168 }, successful_payment: null } } },
+    { name: "array payment", update: { message: { from: { id: 8710001168 }, successful_payment: [] } } },
+    { name: "null from", update: { message: { from: null, successful_payment: validPayment } } },
+    { name: "array from", update: { message: { from: [], successful_payment: validPayment } } },
+    { name: "zero payer", update: { message: { from: { id: 0 }, successful_payment: validPayment } } },
+    { name: "unsafe payer", update: { message: { from: { id: 2 ** 52 }, successful_payment: validPayment } } },
+    { name: "string payer", update: { message: { from: { id: "8710001168" }, successful_payment: validPayment } } },
+    {
+      name: "wrong currency",
+      update: { message: { from: { id: 8710001168 }, successful_payment: { ...validPayment, currency: "USD" } } },
+    },
+    {
+      name: "boxed currency",
+      update: { message: { from: { id: 8710001168 }, successful_payment: { ...validPayment, currency: new String("XTR") } } },
+    },
+    {
+      name: "zero amount",
+      update: { message: { from: { id: 8710001168 }, successful_payment: { ...validPayment, total_amount: 0 } } },
+    },
+    {
+      name: "large amount",
+      update: { message: { from: { id: 8710001168 }, successful_payment: { ...validPayment, total_amount: 10_001 } } },
+    },
+    {
+      name: "fractional amount",
+      update: { message: { from: { id: 8710001168 }, successful_payment: { ...validPayment, total_amount: 1.5 } } },
+    },
+    {
+      name: "string amount",
+      update: { message: { from: { id: 8710001168 }, successful_payment: { ...validPayment, total_amount: "88" } } },
+    },
+    {
+      name: "malformed payload",
+      update: { message: { from: { id: 8710001168 }, successful_payment: { ...validPayment, invoice_payload: "pay_client" } } },
+    },
+    {
+      name: "coercible payload",
+      update: {
+        message: {
+          from: { id: 8710001168 },
+          successful_payment: { ...validPayment, invoice_payload: { toString: () => pendingInvoice.invoicePayload } },
+        },
+      },
+    },
+    {
+      name: "empty charge",
+      update: { message: { from: { id: 8710001168 }, successful_payment: { ...validPayment, telegram_payment_charge_id: "" } } },
+    },
+    {
+      name: "blank charge",
+      update: { message: { from: { id: 8710001168 }, successful_payment: { ...validPayment, telegram_payment_charge_id: "   " } } },
+    },
+    {
+      name: "control charge",
+      update: { message: { from: { id: 8710001168 }, successful_payment: { ...validPayment, telegram_payment_charge_id: "charge\nsecret" } } },
+    },
+    {
+      name: "oversize charge",
+      update: { message: { from: { id: 8710001168 }, successful_payment: { ...validPayment, telegram_payment_charge_id: "c".repeat(257) } } },
+    },
+    {
+      name: "multibyte oversize charge",
+      update: { message: { from: { id: 8710001168 }, successful_payment: { ...validPayment, telegram_payment_charge_id: "星".repeat(86) } } },
+    },
+    {
+      name: "numeric charge",
+      update: { message: { from: { id: 8710001168 }, successful_payment: { ...validPayment, telegram_payment_charge_id: 42 } } },
+    },
+    {
+      name: "coercible charge",
+      update: {
+        message: {
+          from: { id: 8710001168 },
+          successful_payment: { ...validPayment, telegram_payment_charge_id: { toString: () => "charge" } },
+        },
+      },
+    },
+  ];
+  let databaseCalls = 0;
+  let nowCalls = 0;
+  let botApiCalls = 0;
+  const service = starsSupportModule.createStarsSupportService({
+    db: {
+      prepare() {
+        databaseCalls += 1;
+      },
+    },
+    botApi: {
+      createInvoiceLink() {},
+      answerPreCheckoutQuery() {
+        botApiCalls += 1;
+      },
+    },
+    now() {
+      nowCalls += 1;
+      return serviceNow;
+    },
+  });
+
+  for (const scenario of cases) {
+    assert.deepEqual(await service.handleUpdate(scenario.update), { kind: "ignored" }, scenario.name);
+  }
+
+  assert.equal(databaseCalls, 0);
+  assert.equal(nowCalls, 0);
+  assert.equal(botApiCalls, 0);
+});
+
+test("handleUpdate snapshots successful-payment getters once and ignores provider charge", async (t) => {
+  const database = memoryD1(t);
+  insertPendingInvoice(database, pendingInvoice);
+  const reads = new Map();
+  const stateful = (object, key, first, later, label = key) =>
+    Object.defineProperty(object, key, {
+      enumerable: true,
+      get() {
+        const count = (reads.get(label) ?? 0) + 1;
+        reads.set(label, count);
+        return count === 1 ? first : later;
+      },
+    });
+  const from = {};
+  stateful(from, "id", Number(pendingInvoice.telegramUserId), 1, "payer_id");
+  const payment = {};
+  stateful(payment, "currency", "XTR", "USD");
+  stateful(payment, "total_amount", pendingInvoice.amount, 1);
+  stateful(payment, "invoice_payload", pendingInvoice.invoicePayload, `pay_${"Z".repeat(43)}`);
+  stateful(payment, "telegram_payment_charge_id", "tg_charge_getters", "tg_charge_changed");
+  let providerChargeReads = 0;
+  Object.defineProperty(payment, "provider_payment_charge_id", {
+    enumerable: true,
+    get() {
+      providerChargeReads += 1;
+      throw new Error("must remain unread");
+    },
+  });
+  const message = {};
+  stateful(message, "from", from, null, "message_from");
+  stateful(message, "successful_payment", payment, null);
+  const update = {};
+  stateful(update, "pre_checkout_query", undefined, { id: "ambiguous" });
+  stateful(update, "message", message, null, "update_message");
+  const service = starsSupportModule.createStarsSupportService({
+    db: database,
+    botApi: { createInvoiceLink() {} },
+    now: () => serviceNow + 30,
+  });
+
+  const result = await service.handleUpdate(update);
+
+  assert.deepEqual(result, {
+    kind: "successful_payment",
+    paid: true,
+    duplicate: false,
+  });
+  for (const key of [
+    "pre_checkout_query",
+    "update_message",
+    "message_from",
+    "successful_payment",
+    "payer_id",
+    "currency",
+    "total_amount",
+    "invoice_payload",
+    "telegram_payment_charge_id",
+  ]) {
+    assert.equal(reads.get(key), 1, key);
+  }
+  assert.equal(providerChargeReads, 0);
+  assert.deepEqual(
+    database.queryOne(
+      "SELECT status, telegram_payment_charge_id FROM star_support_payments",
+    ),
+    { status: "paid", telegram_payment_charge_id: "tg_charge_getters" },
+  );
+});
+
+test("handleUpdate fails closed for payment mismatches and terminal rows without writes", async (t) => {
+  const cases = [
+    { name: "wrong payer", update: { payerId: 8710001169 } },
+    { name: "wrong amount", update: { amount: pendingInvoice.amount + 1 } },
+    { name: "unknown payload", update: { payload: `pay_${"U".repeat(43)}` } },
+    { name: "failed row", payment: { status: "failed", failedAt: serviceNow + 1 } },
+    {
+      name: "refunded row",
+      payment: {
+        status: "refunded",
+        paidAt: serviceNow + 1,
+        refundedAt: serviceNow + 2,
+        telegramPaymentChargeId: "tg_charge_refunded",
+      },
+    },
+    {
+      name: "paid with different charge",
+      payment: {
+        status: "paid",
+        paidAt: serviceNow + 1,
+        telegramPaymentChargeId: "tg_charge_original",
+      },
+      update: { chargeId: "tg_charge_conflicting" },
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (t) => {
+      const database = memoryD1(t);
+      insertPayment(database, {
+        invoiceId: pendingInvoice.invoiceId,
+        invoicePayload: pendingInvoice.invoicePayload,
+        ...scenario.payment,
+      });
+      const before = database.queryAll("SELECT * FROM star_support_payments");
+      let updates = 0;
+      let nowCalls = 0;
+      const db = {
+        prepare(sql) {
+          if (/^\s*UPDATE\s/u.test(sql)) {
+            updates += 1;
+          }
+          return database.prepare(sql);
+        },
+      };
+      const service = starsSupportModule.createStarsSupportService({
+        db,
+        botApi: { createInvoiceLink() {} },
+        now() {
+          nowCalls += 1;
+          return serviceNow + 30;
+        },
+      });
+
+      const result = await service.handleUpdate({
+        message: {
+          from: { id: scenario.update?.payerId ?? Number(pendingInvoice.telegramUserId) },
+          successful_payment: {
+            currency: "XTR",
+            total_amount: scenario.update?.amount ?? pendingInvoice.amount,
+            invoice_payload: scenario.update?.payload ?? pendingInvoice.invoicePayload,
+            telegram_payment_charge_id: scenario.update?.chargeId ?? "tg_charge_mismatch_matrix",
+          },
+        },
+      });
+
+      assert.deepEqual(result, { kind: "ignored" });
+      assert.equal(updates, 0);
+      assert.equal(nowCalls, 0);
+      assert.deepEqual(database.queryAll("SELECT * FROM star_support_payments"), before);
+    });
+  }
+});
+
+test("handleUpdate rejects malformed stored payment rows without rewriting them", async () => {
+  const validRow = {
+    invoice_id: pendingInvoice.invoiceId,
+    invoice_payload: pendingInvoice.invoicePayload,
+    user_key: pendingInvoice.userKey,
+    telegram_user_id: pendingInvoice.telegramUserId,
+    amount: pendingInvoice.amount,
+    currency: "XTR",
+    status: "pending",
+    created_at: pendingInvoice.createdAt,
+    expires_at: pendingInvoice.expiresAt,
+    paid_at: null,
+    failed_at: null,
+    refunded_at: null,
+    telegram_payment_charge_id: null,
+  };
+  const rows = [
+    null,
+    [],
+    {},
+    { ...validRow, invoice_id: "inv_bad" },
+    { ...validRow, invoice_payload: `pay_${"W".repeat(43)}` },
+    { ...validRow, user_key: "telegram:8710001169" },
+    { ...validRow, telegram_user_id: 8710001168 },
+    { ...validRow, telegram_user_id: "01" },
+    { ...validRow, amount: "88" },
+    { ...validRow, amount: 0 },
+    { ...validRow, currency: "USD" },
+    { ...validRow, status: "new" },
+    { ...validRow, created_at: String(serviceNow) },
+    { ...validRow, expires_at: validRow.created_at },
+    { ...validRow, paid_at: serviceNow },
+    { ...validRow, failed_at: serviceNow },
+    { ...validRow, refunded_at: serviceNow },
+    { ...validRow, telegram_payment_charge_id: "tg_charge_existing" },
+  ];
+
+  for (const row of rows) {
+    let updates = 0;
+    let nowCalls = 0;
+    const service = starsSupportModule.createStarsSupportService({
+      db: {
+        prepare(sql) {
+          if (/^\s*UPDATE\s/u.test(sql)) {
+            updates += 1;
+          }
+          return {
+            bind() {
+              return { first: async () => row };
+            },
+          };
+        },
+      },
+      botApi: { createInvoiceLink() {} },
+      now() {
+        nowCalls += 1;
+        return serviceNow + 30;
+      },
+    });
+
+    assert.deepEqual(
+      await service.handleUpdate({
+        message: {
+          from: { id: Number(pendingInvoice.telegramUserId) },
+          successful_payment: {
+            currency: "XTR",
+            total_amount: pendingInvoice.amount,
+            invoice_payload: pendingInvoice.invoicePayload,
+            telegram_payment_charge_id: "tg_charge_malformed_row",
+          },
+        },
+      }),
+      { kind: "ignored" },
+    );
+    assert.equal(updates, 0);
+    assert.equal(nowCalls, 0);
+  }
+});
+
+test("handleUpdate redacts transient successful-payment D1 failures", async (t) => {
+  const initialReadService = starsSupportModule.createStarsSupportService({
+    db: {
+      prepare() {
+        return {
+          bind() {
+            return {
+              async first() {
+                throw new Error("SELECT invoice_payload charge_private user_key");
+              },
+            };
+          },
+        };
+      },
+    },
+    botApi: { createInvoiceLink() {} },
+    now: () => serviceNow + 30,
+  });
+  const validUpdate = {
+    message: {
+      from: { id: Number(pendingInvoice.telegramUserId) },
+      successful_payment: {
+        currency: "XTR",
+        total_amount: pendingInvoice.amount,
+        invoice_payload: pendingInvoice.invoicePayload,
+        telegram_payment_charge_id: "tg_charge_transient",
+      },
+    },
+  };
+  await assertRejectsWithPublicError(initialReadService.handleUpdate(validUpdate), {
+    category: "service_unavailable",
+    status: 503,
+    message: "Stars support is unavailable",
+  });
+
+  await t.test("failed update remains pending", async (t) => {
+    const database = memoryD1(t);
+    insertPendingInvoice(database, pendingInvoice);
+    const db = {
+      prepare(sql) {
+        if (/^\s*UPDATE\s/u.test(sql)) {
+          return {
+            bind() {
+              return {
+                async run() {
+                  throw new Error("D1 timeout charge_private");
+                },
+              };
+            },
+          };
+        }
+        return database.prepare(sql);
+      },
+    };
+    const service = starsSupportModule.createStarsSupportService({
+      db,
+      botApi: { createInvoiceLink() {} },
+      now: () => serviceNow + 30,
+    });
+
+    await assertRejectsWithPublicError(service.handleUpdate(validUpdate), {
+      category: "service_unavailable",
+      status: 503,
+      message: "Stars support is unavailable",
+    });
+    assert.deepEqual(
+      database.queryOne("SELECT status, telegram_payment_charge_id FROM star_support_payments"),
+      { status: "pending", telegram_payment_charge_id: null },
+    );
+  });
+});
+
+test("handleUpdate accepts an ambiguous D1 failure only after exact paid re-read", async (t) => {
+  const database = memoryD1(t);
+  insertPendingInvoice(database, pendingInvoice);
+  const chargeId = "tg_charge_ambiguous_commit";
+  let updateAttempts = 0;
+  const db = {
+    prepare(sql) {
+      if (/^\s*UPDATE\s/u.test(sql)) {
+        return {
+          bind() {
+            return {
+              async run() {
+                updateAttempts += 1;
+                database.execute(
+                  `UPDATE star_support_payments
+                      SET status = 'paid', paid_at = ?, telegram_payment_charge_id = ?
+                    WHERE invoice_payload = ? AND status = 'pending'`,
+                  serviceNow + 30,
+                  chargeId,
+                  pendingInvoice.invoicePayload,
+                );
+                throw new Error("connection closed after commit charge_private");
+              },
+            };
+          },
+        };
+      }
+      return database.prepare(sql);
+    },
+  };
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: { createInvoiceLink() {} },
+    now: () => serviceNow + 30,
+  });
+
+  const result = await service.handleUpdate({
+    message: {
+      from: { id: Number(pendingInvoice.telegramUserId) },
+      successful_payment: {
+        currency: "XTR",
+        total_amount: pendingInvoice.amount,
+        invoice_payload: pendingInvoice.invoicePayload,
+        telegram_payment_charge_id: chargeId,
+      },
+    },
+  });
+
+  assert.equal(updateAttempts, 1);
+  assert.deepEqual(result, {
+    kind: "successful_payment",
+    paid: true,
+    duplicate: true,
+  });
+});
+
+test("handleUpdate never records paid_at before the stored invoice creation time", async (t) => {
+  const database = memoryD1(t);
+  insertPendingInvoice(database, pendingInvoice);
+  let updateStatements = 0;
+  const db = {
+    prepare(sql) {
+      if (/^\s*UPDATE\s/u.test(sql)) {
+        updateStatements += 1;
+      }
+      return database.prepare(sql);
+    },
+  };
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: { createInvoiceLink() {} },
+    now: () => pendingInvoice.createdAt - 1,
+  });
+
+  await assertRejectsWithPublicError(
+    service.handleUpdate({
+      message: {
+        from: { id: Number(pendingInvoice.telegramUserId) },
+        successful_payment: {
+          currency: "XTR",
+          total_amount: pendingInvoice.amount,
+          invoice_payload: pendingInvoice.invoicePayload,
+          telegram_payment_charge_id: "tg_charge_clock_regression",
+        },
+      },
+    }),
+    { category: "service_unavailable", status: 503, message: "Stars support is unavailable" },
+  );
+
+  assert.equal(updateStatements, 0);
+  assert.deepEqual(
+    database.queryOne(
+      "SELECT status, paid_at, telegram_payment_charge_id FROM star_support_payments",
+    ),
+    { status: "pending", paid_at: null, telegram_payment_charge_id: null },
+  );
+});
+
+test("handleUpdate ignores unknown updates and fails ambiguous payment updates closed", async () => {
+  let databaseCalls = 0;
+  let nowCalls = 0;
+  const answers = [];
+  const service = starsSupportModule.createStarsSupportService({
+    db: {
+      prepare() {
+        databaseCalls += 1;
+        throw new Error("ignored updates must not reach D1");
+      },
+    },
+    botApi: {
+      createInvoiceLink() {},
+      async answerPreCheckoutQuery(answer) {
+        answers.push(answer);
+      },
+    },
+    now() {
+      nowCalls += 1;
+      return serviceNow;
+    },
+  });
+  for (const update of [
+    { update_id: 1 },
+    { message: { text: "ordinary message", from: { id: 8710001168 } } },
+    { callback_query: { id: "callback", data: pendingInvoice.invoicePayload } },
+    { shipping_query: { id: "shipping" } },
+  ]) {
+    assert.deepEqual(await service.handleUpdate(update), { kind: "ignored" });
+  }
+
+  const ambiguousResult = await service.handleUpdate({
+    pre_checkout_query: {
+      id: "pre-checkout-ambiguous",
+      from: { id: Number(pendingInvoice.telegramUserId), language_code: "zh" },
+      currency: "XTR",
+      total_amount: pendingInvoice.amount,
+      invoice_payload: pendingInvoice.invoicePayload,
+    },
+    message: {
+      from: { id: Number(pendingInvoice.telegramUserId) },
+      successful_payment: {
+        currency: "XTR",
+        total_amount: pendingInvoice.amount,
+        invoice_payload: pendingInvoice.invoicePayload,
+        telegram_payment_charge_id: "tg_charge_ambiguous_update",
+      },
+    },
+  });
+  assert.deepEqual(ambiguousResult, { kind: "pre_checkout", approved: false });
+  assert.deepEqual(answers, [
+    {
+      id: "pre-checkout-ambiguous",
+      ok: false,
+      errorMessage: "付款不可用，请创建新账单。",
+    },
+  ]);
+
+  let preCheckoutReads = 0;
+  const uncertainUpdate = Object.defineProperty(
+    {
+      message: {
+        from: { id: Number(pendingInvoice.telegramUserId) },
+        successful_payment: {
+          currency: "XTR",
+          total_amount: pendingInvoice.amount,
+          invoice_payload: pendingInvoice.invoicePayload,
+          telegram_payment_charge_id: "tg_charge_uncertain_update",
+        },
+      },
+    },
+    "pre_checkout_query",
+    {
+      get() {
+        preCheckoutReads += 1;
+        throw new Error("ambiguous private payload");
+      },
+    },
+  );
+  assert.deepEqual(await service.handleUpdate(uncertainUpdate), { kind: "ignored" });
+  assert.equal(preCheckoutReads, 1);
+  assert.equal(databaseCalls, 0);
+  assert.equal(nowCalls, 0);
+
+  for (const result of [
+    { kind: "ignored" },
+    ambiguousResult,
+    { kind: "successful_payment", paid: true, duplicate: false },
+    { kind: "successful_payment", paid: true, duplicate: true },
+  ]) {
+    const serialized = JSON.stringify(result);
+    for (const privateValue of [
+      pendingInvoice.invoicePayload,
+      pendingInvoice.telegramUserId,
+      "tg_charge_ambiguous_update",
+    ]) {
+      assert.equal(serialized.includes(privateValue), false);
+    }
+  }
 });
 
 test("createInvoice persists an owner-bound pending row before requesting the link", async (t) => {
