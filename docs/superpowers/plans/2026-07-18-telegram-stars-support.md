@@ -585,9 +585,12 @@ language. `/terms` links to:
 https://agent-axiom.github.io/agents-salvo/support.html
 ```
 
-Support commands link to GitHub Issues, say Telegram Support cannot resolve the
-purchase, and warn users not to publish session tokens, invoice payloads, or
-charge IDs. Other updates return `{ ok: true }` without Bot API calls.
+`/support` links to GitHub Issues, says Telegram Support cannot resolve the
+purchase, and warns users not to publish session tokens, invoice payloads, or
+charge IDs. `/paysupport` additionally queries at most three paid/refunded rows
+owned by the private-chat sender and returns only their opaque invoice IDs as
+safe support references, amount, and status. Other updates return `{ ok: true }`
+without Bot API calls.
 
 - [ ] **Step 7: Add Stars tests to critical Worker coverage**
 
@@ -803,7 +806,7 @@ Add behavior scenarios proving:
 - the support row is absent on web, Android, and iOS;
 - it is present only when `getPlatform() === "telegram"` and
   `supportsInvoice() === true`;
-- opening the modal selects `88` by default;
+- opening the modal does not preselect an amount and may be closed immediately;
 - preset buttons select `8`, `88`, and `360`;
 - custom input accepts ASCII integer digits only and validates 1 through 10,000;
 - fractional, localized digits, exponent notation, signs, whitespace-only,
@@ -828,7 +831,7 @@ Add a state branch that never touches game state:
 support: {
   open: false,
   step: "amount", // amount | confirm | processing | result
-  amount: 88,
+  amount: null,
   customAmount: "",
   useCustom: false,
   acceptedTerms: false,
@@ -932,8 +935,10 @@ assert the page explains:
 - users must not publish session tokens, invoice payloads, or charge IDs.
 
 Extend privacy tests to require disclosure of amount, currency, payment status,
-Telegram payer ID, charge ID, timestamps, verification/dispute/refund purposes,
-and no public profile/leaderboard use in all locales.
+invoice ID, invoice payload, private user key, Telegram payer ID, charge ID,
+timestamps, verification/dispute/refund purposes, retention criteria, and no
+public profile/leaderboard use in all locales. Terms direct a payer to private
+`/paysupport`, then allow only its safe support reference in a public issue.
 
 - [ ] **Step 2: Run the tests and confirm the terms page is missing**
 

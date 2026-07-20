@@ -29,6 +29,9 @@ benefits. A user must explicitly accept the support terms before the payment
 button becomes available. A confirmation step repeats the exact amount before
 the native Telegram invoice opens.
 
+No amount is preselected. The user may close the modal without selecting an
+amount or accepting the terms, and doing so never affects access to the game.
+
 The feature does not add supporter totals, supporter identity, badges, rewards,
 public recognition, analytics, advertising, or recurring payments.
 
@@ -80,6 +83,9 @@ The support modal contains three preset amount buttons and a `Custom amount`
 numeric input. The input accepts ASCII decimal digits only, has a step of one,
 and validates the inclusive range 1-10,000. Localized error text appears next to
 the input without changing layout.
+
+Choosing an amount is required only to initiate a support payment. Closing or
+leaving the modal without a choice is always available.
 
 The terms checkbox links to the public support terms. The exact amount is shown
 again on the final confirmation button. A user can return to amount selection
@@ -246,18 +252,25 @@ A public localized support-terms page explains:
 - the project's support contact.
 
 The privacy notice is updated in English, Russian, and Chinese to disclose the
-minimum payment records stored for verification, receipts, disputes, and
-refunds.
+stored invoice ID, invoice payload, private user key, payer ID, charge ID,
+amount, status, timestamps, purposes, and retention criteria. Expired or failed
+unpaid rows may be removed after 30 days. Paid and refunded rows remain until
+account deletion is requested unless an unresolved dispute, refund, or required
+verification still needs them.
 
 The bot webhook answers:
 
 - `/terms` with the public terms URL;
-- `/support` and `/paysupport` with the GitHub Issues support URL, safe reporting
-  instructions, and the clarification that Telegram Support cannot resolve the
-  purchase.
+- `/support` with the GitHub Issues support URL, safe reporting instructions,
+  and the clarification that Telegram Support cannot resolve the purchase;
+- `/paysupport` with the same guidance plus up to three completed payments owned
+  by the private-chat sender, represented only by opaque invoice IDs safe to use
+  as public support references, amount, and paid/refunded status.
 
 Users are told not to publish session tokens, invoice payloads, or payment charge
-identifiers in public issues.
+identifiers in public issues. They may publish only the support reference
+returned by `/paysupport`; it cannot redirect a refund away from the original
+stored Telegram payer.
 
 ## Security Properties
 

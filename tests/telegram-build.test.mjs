@@ -275,12 +275,16 @@ function createDeadRecoveryClaim(paths, token) {
   return owner;
 }
 
-test("build emits web and Telegram shells with one shared hashed app and stylesheet", () => {
+test("build emits web and Telegram shells with one shared hashed app and stylesheet", async () => {
   const { output, result } = build();
   try {
     assertBuildSucceeded(result);
     assert.equal(existsSync(join(output, "index.html")), true);
     assert.equal(existsSync(join(output, "telegram/index.html")), true);
+    assert.equal(existsSync(join(output, "support.html")), true);
+    const supportTerms = readFileSync(join(output, "support.html"), "utf8");
+    assert.match(supportTerms, /rel="canonical" href="https:\/\/agent-axiom\.github\.io\/agents-salvo\/support\.html"/u);
+    assert.match(supportTerms, /<section id="ru"[\s\S]*<section id="en"[\s\S]*<section id="zh-CN"/u);
 
     const web = readFileSync(join(output, "index.html"), "utf8");
     const telegram = readFileSync(join(output, "telegram/index.html"), "utf8");
@@ -336,6 +340,10 @@ test("build emits web and Telegram shells with one shared hashed app and stylesh
     );
     assert.equal(existsSync(join(output, "app.js")), false);
     assert.equal(existsSync(join(output, "styles.css")), false);
+    const { default: capacitorConfig } = await import(`${pathToFileURL(join(root, "capacitor.config.ts")).href}?build=${Date.now()}`);
+    assert.equal(capacitorConfig.webDir, "dist", "Android and iOS must consume the shared dist assets");
+    assert.equal(typeof capacitorConfig.android, "object");
+    assert.equal(typeof capacitorConfig.ios, "object");
   } finally {
     rmSync(output, { recursive: true, force: true });
   }
