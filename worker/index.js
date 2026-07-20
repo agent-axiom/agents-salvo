@@ -790,16 +790,17 @@ function startRematch(room, preset) {
 }
 
 function routeRequest(url) {
-  if (url.search === "" && url.pathname === "/payments/stars/invoices") {
+  const queryFree = url.search === "" && !url.href.endsWith("?");
+  if (queryFree && url.pathname === "/payments/stars/invoices") {
     return { kind: "starsInvoiceCreate" };
   }
-  if (url.search === "") {
+  if (queryFree) {
     const starsInvoiceMatch = /^\/payments\/stars\/invoices\/(inv_[A-Za-z0-9_-]{22})$/u.exec(url.pathname);
     if (starsInvoiceMatch) {
       return { kind: "starsInvoiceStatus", invoiceId: starsInvoiceMatch[1] };
     }
   }
-  if (url.search === "" && url.pathname === "/telegram/webhook") {
+  if (queryFree && url.pathname === "/telegram/webhook") {
     return { kind: "telegramWebhook" };
   }
   if (url.pathname === "/auth/telegram/config") {
