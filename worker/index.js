@@ -63,6 +63,7 @@ const starsLocales = new Set(["en", "ru", "zh"]);
 const telegramTextEncoder = new TextEncoder();
 const telegramWebhookJsonMaxBytes = 64 * 1024;
 const telegramWebhookSecretPattern = /^[A-Za-z0-9_-]{32,256}$/u;
+const telegramMaximumUserId = 2 ** 52 - 1;
 
 const telegramTermsUrl = "https://agent-axiom.github.io/agents-salvo/support.html";
 const telegramSupportUrl = "https://github.com/agent-axiom/agents-salvo/issues";
@@ -71,14 +72,29 @@ const telegramSupportCommandText = Object.freeze({
   en: Object.freeze({
     terms: `Terms of Support: ${telegramTermsUrl}`,
     support: `Purchase support: ${telegramSupportUrl}. Telegram Support cannot resolve this purchase. Do not publish session tokens, invoice payloads, or payment charge IDs.`,
+    references: "Safe support references:",
+    noPayments: "No completed support payments were found for this Telegram account.",
+    paid: "paid",
+    refunded: "refunded",
+    referenceHelp: "Include only one of these references in the public issue. A refund can only be sent to the original Telegram account.",
   }),
   ru: Object.freeze({
     terms: `Условия поддержки: ${telegramTermsUrl}`,
     support: `Поддержка покупок: ${telegramSupportUrl}. Поддержка Telegram не может решить проблему с этой покупкой. Не публикуйте токены сессий, содержимое счетов или идентификаторы платежных списаний.`,
+    references: "Безопасные идентификаторы поддержки:",
+    noPayments: "Для этого Telegram-аккаунта завершённые платежи поддержки не найдены.",
+    paid: "оплачен",
+    refunded: "возвращён",
+    referenceHelp: "В публичном обращении укажите только один из этих идентификаторов. Возврат может быть отправлен только на исходный Telegram-аккаунт.",
   }),
   zh: Object.freeze({
     terms: `支持条款：${telegramTermsUrl}`,
     support: `购买支持：${telegramSupportUrl}。Telegram 支持无法解决此购买问题。请勿发布会话令牌、账单载荷或付款扣款 ID。`,
+    references: "用于联系支持的安全参考号：",
+    noPayments: "未找到此 Telegram 账号已完成的支持付款。",
+    paid: "已付款",
+    refunded: "已退款",
+    referenceHelp: "在公开问题中只提供其中一个参考号。退款只能退回原 Telegram 账号。",
   }),
 });
 
@@ -955,7 +971,13 @@ async function telegramWebhook(request, env) {
     if (command === null) {
       return webhookJson({ ok: true });
     }
-    await botApi.sendMessage({ chatId: command.chatId, text: command.text });
+    const commandText = command.name === "paysupport"
+      ? telegramPaymentSupportText(
+          command.locale,
+          await service.listSupportReferences({ telegramUserId: command.senderId }),
+        )
+      : command.text;
+    await botApi.sendMessage({ chatId: command.chatId, text: commandText });
     return webhookJson({ ok: true });
   } catch {
     return webhookJson({ error: "Stars support is unavailable" }, 503);
@@ -1080,6 +1102,14 @@ function snapshotTelegramSupportCommand(update) {
   if (match === null) {
     return null;
   }
+  const senderIdRead = readWorkerProperty(fromRead.value, "id");
+  if (
+    !senderIdRead.ok ||
+    !isSafeTelegramUserId(senderIdRead.value) ||
+    String(senderIdRead.value) !== String(chatIdRead.value)
+  ) {
+    return null;
+  }
   let languageCode;
   const languageRead = readWorkerProperty(fromRead.value, "language_code");
   if (!languageRead.ok) {
@@ -1090,11 +1120,24 @@ function snapshotTelegramSupportCommand(update) {
   const name = match[1];
   return Object.freeze({
     chatId: chatIdRead.value,
+    senderId: senderIdRead.value,
+    locale,
     name,
     text: name === "terms"
       ? telegramSupportCommandText[locale].terms
       : telegramSupportCommandText[locale].support,
   });
+}
+
+function telegramPaymentSupportText(locale, references) {
+  const text = telegramSupportCommandText[locale];
+  if (!Array.isArray(references) || references.length === 0) {
+    return `${text.support}\n\n${text.noPayments}`;
+  }
+  const lines = references.map((reference) => (
+    `${reference.reference} · ${reference.amount} Stars · ${text[reference.status]}`
+  ));
+  return `${text.support}\n\n${text.references}\n${lines.join("\n")}\n\n${text.referenceHelp}`;
 }
 
 function telegramSupportLocale(languageCode) {
@@ -1118,6 +1161,15 @@ function isSafeTelegramChatId(value) {
     typeof value === "string" &&
     /^-?[1-9]\d{0,15}$/u.test(value) &&
     Number.isSafeInteger(Number(value))
+  );
+}
+
+function isSafeTelegramUserId(value) {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value > 0 &&
+    value <= telegramMaximumUserId
   );
 }
 

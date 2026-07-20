@@ -989,13 +989,6 @@ test("Telegram webhook sends localized private support command replies", async (
       expectedText:
         "Поддержка покупок: https://github.com/agent-axiom/agents-salvo/issues. Поддержка Telegram не может решить проблему с этой покупкой. Не публикуйте токены сессий, содержимое счетов или идентификаторы платежных списаний.",
     },
-    {
-      text: "/paysupport",
-      languageCode: "zh-CN",
-      command: "paysupport",
-      expectedText:
-        "购买支持：https://github.com/agent-axiom/agents-salvo/issues。Telegram 支持无法解决此购买问题。请勿发布会话令牌、账单载荷或付款扣款 ID。",
-    },
   ];
 
   for (const [index, commandCase] of cases.entries()) {
@@ -1024,6 +1017,116 @@ test("Telegram webhook sends localized private support command replies", async (
       disable_web_page_preview: true,
     });
   }
+});
+
+test("Telegram /paysupport returns only private owner-bound safe payment references", async (t) => {
+  const db = memoryD1(t);
+  insertPayment(db, {
+    invoiceId: `inv_${"P".repeat(22)}`,
+    invoicePayload: `pay_${"P".repeat(43)}`,
+    status: "paid",
+    createdAt: serviceNow - 10,
+    expiresAt: serviceNow + 10,
+    paidAt: serviceNow - 5,
+    telegramPaymentChargeId: "charge_private_paid",
+  });
+  insertPayment(db, {
+    invoiceId: `inv_${"R".repeat(22)}`,
+    invoicePayload: `pay_${"R".repeat(43)}`,
+    status: "refunded",
+    createdAt: serviceNow - 20,
+    expiresAt: serviceNow + 10,
+    paidAt: serviceNow - 15,
+    refundedAt: serviceNow - 2,
+    telegramPaymentChargeId: "charge_private_refunded",
+  });
+  insertPayment(db, {
+    invoiceId: `inv_${"O".repeat(22)}`,
+    invoicePayload: `pay_${"O".repeat(43)}`,
+    userKey: "telegram:999000111",
+    telegramUserId: "999000111",
+    status: "paid",
+    createdAt: serviceNow,
+    expiresAt: serviceNow + 900,
+    paidAt: serviceNow + 1,
+    telegramPaymentChargeId: "charge_other_user",
+  });
+  const sent = [];
+  const env = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_WEBHOOK_SECRET: webhookSecret,
+    async TELEGRAM_FETCH(url, init) {
+      sent.push({ url, body: JSON.parse(init.body) });
+      return telegramResponse({
+        message_id: 501,
+        date: serviceNow,
+        chat: { id: Number(init && JSON.parse(init.body).chat_id), type: "private" },
+      });
+    },
+  };
+
+  const response = await postTelegramWebhook(
+    {
+      update_id: 501,
+      message: {
+        message_id: 502,
+        date: serviceNow,
+        from: { id: Number(pendingInvoice.telegramUserId), language_code: "ru-RU" },
+        chat: { id: Number(pendingInvoice.telegramUserId), type: "private" },
+        text: "/paysupport",
+      },
+    },
+    env,
+    webhookSecret,
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true });
+  assert.equal(sent.length, 1);
+  const reply = sent[0].body.text;
+  assert.match(reply, /Безопасные идентификаторы поддержки:/u);
+  assert.doesNotMatch(reply, /ссылк/u);
+  assert.match(reply, new RegExp(`inv_${"P".repeat(22)} · 88 Stars · оплачен`, "u"));
+  assert.match(reply, new RegExp(`inv_${"R".repeat(22)} · 88 Stars · возвращён`, "u"));
+  assert.match(reply, /В публичном обращении укажите только один из этих идентификаторов/u);
+  assert.match(reply, /Возврат может быть отправлен только на исходный Telegram-аккаунт/u);
+  assert.doesNotMatch(reply, /charge_private|charge_other|pay_/u);
+  assert.doesNotMatch(reply, new RegExp(`inv_${"O".repeat(22)}`, "u"));
+  assert.doesNotMatch(reply, new RegExp(pendingInvoice.telegramUserId, "u"));
+});
+
+test("Telegram /paysupport explains when the private payer has no completed payments", async (t) => {
+  const db = memoryD1(t);
+  const sent = [];
+  const env = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_WEBHOOK_SECRET: webhookSecret,
+    async TELEGRAM_FETCH(_url, init) {
+      sent.push(JSON.parse(init.body));
+      return telegramResponse({ message_id: 503, date: serviceNow, chat: { id: 8710001168, type: "private" } });
+    },
+  };
+
+  const response = await postTelegramWebhook(
+    {
+      update_id: 503,
+      message: {
+        message_id: 504,
+        date: serviceNow,
+        from: { id: 8710001168, language_code: "en" },
+        chat: { id: 8710001168, type: "private" },
+        text: "/paysupport@agents_salvo_bot",
+      },
+    },
+    env,
+    webhookSecret,
+  );
+
+  assert.equal(response.status, 200);
+  assert.match(sent[0].text, /No completed support payments were found for this Telegram account\./u);
+  assert.match(sent[0].text, /https:\/\/github\.com\/agent-axiom\/agents-salvo\/issues/u);
 });
 
 test("Telegram webhook ignores unsupported and malformed command updates without side effects", async (t) => {
@@ -1058,6 +1161,15 @@ test("Telegram webhook ignores unsupported and malformed command updates without
     { message: { ...privateMessage, chat: { id: "01", type: "private" } } },
     { message: { ...privateMessage, chat: null } },
     { message: { ...privateMessage, from: null } },
+    { message: { ...privateMessage, from: { language_code: "en" } } },
+    { message: { ...privateMessage, from: { id: 2 ** 52, language_code: "en" } } },
+    {
+      message: {
+        ...privateMessage,
+        from: { id: 8710001169, language_code: "en" },
+        text: "/paysupport",
+      },
+    },
     { message: { ...privateMessage, text: null } },
     { message: { ...privateMessage, successful_payment: {}, text: "/paysupport" } },
   ];
@@ -1111,16 +1223,160 @@ test("Stars support service exports its public limits and factory", () => {
   assert.equal(typeof starsSupportModule.createStarsSupportService, "function");
 });
 
-test("Stars support factory exposes create, lookup, and Telegram update operations", () => {
+test("Stars support factory exposes create, lookup, support reference, and Telegram update operations", () => {
   const service = starsSupportModule.createStarsSupportService({
     db: { prepare() {} },
     botApi: fakeBotApi(),
   });
 
-  assert.deepEqual(Object.keys(service).sort(), ["createInvoice", "getInvoice", "handleUpdate"]);
+  assert.deepEqual(Object.keys(service).sort(), ["createInvoice", "getInvoice", "handleUpdate", "listSupportReferences"]);
   assert.equal(typeof service.createInvoice, "function");
   assert.equal(typeof service.getInvoice, "function");
   assert.equal(typeof service.handleUpdate, "function");
+  assert.equal(typeof service.listSupportReferences, "function");
+});
+
+test("Stars support references expose only the requesting Telegram payer's completed payments", async (t) => {
+  const db = memoryD1(t);
+  insertPayment(db, {
+    invoiceId: `inv_${"A".repeat(22)}`,
+    invoicePayload: `pay_${"A".repeat(43)}`,
+    status: "paid",
+    createdAt: serviceNow - 10,
+    expiresAt: serviceNow + 10,
+    paidAt: serviceNow - 5,
+    telegramPaymentChargeId: "charge_owner_paid",
+  });
+  insertPayment(db, {
+    invoiceId: `inv_${"B".repeat(22)}`,
+    invoicePayload: `pay_${"B".repeat(43)}`,
+    status: "refunded",
+    createdAt: serviceNow - 20,
+    expiresAt: serviceNow + 10,
+    paidAt: serviceNow - 15,
+    refundedAt: serviceNow - 2,
+    telegramPaymentChargeId: "charge_owner_refunded",
+  });
+  insertPayment(db, {
+    invoiceId: `inv_${"C".repeat(22)}`,
+    invoicePayload: `pay_${"C".repeat(43)}`,
+    status: "pending",
+    createdAt: serviceNow,
+    expiresAt: serviceNow + 900,
+  });
+  insertPayment(db, {
+    invoiceId: `inv_${"D".repeat(22)}`,
+    invoicePayload: `pay_${"D".repeat(43)}`,
+    userKey: "telegram:999000111",
+    telegramUserId: "999000111",
+    status: "paid",
+    createdAt: serviceNow + 1,
+    expiresAt: serviceNow + 901,
+    paidAt: serviceNow + 2,
+    telegramPaymentChargeId: "charge_other_payer",
+  });
+  const service = starsSupportModule.createStarsSupportService({ db, botApi: fakeBotApi() });
+
+  const references = await service.listSupportReferences({
+    telegramUserId: Number(pendingInvoice.telegramUserId),
+  });
+
+  assert.deepEqual(references, [
+    { reference: `inv_${"A".repeat(22)}`, amount: 88, currency: "XTR", status: "paid" },
+    { reference: `inv_${"B".repeat(22)}`, amount: 88, currency: "XTR", status: "refunded" },
+  ]);
+  assert.equal(JSON.stringify(references).includes("charge_"), false);
+  assert.equal(JSON.stringify(references).includes("pay_"), false);
+  assert.equal(JSON.stringify(references).includes(pendingInvoice.telegramUserId), false);
+});
+
+test("Stars support references reject malformed payer requests before D1 access", async () => {
+  let queries = 0;
+  const service = starsSupportModule.createStarsSupportService({
+    db: {
+      prepare() {
+        queries += 1;
+        throw new Error("must not query");
+      },
+    },
+    botApi: fakeBotApi(),
+  });
+  const invalidRequests = [
+    null,
+    {},
+    { telegramUserId: "8710001168" },
+    { telegramUserId: 0 },
+    { telegramUserId: -1 },
+    { telegramUserId: Number.MAX_SAFE_INTEGER + 1 },
+    Object.defineProperty({}, "telegramUserId", { get() { throw new Error("private getter"); } }),
+  ];
+
+  for (const request of invalidRequests) {
+    await assertRejectsWithPublicError(service.listSupportReferences(request), {
+      category: "invalid_request",
+      status: 400,
+      message: "Invalid Stars support request",
+    });
+  }
+  assert.equal(queries, 0);
+});
+
+test("Stars support references fail closed for D1 errors and malformed rows", async () => {
+  const unavailable = {
+    category: "service_unavailable",
+    status: 503,
+    message: "Stars support is unavailable",
+  };
+  const serviceFor = (readResult) => starsSupportModule.createStarsSupportService({
+    db: {
+      prepare() {
+        return {
+          bind() {
+            return {
+              async all() {
+                if (readResult instanceof Error) throw readResult;
+                return readResult;
+              },
+            };
+          },
+        };
+      },
+    },
+    botApi: fakeBotApi(),
+  });
+  const validRow = {
+    invoice_id: `inv_${"V".repeat(22)}`,
+    amount: 88,
+    currency: "XTR",
+    status: "paid",
+  };
+  const malformedResults = [
+    new Error("private D1 detail"),
+    null,
+    { success: false, results: [] },
+    { success: true },
+    { success: true, results: [null] },
+    { success: true, results: [{ ...validRow, invoice_id: "inv_bad" }] },
+    { success: true, results: [{ ...validRow, amount: 0 }] },
+    { success: true, results: [{ ...validRow, currency: "USD" }] },
+    { success: true, results: [{ ...validRow, status: "pending" }] },
+    { success: true, results: [validRow, validRow] },
+    {
+      success: true,
+      results: ["A", "B", "C", "D"].map((suffix) => ({
+        ...validRow,
+        invoice_id: `inv_${suffix.repeat(22)}`,
+      })),
+    },
+    Object.defineProperty({}, "success", { get() { throw new Error("private result getter"); } }),
+  ];
+
+  for (const result of malformedResults) {
+    await assertRejectsWithPublicError(
+      serviceFor(result).listSupportReferences({ telegramUserId: 8710001168 }),
+      unavailable,
+    );
+  }
 });
 
 test("handleUpdate approves an exact pending Stars pre-checkout without mutating it", async (t) => {

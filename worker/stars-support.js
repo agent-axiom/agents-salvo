@@ -6,6 +6,7 @@ const starsInvoiceRateLimit = 5;
 const starsPendingInvoiceLimit = 5;
 const starsUnpaidRetentionSeconds = 30 * 24 * 60 * 60;
 const starsCleanupBatchSize = 25;
+const starsSupportReferenceLimit = 3;
 const telegramMaximumUserId = 2 ** 52 - 1;
 const textEncoder = new TextEncoder();
 const maximumTelegramInvoiceUrlLength = 2048;
@@ -192,6 +193,27 @@ export function createStarsSupportService(options) {
         paidAt: invoice.paidAt,
       };
     },
+    async listSupportReferences(request) {
+      const telegramUserId = normalizeSupportReferencesRequest(request);
+      let result;
+      try {
+        result = await prepare
+          .call(
+            db,
+            `SELECT invoice_id, amount, currency, status
+               FROM star_support_payments
+              WHERE telegram_user_id = ?
+                AND status IN ('paid', 'refunded')
+              ORDER BY created_at DESC, invoice_id DESC
+              LIMIT ?`,
+          )
+          .bind(telegramUserId, starsSupportReferenceLimit)
+          .all();
+      } catch {
+        throw serviceUnavailableError();
+      }
+      return normalizeSupportReferenceRows(result);
+    },
     async handleUpdate(update) {
       return handleTelegramUpdate({
         update,
@@ -203,6 +225,63 @@ export function createStarsSupportService(options) {
       });
     },
   };
+}
+
+function normalizeSupportReferencesRequest(request) {
+  try {
+    if (!isRecord(request)) {
+      throw invalidRequestError();
+    }
+    const telegramUserId = request.telegramUserId;
+    if (!isTelegramNumericId(telegramUserId)) {
+      throw invalidRequestError();
+    }
+    return String(telegramUserId);
+  } catch (error) {
+    if (error instanceof StarsSupportError) {
+      throw error;
+    }
+    throw invalidRequestError();
+  }
+}
+
+function normalizeSupportReferenceRows(result) {
+  try {
+    if (!isRecord(result) || result.success !== true || !Array.isArray(result.results)) {
+      throw serviceUnavailableError();
+    }
+    const references = [];
+    const seen = new Set();
+    for (const row of result.results) {
+      if (
+        !isRecord(row) ||
+        typeof row.invoice_id !== "string" ||
+        !/^inv_[A-Za-z0-9_-]{22}$/u.test(row.invoice_id) ||
+        seen.has(row.invoice_id) ||
+        !isStarsAmount(row.amount) ||
+        row.currency !== "XTR" ||
+        (row.status !== "paid" && row.status !== "refunded")
+      ) {
+        throw serviceUnavailableError();
+      }
+      seen.add(row.invoice_id);
+      references.push({
+        reference: row.invoice_id,
+        amount: row.amount,
+        currency: row.currency,
+        status: row.status,
+      });
+    }
+    if (references.length > starsSupportReferenceLimit) {
+      throw serviceUnavailableError();
+    }
+    return references;
+  } catch (error) {
+    if (error instanceof StarsSupportError) {
+      throw error;
+    }
+    throw serviceUnavailableError();
+  }
 }
 
 async function cleanupOldUnpaidInvoices({ db, prepare, now }) {
