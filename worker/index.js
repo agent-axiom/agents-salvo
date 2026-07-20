@@ -11,7 +11,13 @@ import {
 import { getGamePreset } from "../src/core/presets.js";
 import { summarizeBattleLog } from "../src/core/stats.js";
 import { parseBearerToken, publicUser, verifyTelegramLoginPayload } from "./auth.js";
-import { cleanupExpiredAuthRecords, createSession, resolveSession, revokeSession } from "./session.js";
+import {
+  SessionInvalidError,
+  cleanupExpiredAuthRecords,
+  createSession,
+  resolveSession,
+  revokeSession,
+} from "./session.js";
 import {
   createTelegramAuthorization,
   exchangeTelegramCode,
@@ -907,7 +913,6 @@ async function getStarsInvoice(request, env, invoiceId) {
 async function telegramWebhook(request, env) {
   let service;
   let botApi;
-  let d1Failed;
   let expectedSecret;
   try {
     expectedSecret = env?.TELEGRAM_WEBHOOK_SECRET;
@@ -917,7 +922,7 @@ async function telegramWebhook(request, env) {
     ) {
       throw new Error("Invalid webhook configuration");
     }
-    ({ botApi, d1Failed, service } = createWorkerStarsDependencies(env, { observeD1: true }));
+    ({ botApi, service } = createWorkerStarsDependencies(env));
   } catch {
     return webhookJson({ error: "Stars support is unavailable" }, 503);
   }
@@ -943,9 +948,6 @@ async function telegramWebhook(request, env) {
 
   try {
     const serviceResult = await service.handleUpdate(update);
-    if (serviceResult.kind === "pre_checkout" && d1Failed()) {
-      return webhookJson({ error: "Stars support is unavailable" }, 503);
-    }
     if (serviceResult.kind !== "ignored") {
       return webhookJson({ ok: true });
     }
@@ -964,84 +966,21 @@ function createWorkerStarsService(env) {
   return createWorkerStarsDependencies(env).service;
 }
 
-function createWorkerStarsDependencies(env, { observeD1 = false } = {}) {
+function createWorkerStarsDependencies(env) {
   try {
-    const configuredDb = env.DB;
+    const db = env.DB;
     const botToken = env.TELEGRAM_BOT_TOKEN;
     const configuredFetcher = env.TELEGRAM_FETCH;
-    let observedFailure = false;
-    const db = observeD1
-      ? observedD1Binding(configuredDb, () => {
-          observedFailure = true;
-        })
-      : configuredDb;
     const botApi = createTelegramBotApiClient({
       botToken,
       fetcher: configuredFetcher ?? globalThis.fetch,
     });
     return {
       botApi,
-      d1Failed: () => observedFailure,
       service: createStarsSupportService({ db, botApi }),
     };
   } catch {
     throw new Error("Stars support unavailable");
-  }
-}
-
-function observedD1Binding(db, onFailure) {
-  const prepare = db?.prepare;
-  if (typeof prepare !== "function") {
-    throw new Error("Invalid D1 binding");
-  }
-  return {
-    prepare(sql) {
-      try {
-        return observedD1Statement(prepare.call(db, sql), onFailure);
-      } catch (error) {
-        onFailure();
-        throw error;
-      }
-    },
-  };
-}
-
-function observedD1Statement(statement, onFailure) {
-  return {
-    bind(...values) {
-      try {
-        const bind = statement?.bind;
-        if (typeof bind !== "function") {
-          throw new Error("Invalid D1 statement");
-        }
-        return observedD1Statement(bind.call(statement, ...values), onFailure);
-      } catch (error) {
-        onFailure();
-        throw error;
-      }
-    },
-    async first(...values) {
-      return observedD1StatementCall(statement, "first", values, onFailure);
-    },
-    async run(...values) {
-      return observedD1StatementCall(statement, "run", values, onFailure);
-    },
-    async all(...values) {
-      return observedD1StatementCall(statement, "all", values, onFailure);
-    },
-  };
-}
-
-async function observedD1StatementCall(statement, methodName, values, onFailure) {
-  try {
-    const method = statement?.[methodName];
-    if (typeof method !== "function") {
-      throw new Error("Invalid D1 statement");
-    }
-    return await method.call(statement, ...values);
-  } catch (error) {
-    onFailure();
-    throw error;
   }
 }
 
@@ -1080,7 +1019,7 @@ async function authorizeStarsRequest(request, env) {
   try {
     return { token, user: await resolveSession(env.DB, token) };
   } catch (error) {
-    if (error instanceof Error && error.message === "Session invalid") {
+    if (error instanceof SessionInvalidError) {
       throw new Error("Authentication failed");
     }
     const unavailable = new Error("Stars support unavailable");

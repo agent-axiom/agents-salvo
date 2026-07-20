@@ -470,15 +470,39 @@ test("Worker classifies Stars configuration, D1, and provider failures as redact
     assertRedacted(text, secrets);
   }
 
-  const sessionFailure = await postStarsInvoice(
-    { amount: 88, locale: "en" },
-    { ...baseEnv, DB: sessionFailureDb },
-    token,
-  );
-  const sessionFailureText = await sessionFailure.text();
-  assert.equal(sessionFailure.status, 503);
-  assert.equal(sessionFailureText, JSON.stringify({ error: "Stars support is unavailable" }));
-  assertRedacted(sessionFailureText, secrets);
+  for (const failingDb of [
+    sessionFailureDb,
+    {
+      prepare(sql) {
+        if (sql.includes("auth_sessions")) {
+          throw new Error("Session invalid");
+        }
+        return db.prepare(sql);
+      },
+    },
+    {
+      prepare(sql) {
+        if (sql.includes("auth_sessions")) {
+          throw Object.defineProperty({}, "message", {
+            get() {
+              throw new Error("private-session-error-getter");
+            },
+          });
+        }
+        return db.prepare(sql);
+      },
+    },
+  ]) {
+    const sessionFailure = await postStarsInvoice(
+      { amount: 88, locale: "en" },
+      { ...baseEnv, DB: failingDb },
+      token,
+    );
+    const sessionFailureText = await sessionFailure.text();
+    assert.equal(sessionFailure.status, 503);
+    assert.equal(sessionFailureText, JSON.stringify({ error: "Stars support is unavailable" }));
+    assertRedacted(sessionFailureText, [...secrets, "private-session-error-getter"]);
+  }
 
   for (const [name, env] of [
     ["missing status config", { DB: db }],
@@ -721,6 +745,17 @@ test("Telegram webhook reads only bounded application/json streams", async (t) =
   assert.equal(oversizedResponse.status, 400);
   assert.deepEqual(await oversizedResponse.json(), { error: "Invalid Telegram update" });
 
+  let cancelCalls = 0;
+  const oversizedStream = streamTelegramWebhookRequest(oversized, {
+    keepOpen: true,
+    onCancel() {
+      cancelCalls += 1;
+    },
+  });
+  const cancelled = await worker.fetch(oversizedStream, env);
+  assert.equal(cancelled.status, 400);
+  assert.equal(cancelCalls, 1, "oversized webhook streams must be cancelled");
+
   const compact = '{"update_id":307,"padding":""}';
   const exactBoundary = compact.replace(
     '""',
@@ -870,8 +905,8 @@ test("Telegram webhook retries transient payment failures but acknowledges perma
     webhookSecret,
   );
   const d1PreCheckoutText = await d1PreCheckout.text();
-  assert.equal(d1PreCheckout.status, 503);
-  assert.equal(d1PreCheckoutText, JSON.stringify({ error: "Stars support is unavailable" }));
+  assert.equal(d1PreCheckout.status, 200);
+  assert.equal(d1PreCheckoutText, JSON.stringify({ ok: true }));
   assertRedacted(d1PreCheckoutText, [d1Secret, invoice.invoicePayload]);
 
   const d1Payment = await postTelegramWebhook(
@@ -3271,6 +3306,220 @@ test("createInvoice accepts support presets and custom amount bounds", async (t)
   );
 });
 
+test("createInvoice atomically bounds recent attempts and active pending invoices per user", async (t) => {
+  const now = serviceNow;
+  const cases = [
+    {
+      name: "recent attempts",
+      payment(index) {
+        return {
+          invoiceId: `inv_rate_failed_${index}`,
+          invoicePayload: `pay_rate_failed_${index}`,
+          status: "failed",
+          createdAt: now - 30,
+          expiresAt: now - 1,
+          failedAt: now - 20,
+        };
+      },
+    },
+    {
+      name: "active pending invoices",
+      payment(index) {
+        return {
+          invoiceId: `inv_rate_pending_${index}`,
+          invoicePayload: `pay_rate_pending_${index}`,
+          status: "pending",
+          createdAt: now - 120,
+          expiresAt: now + 600,
+        };
+      },
+    },
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.name, async (subtest) => {
+      const db = memoryD1(subtest);
+      for (let index = 0; index < 5; index += 1) {
+        insertPayment(db, entry.payment(index));
+      }
+      let providerCalls = 0;
+      let randomCall = 0;
+      const service = starsSupportModule.createStarsSupportService({
+        db,
+        botApi: fakeBotApi({
+          async createInvoiceLink() {
+            providerCalls += 1;
+            return "https://t.me/$rate-limit";
+          },
+        }),
+        now: () => now,
+        randomBytes(size) {
+          randomCall += 1;
+          return new Uint8Array(size).fill(randomCall);
+        },
+      });
+
+      await assertRejectsWithPublicError(
+        service.createInvoice({ user: authenticatedUser, amount: 88, locale: "en" }),
+        { category: "service_unavailable", status: 503, message: "Stars support is unavailable" },
+      );
+      assert.equal(providerCalls, 0);
+      assert.equal(
+        db.queryOne("SELECT COUNT(*) AS count FROM star_support_payments").count,
+        5,
+      );
+
+      const otherUser = {
+        ...authenticatedUser,
+        id: "8710001169",
+      };
+      await service.createInvoice({ user: otherUser, amount: 88, locale: "en" });
+      assert.equal(providerCalls, 1, "limits are scoped to one Telegram user");
+    });
+  }
+});
+
+test("createInvoice lazily removes only expired and failed invoices past retention", async (t) => {
+  const db = memoryD1(t);
+  const now = serviceNow;
+  const retentionSeconds = 30 * 24 * 60 * 60;
+  const old = now - retentionSeconds - 1;
+  const oldUnpaid = Array.from({ length: 26 }, (_, index) => ({
+    invoiceId: `inv_old_unpaid_${String(index).padStart(2, "0")}`,
+    invoicePayload: `pay_old_unpaid_${String(index).padStart(2, "0")}`,
+    status: index % 2 === 0 ? "failed" : "pending",
+    createdAt: old - ((26 - index) * 60),
+    expiresAt: old - ((26 - index) * 30),
+    failedAt: index % 2 === 0 ? old - ((26 - index) * 30) : null,
+  }));
+  for (const payment of oldUnpaid) insertPayment(db, payment);
+  insertPayment(db, {
+    invoiceId: "inv_recent_failed",
+    invoicePayload: "pay_recent_failed",
+    status: "failed",
+    createdAt: now - 120,
+    expiresAt: now - 60,
+    failedAt: now - 60,
+  });
+  insertPayment(db, {
+    invoiceId: "inv_old_paid",
+    invoicePayload: "pay_old_paid",
+    status: "paid",
+    createdAt: old - 900,
+    expiresAt: old - 1,
+    paidAt: old,
+    telegramPaymentChargeId: "charge_old_paid",
+  });
+  let randomCall = 0;
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: fakeBotApi({
+      async createInvoiceLink() {
+        return "https://t.me/$retention-cleanup";
+      },
+    }),
+    now: () => now,
+    randomBytes(size) {
+      randomCall += 1;
+      return new Uint8Array(size).fill(randomCall + 40);
+    },
+  });
+
+  const created = await service.createInvoice({
+    user: { ...authenticatedUser, id: "8710001170" },
+    amount: 8,
+    locale: "en",
+  });
+
+  assert.deepEqual(
+    db.queryOne(
+      "SELECT status, amount, currency FROM star_support_payments WHERE invoice_id = ?",
+      created.invoiceId,
+    ),
+    { status: "pending", amount: 8, currency: "XTR" },
+    "bounded cleanup must preserve the newly created invoice",
+  );
+  assert.deepEqual(
+    db.queryAll(
+      "SELECT invoice_id FROM star_support_payments WHERE invoice_id LIKE 'inv_old_unpaid_%' ORDER BY invoice_id",
+    ),
+    [{ invoice_id: "inv_old_unpaid_25" }],
+    "one cleanup pass removes at most the 25 oldest unpaid invoices",
+  );
+  assert.equal(db.queryOne(
+    "SELECT COUNT(*) AS count FROM star_support_payments WHERE invoice_id IN ('inv_old_paid', 'inv_recent_failed')",
+  ).count, 2);
+
+  const cleanupFailureDb = {
+    prepare(sql) {
+      if (sql.startsWith("DELETE FROM star_support_payments")) {
+        throw new Error("private cleanup failure");
+      }
+      return db.prepare(sql);
+    },
+  };
+  const cleanupFailureService = starsSupportModule.createStarsSupportService({
+    db: cleanupFailureDb,
+    botApi: fakeBotApi({
+      async createInvoiceLink() {
+        return "https://t.me/$retention-retry";
+      },
+    }),
+    now: () => now + 61,
+    randomBytes(size) {
+      randomCall += 1;
+      return new Uint8Array(size).fill(randomCall + 40);
+    },
+  });
+  await assert.doesNotReject(() => cleanupFailureService.createInvoice({
+    user: { ...authenticatedUser, id: "8710001171" },
+    amount: 8,
+    locale: "en",
+  }));
+});
+
+test("createInvoice cleans old unpaid rows even when Telegram invoice creation fails", async (t) => {
+  const db = memoryD1(t);
+  const now = serviceNow;
+  const old = now - (30 * 24 * 60 * 60) - 1;
+  insertPayment(db, {
+    invoiceId: "inv_old_provider_outage",
+    invoicePayload: "pay_old_provider_outage",
+    status: "failed",
+    createdAt: old - 900,
+    expiresAt: old - 1,
+    failedAt: old,
+  });
+  const service = starsSupportModule.createStarsSupportService({
+    db,
+    botApi: fakeBotApi({
+      async createInvoiceLink() {
+        throw new Error("private provider outage");
+      },
+    }),
+    now: () => now,
+    randomBytes: (size) => new Uint8Array(size).fill(74),
+  });
+
+  await assertRejectsWithPublicError(
+    service.createInvoice({ user: authenticatedUser, amount: 88, locale: "en" }),
+    { category: "service_unavailable", status: 503, message: "Stars support is unavailable" },
+  );
+  assert.equal(
+    db.queryOne(
+      "SELECT COUNT(*) AS count FROM star_support_payments WHERE invoice_id = 'inv_old_provider_outage'",
+    ).count,
+    0,
+  );
+  assert.equal(
+    db.queryOne(
+      "SELECT COUNT(*) AS count FROM star_support_payments WHERE status = 'failed'",
+    ).count,
+    1,
+    "the current provider failure remains recorded for reconciliation",
+  );
+});
+
 test("createInvoice owns localized Telegram invoice text", async (t) => {
   const db = memoryD1(t);
   let randomCall = 0;
@@ -4746,7 +4995,12 @@ function rawTelegramWebhookRequest(
   );
 }
 
-function streamTelegramWebhookRequest(body, { onText, onJson } = {}) {
+function streamTelegramWebhookRequest(body, {
+  keepOpen = false,
+  onCancel,
+  onJson,
+  onText,
+} = {}) {
   const bytes = new TextEncoder().encode(body);
   return {
     url: "https://worker.test/telegram/webhook",
@@ -4757,10 +5011,17 @@ function streamTelegramWebhookRequest(body, { onText, onJson } = {}) {
     }),
     body: new ReadableStream({
       start(controller) {
+        if (keepOpen) {
+          controller.enqueue(bytes);
+          return;
+        }
         const midpoint = Math.floor(bytes.byteLength / 2);
         controller.enqueue(bytes.slice(0, midpoint));
         controller.enqueue(bytes.slice(midpoint));
         controller.close();
+      },
+      cancel() {
+        onCancel?.();
       },
     }),
     text() {

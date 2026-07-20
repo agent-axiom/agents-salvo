@@ -49,7 +49,7 @@ test("coverage enforces critical files with explicit focused gates", () => {
   );
   assert.equal(
     scripts["coverage:critical:worker"],
-    "node --experimental-test-coverage --test-coverage-include=worker/index.js --test-coverage-lines=98 --test tests/worker.test.mjs tests/profile.test.mjs tests/telegram-mini-app-worker.test.mjs tests/telegram-oidc-worker.test.mjs",
+    "node --experimental-test-coverage --test-coverage-include=worker/index.js --test-coverage-lines=98 --test tests/worker.test.mjs tests/profile.test.mjs tests/stars-support-worker.test.mjs tests/telegram-mini-app-worker.test.mjs tests/telegram-oidc-worker.test.mjs",
   );
 });
 

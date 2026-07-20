@@ -1,6 +1,11 @@
 export const starsAmountLimits = Object.freeze({ min: 1, max: 10_000 });
 export const starsInvoiceTtlSeconds = 15 * 60;
 
+const starsInvoiceRateWindowSeconds = 60;
+const starsInvoiceRateLimit = 5;
+const starsPendingInvoiceLimit = 5;
+const starsUnpaidRetentionSeconds = 30 * 24 * 60 * 60;
+const starsCleanupBatchSize = 25;
 const telegramMaximumUserId = 2 ** 52 - 1;
 const textEncoder = new TextEncoder();
 const telegramInvoiceUrlPattern = /^https:\/\/t\.me\/\$[A-Za-z0-9_-]{1,128}$/u;
@@ -83,16 +88,45 @@ export function createStarsSupportService(options) {
             `INSERT INTO star_support_payments (
               invoice_id, invoice_payload, user_key, telegram_user_id,
               amount, currency, status, created_at, expires_at
-            ) VALUES (?, ?, ?, ?, ?, 'XTR', 'pending', ?, ?)`,
+            )
+            SELECT ?, ?, ?, ?, ?, 'XTR', 'pending', ?, ?
+             WHERE (
+               SELECT COUNT(*)
+                 FROM star_support_payments
+                WHERE user_key = ? AND created_at >= ?
+             ) < ?
+               AND (
+                 SELECT COUNT(*)
+                   FROM star_support_payments
+                  WHERE user_key = ?
+                    AND status = 'pending'
+                    AND expires_at > ?
+               ) < ?`,
           )
-          .bind(invoiceId, payload, userKey, userId, amount, createdAt, expiresAt)
+          .bind(
+            invoiceId,
+            payload,
+            userKey,
+            userId,
+            amount,
+            createdAt,
+            expiresAt,
+            userKey,
+            createdAt - starsInvoiceRateWindowSeconds,
+            starsInvoiceRateLimit,
+            userKey,
+            createdAt,
+            starsPendingInvoiceLimit,
+          )
           .run();
-        if (result?.success === false) {
+        if (!isSuccessfulD1Update(result)) {
           throw serviceUnavailableError();
         }
       } catch {
         throw serviceUnavailableError();
       }
+
+      await cleanupOldUnpaidInvoices({ db, prepare, now: createdAt });
 
       let invoiceUrl;
       try {
@@ -168,6 +202,29 @@ export function createStarsSupportService(options) {
       });
     },
   };
+}
+
+async function cleanupOldUnpaidInvoices({ db, prepare, now }) {
+  const cutoff = now - starsUnpaidRetentionSeconds;
+  try {
+    await prepare
+      .call(
+        db,
+        `DELETE FROM star_support_payments
+          WHERE invoice_id IN (
+            SELECT invoice_id
+              FROM star_support_payments
+             WHERE (status = 'pending' AND expires_at < ?)
+                OR (status = 'failed' AND failed_at IS NOT NULL AND failed_at < ?)
+             ORDER BY created_at ASC, invoice_id ASC
+             LIMIT ?
+          )`,
+      )
+      .bind(cutoff, cutoff, starsCleanupBatchSize)
+      .run();
+  } catch {
+    // Invoice creation remains authoritative; a later request retries bounded cleanup.
+  }
 }
 
 async function handleTelegramUpdate({

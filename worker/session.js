@@ -6,6 +6,13 @@ const defaultCleanupLimit = 100;
 const sessionTokenPattern = /^[A-Za-z0-9_-]{43}$/;
 const textEncoder = new TextEncoder();
 
+export class SessionInvalidError extends Error {
+  constructor() {
+    super("Session invalid");
+    this.name = "SessionInvalidError";
+  }
+}
+
 export async function createSession(db, user, options = {}) {
   const now = epochSeconds(options.now);
   const ttlSeconds = options.ttlSeconds ?? defaultTtlSeconds;
@@ -121,5 +128,5 @@ function base64UrlEncode(bytes) {
 }
 
 function sessionInvalidError() {
-  return new Error("Session invalid");
+  return new SessionInvalidError();
 }
