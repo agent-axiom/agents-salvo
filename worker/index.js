@@ -931,14 +931,7 @@ async function telegramWebhook(request, env) {
   let botApi;
   let expectedSecret;
   try {
-    expectedSecret = env?.TELEGRAM_WEBHOOK_SECRET;
-    if (
-      typeof expectedSecret !== "string" ||
-      !telegramWebhookSecretPattern.test(expectedSecret)
-    ) {
-      throw new Error("Invalid webhook configuration");
-    }
-    ({ botApi, service } = createWorkerStarsDependencies(env));
+    ({ botApi, service, webhookSecret: expectedSecret } = createWorkerStarsDependencies(env));
   } catch {
     return webhookJson({ error: "Stars support is unavailable" }, 503);
   }
@@ -990,6 +983,7 @@ function createWorkerStarsService(env) {
 
 function createWorkerStarsDependencies(env) {
   try {
+    const webhookSecret = requireTelegramWebhookSecret(env);
     const db = env.DB;
     const botToken = env.TELEGRAM_BOT_TOKEN;
     const configuredFetcher = env.TELEGRAM_FETCH;
@@ -1000,10 +994,22 @@ function createWorkerStarsDependencies(env) {
     return {
       botApi,
       service: createStarsSupportService({ db, botApi }),
+      webhookSecret,
     };
   } catch {
     throw new Error("Stars support unavailable");
   }
+}
+
+function requireTelegramWebhookSecret(env) {
+  const webhookSecret = env?.TELEGRAM_WEBHOOK_SECRET;
+  if (
+    typeof webhookSecret !== "string" ||
+    !telegramWebhookSecretPattern.test(webhookSecret)
+  ) {
+    throw new Error("Invalid webhook configuration");
+  }
+  return webhookSecret;
 }
 
 function starsErrorCategory(error) {

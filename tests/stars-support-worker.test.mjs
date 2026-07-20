@@ -128,6 +128,36 @@ test("Worker exposes only the exact Stars payment and Telegram webhook routes", 
   assert.equal(durableObjectReads, 0);
 });
 
+test("Worker disables Stars invoice endpoints until the webhook secret is configured", async (t) => {
+  const db = memoryD1(t);
+  const token = await createWorkerSession(db);
+  let providerCalls = 0;
+  const env = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_FETCH() {
+      providerCalls += 1;
+      throw new Error("Telegram must not be called while Stars support is disabled");
+    },
+  };
+
+  const create = await postStarsInvoice({ amount: 88, locale: "ru" }, env, token);
+  assert.equal(create.status, 503);
+  assert.deepEqual(await create.json(), { error: "Stars support is unavailable" });
+
+  const status = await worker.fetch(
+    new Request(`https://worker.test/payments/stars/invoices/${pendingInvoice.invoiceId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+    env,
+  );
+  assert.equal(status.status, 503);
+  assert.deepEqual(await status.json(), { error: "Stars support is unavailable" });
+
+  assert.equal(providerCalls, 0);
+  assert.equal(db.queryOne("SELECT COUNT(*) AS count FROM star_support_payments").count, 0);
+});
+
 test("Worker creates an owner-bound Stars invoice before calling Telegram", async (t) => {
   const db = memoryD1(t);
   const token = await createWorkerSession(db);
@@ -135,6 +165,7 @@ test("Worker creates an owner-bound Stars invoice before calling Telegram", asyn
   const env = {
     DB: db,
     TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_WEBHOOK_SECRET: webhookSecret,
     async TELEGRAM_FETCH(url, init) {
       providerCalls.push({ url, init, body: JSON.parse(init.body) });
       const row = db.queryOne("SELECT * FROM star_support_payments");
@@ -230,6 +261,7 @@ test("Worker returns only owner-scoped public Stars invoice statuses", async (t)
   const env = {
     DB: db,
     TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_WEBHOOK_SECRET: webhookSecret,
     TELEGRAM_FETCH: async () => {
       throw new Error("status reads must not call Telegram");
     },
@@ -291,6 +323,7 @@ test("Worker rejects unauthorized Stars requests before body or provider access"
   const env = {
     DB: db,
     TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_WEBHOOK_SECRET: webhookSecret,
     async TELEGRAM_FETCH() {
       providerCalls += 1;
       throw new Error("provider must not be called");
@@ -328,6 +361,7 @@ test("Worker accepts only the exact bounded Stars create JSON schema", async (t)
   const env = {
     DB: db,
     TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_WEBHOOK_SECRET: webhookSecret,
     async TELEGRAM_FETCH() {
       providerCalls += 1;
       return telegramResponse(`https://t.me/$${"V".repeat(22)}`);
