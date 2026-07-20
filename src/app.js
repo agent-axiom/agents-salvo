@@ -68,6 +68,7 @@ import { platform } from "./platform/index.js";
 import { RemoteClient } from "./remote.js";
 import { createTelegramAuthClient } from "./telegram-auth.js";
 import { createTelegramMiniAppAuthClient } from "./telegram-mini-app-auth.js";
+import { createStarsSupportClient } from "./stars-support.js";
 import {
   parseTelegramStartParam,
   telegramMainMiniAppUrl,
@@ -86,6 +87,7 @@ export function bootSalvoApp({
   audio: appAudio = createAudioController(),
   fetch: appFetch = globalThis.fetch,
   createRemoteClient = (handlers) => new RemoteClient(handlers),
+  createStarsSupportClient: createStarsSupportClientFactory = createStarsSupportClient,
 } = {}) {
 const document = appDocument;
 const window = appWindow;
@@ -106,6 +108,7 @@ const trainingProgressSettingKey = "trainingProgress";
 const authConsentSettingKey = "authConsentV1";
 const canonicalReplayBaseUrl = "https://agent-axiom.github.io/agents-salvo/";
 const canonicalPrivacyUrl = `${canonicalReplayBaseUrl}privacy.html`;
+const canonicalSupportUrl = `${canonicalReplayBaseUrl}support.html`;
 const resultReplayClock = createReplayClock({
   setInterval: (callback, delay) => window.setInterval(callback, delay),
   clearInterval: (handle) => window.clearInterval(handle),
@@ -120,6 +123,10 @@ let backButtonVisibility = null;
 let backButtonVisibilityGeneration = 0;
 let leaveDialogReturnFocus = null;
 let pendingLeaveTransition = null;
+let supportReturnFocus = null;
+let supportOperationGeneration = 0;
+let supportOperationController = null;
+let supportNativeInvoiceActive = false;
 const initialRequestedReplayId = replayIdFromSearch(window.location.search);
 let telegramLaunchRouteCaptured = false;
 let pendingTelegramLaunchRoute = null;
@@ -148,6 +155,7 @@ const state = {
   profileOpen: false,
   leaderboardOpen: false,
   leaveBattleDialog: false,
+  support: createInitialSupportState(),
   restoredBattle: false,
   restoreError: "",
   network: createUnknownNetworkState(),
@@ -234,6 +242,7 @@ const state = {
 
 let telegramAuthClient = null;
 let telegramMiniAppClient = null;
+let starsSupportClient = null;
 if (state.auth.workerUrl && isTelegramMiniApp) {
   try {
     telegramMiniAppClient = createTelegramMiniAppAuthClient({
@@ -282,6 +291,14 @@ const leaveDialogFocus = createDialogFocusController({
   document,
   dialogSelector: '[data-dialog="leave-battle"]',
   onCancel: cancelLeaveBattle,
+});
+const supportDialogFocus = createDialogFocusController({
+  root,
+  document,
+  dialogSelector: '[data-dialog="stars-support"]',
+  onCancel: () => {
+    if (!supportNativeInvoiceActive) closeSupportModal();
+  },
 });
 const mobileRuntime = createMobileRuntime({
   platform,
@@ -756,12 +773,18 @@ function render() {
       ${renderScreen()}
       </div>
       ${state.leaveBattleDialog ? renderLeaveBattleDialog() : ""}
+      ${state.support.open ? renderSupportDialog() : ""}
     </main>
   `;
-  if (state.leaveBattleDialog) {
+  if (state.support.open) {
+    leaveDialogFocus.deactivate();
+    supportDialogFocus.activate();
+  } else if (state.leaveBattleDialog) {
+    supportDialogFocus.deactivate();
     leaveDialogFocus.activate(leaveDialogReturnFocus);
   } else {
     leaveDialogFocus.deactivate();
+    supportDialogFocus.deactivate();
   }
   syncBackButtonVisibility();
   syncClosingConfirmation();
@@ -949,8 +972,25 @@ function renderSettingsPanel() {
         </select>
       </label>
       ${renderAuthControl()}
+      ${renderSupportEntry()}
       <small class="settings-build-id">Build: ${escapeHtml(buildId)}</small>
     </section>
+  `;
+}
+
+function renderSupportEntry() {
+  if (!starsSupportIsAvailable()) return "";
+  return `
+    <div class="settings-row support-entry">
+      <div>
+        <strong>${translate("support.entry")}</strong>
+        <span>${translate("support.entryDescription")}</span>
+      </div>
+      <button class="secondary-button support-entry-button" data-action="support-open">
+        <span aria-hidden="true">★</span>
+        <strong>${translate("support.entry")}</strong>
+      </button>
+    </div>
   `;
 }
 
@@ -1091,6 +1131,145 @@ function renderTelegramAuthConsent() {
       <span>${translate("auth.consent")}</span>
     </label>
   `;
+}
+
+function renderSupportDialog() {
+  const support = state.support;
+  const canContinue = supportAmountIsValid(support.amount) && support.acceptedTerms;
+  const customInvalid = support.useCustom && !supportAmountIsValid(support.amount);
+  return `
+    <div
+      class="modal-backdrop stars-support-backdrop"
+      data-dialog="stars-support"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="support-dialog-title"
+      aria-describedby="support-voluntary"
+    >
+      <section class="stars-support-dialog">
+        <header class="stars-support-header">
+          <h2 id="support-dialog-title" tabindex="0">${translate("support.title")}</h2>
+          <button
+            class="icon-button stars-support-close"
+            data-action="support-close"
+            aria-label="${translate("support.close")}"
+            ${supportNativeInvoiceActive ? "disabled" : ""}
+          >×</button>
+        </header>
+        <p id="support-voluntary" class="stars-support-voluntary">${translate("support.voluntary")}</p>
+        <div class="stars-support-status visually-hidden" aria-live="polite" aria-atomic="true">${renderSupportAnnouncement()}</div>
+        ${support.step === "amount" ? renderSupportAmountStep({ canContinue, customInvalid }) : ""}
+        ${support.step === "confirm" ? renderSupportConfirmStep() : ""}
+        ${support.step === "processing" ? renderSupportProcessingStep() : ""}
+        ${support.step === "result" ? renderSupportResultStep() : ""}
+      </section>
+    </div>
+  `;
+}
+
+function renderSupportAmountStep({ canContinue, customInvalid }) {
+  const support = state.support;
+  return `
+    <div class="stars-support-body">
+      <fieldset class="stars-support-amounts">
+        <legend>${translate("support.amountLabel")}</legend>
+        <div class="stars-support-presets">
+          ${[8, 88, 360].map((amount) => `
+            <button
+              class="support-preset"
+              data-action="support-preset"
+              data-amount="${amount}"
+              aria-pressed="${!support.useCustom && support.amount === amount}"
+            ><span aria-hidden="true">★</span><strong>${amount}</strong></button>
+          `).join("")}
+        </div>
+      </fieldset>
+      <label class="stars-support-custom">
+        <span>${translate("support.customAmount")}</span>
+        <input
+          data-action="support-custom"
+          type="text"
+          inputmode="numeric"
+          pattern="[0-9]*"
+          maxlength="5"
+          autocomplete="off"
+          value="${escapeHtml(support.customAmount)}"
+          placeholder="${translate("support.customPlaceholder")}"
+          aria-invalid="${customInvalid}"
+          aria-describedby="support-amount-error"
+        >
+      </label>
+      <small id="support-amount-error" class="support-amount-error ${customInvalid ? "is-visible" : ""}">
+        ${customInvalid ? translate("support.rangeError") : ""}
+      </small>
+      <label class="stars-support-terms">
+        <input type="checkbox" data-action="support-terms" ${support.acceptedTerms ? "checked" : ""}>
+        <span>
+          ${translate("support.terms")}
+          <a href="/agents-salvo/support.html" data-action="support-terms-link" target="_blank" rel="noopener noreferrer">${translate("support.termsLink")}</a>
+        </span>
+      </label>
+      <button class="primary-button stars-support-command" data-action="support-continue" ${canContinue ? "" : "disabled"}>
+        ${translate("support.continue")}
+      </button>
+    </div>
+  `;
+}
+
+function renderSupportConfirmStep() {
+  return `
+    <div class="stars-support-body stars-support-confirm">
+      <h3>${translate("support.confirmTitle")}</h3>
+      <p>${translate("support.confirmAmount", { amount: state.support.amount })}</p>
+      <div class="stars-support-actions">
+        <button data-action="support-back">${translate("support.back")}</button>
+        <button class="primary-button" data-action="support-pay">
+          ${translate("support.pay", { amount: state.support.amount })}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderSupportProcessingStep() {
+  return `
+    <div class="stars-support-body stars-support-processing" aria-busy="true">
+      <span class="support-spinner" aria-hidden="true"></span>
+      <strong>${translate(`support.${state.support.status}`)}</strong>
+    </div>
+  `;
+}
+
+function renderSupportResultStep() {
+  const paid = state.support.status === "paid";
+  const pending = ["pending", "confirmationPending"].includes(state.support.status);
+  const messageKey = supportResultMessageKey();
+  const resultClass = paid ? "support-thanks" : pending ? "is-pending" : "is-error";
+  return `
+    <div class="stars-support-body stars-support-result ${resultClass}">
+      <strong>${translate(messageKey)}</strong>
+      ${paid ? "" : `<button class="primary-button" data-action="support-retry">${translate("support.retry")}</button>`}
+      <button data-action="support-close">${translate("support.close")}</button>
+    </div>
+  `;
+}
+
+function renderSupportAnnouncement() {
+  if (state.support.step === "processing") {
+    return escapeHtml(translate(`support.${state.support.status}`));
+  }
+  if (state.support.step === "result") {
+    return escapeHtml(translate(supportResultMessageKey()));
+  }
+  return "";
+}
+
+function supportResultMessageKey() {
+  if (state.support.status === "paid") return "support.thanks";
+  if (state.support.status === "pending") return "support.pending";
+  if (state.support.status === "confirmationPending") return "support.confirmationPending";
+  if (state.support.status === "unavailable") return "support.unavailable";
+  return "support.failed";
 }
 
 function renderLeaveBattleDialog() {
@@ -2980,6 +3159,10 @@ root.addEventListener("change", async (event) => {
       state.auth.consent ? "accepted" : "declined",
     );
   }
+  if (action === "support-terms") {
+    state.support.acceptedTerms = Boolean(event.target.checked);
+    renderSupportStateChange();
+  }
   if (action === "agent-difficulty") {
     state.agentDifficulty = event.target.value;
   }
@@ -2993,6 +3176,9 @@ root.addEventListener("change", async (event) => {
 
 root.addEventListener("input", (event) => {
   updateOnlineInput(event.target);
+  if (event.target.dataset.action === "support-custom") {
+    updateSupportCustomAmount(event.target);
+  }
 });
 
 root.addEventListener("change", (event) => {
@@ -3095,6 +3281,15 @@ root.addEventListener("click", async (event) => {
   }
 
   const action = button.dataset.action;
+  if (action === "support-terms-link") {
+    event.preventDefault();
+    try {
+      await platform.openExternalUrl(canonicalSupportUrl);
+    } catch (error) {
+      reportRuntimeError(error);
+    }
+    return;
+  }
   if (action === "open-privacy" && platform.isNative()) {
     event.preventDefault();
     await platform.openExternalUrl(canonicalPrivacyUrl);
@@ -3105,6 +3300,13 @@ root.addEventListener("click", async (event) => {
     playSound("ui");
   }
   if (action === "toggle-settings") toggleSettings();
+  if (action === "support-open") openSupportModal();
+  if (action === "support-close") closeSupportModal();
+  if (action === "support-preset") selectSupportPreset(button.dataset.amount);
+  if (action === "support-continue") continueSupportPayment();
+  if (action === "support-back") returnToSupportAmount();
+  if (action === "support-pay") await startSupportPayment();
+  if (action === "support-retry") await retrySupportPayment();
   if (action === "start-hotseat") startSetup("hotseat");
   if (action === "start-agent") startSetup("agent");
   if (action === "start-training") startTraining();
@@ -3272,6 +3474,11 @@ function startTraining(scenarioId = state.training.scenarioId) {
 }
 
 async function handlePlatformBack() {
+  if (state.support.open) {
+    if (supportNativeInvoiceActive) return true;
+    closeSupportModal();
+    return true;
+  }
   if (state.leaveBattleDialog) {
     cancelLeaveBattle();
     return true;
@@ -3395,6 +3602,7 @@ function syncBackButtonVisibility() {
   if (!isTelegramMiniApp || typeof platform.setBackButtonVisible !== "function") return;
   const enabled = Boolean(
     state.screen !== "menu"
+    || state.support.open
     || state.leaveBattleDialog
     || isResultModalVisible()
     || state.settingsOpen
@@ -3679,6 +3887,327 @@ function toggleSettings() {
     state.leaderboardOpen = false;
   }
   render();
+}
+
+function createInitialSupportState() {
+  return {
+    open: false,
+    step: "amount",
+    amount: null,
+    customAmount: "",
+    useCustom: false,
+    acceptedTerms: false,
+    invoiceId: "",
+    status: "idle",
+    error: "",
+  };
+}
+
+function starsSupportIsAvailable() {
+  if (!isTelegramMiniApp || typeof platform.supportsInvoice !== "function") return false;
+  try {
+    return platform.supportsInvoice() === true;
+  } catch {
+    return false;
+  }
+}
+
+function getStarsSupportClient() {
+  if (starsSupportClient) return starsSupportClient;
+  if (!starsSupportIsAvailable() || !state.auth.workerUrl) return null;
+  try {
+    starsSupportClient = createStarsSupportClientFactory({
+      workerUrl: state.auth.workerUrl,
+      getToken: () => state.auth.token,
+      fetcher: fetch,
+    });
+  } catch (error) {
+    reportRuntimeError(error);
+    starsSupportClient = null;
+  }
+  return starsSupportClient;
+}
+
+function openSupportModal() {
+  if (!starsSupportIsAvailable()) return;
+  stopSupportOperation();
+  supportReturnFocus = supportDialogFocus.captureReturnFocus();
+  state.support = { ...createInitialSupportState(), open: true };
+  render();
+}
+
+function closeSupportModal() {
+  if (!state.support.open || supportNativeInvoiceActive) return;
+  const returnFocus = supportReturnFocus;
+  supportReturnFocus = null;
+  stopSupportOperation();
+  state.support = createInitialSupportState();
+  render();
+  supportDialogFocus.restoreFocus(returnFocus);
+}
+
+function stopSupportOperation() {
+  supportOperationGeneration += 1;
+  supportOperationController?.abort();
+  supportOperationController = null;
+  supportNativeInvoiceActive = false;
+}
+
+function renderSupportStateChange() {
+  const focus = supportDialogFocus.captureReturnFocus();
+  render();
+  supportDialogFocus.restoreFocus(focus);
+}
+
+function selectSupportPreset(rawAmount) {
+  if (!state.support.open || state.support.step !== "amount") return;
+  const amount = Number(rawAmount);
+  if (![8, 88, 360].includes(amount)) return;
+  state.support.amount = amount;
+  state.support.customAmount = "";
+  state.support.useCustom = false;
+  state.support.error = "";
+  renderSupportStateChange();
+}
+
+function updateSupportCustomAmount(target) {
+  if (!state.support.open || state.support.step !== "amount") return;
+  const customAmount = typeof target?.value === "string" ? target.value : "";
+  const selection = supportInputSelection(target, customAmount.length);
+  state.support.customAmount = customAmount;
+  state.support.useCustom = true;
+  state.support.amount = validSupportCustomAmount(customAmount);
+  state.support.error = "";
+  renderSupportStateChange();
+  restoreSupportInputSelection(selection);
+}
+
+function supportInputSelection(target, maximum) {
+  const start = target?.selectionStart;
+  const end = target?.selectionEnd;
+  if (
+    !Number.isInteger(start)
+    || !Number.isInteger(end)
+    || start < 0
+    || end < start
+    || end > maximum
+  ) return null;
+  const direction = ["forward", "backward", "none"].includes(target.selectionDirection)
+    ? target.selectionDirection
+    : "none";
+  return { start, end, direction };
+}
+
+function restoreSupportInputSelection(selection) {
+  if (!selection) return;
+  const input = root.querySelector('[data-action="support-custom"]');
+  if (typeof input?.setSelectionRange !== "function") return;
+  try {
+    input.setSelectionRange(selection.start, selection.end, selection.direction);
+  } catch {
+    // Input selection is a progressive enhancement; payment controls remain usable.
+  }
+}
+
+function validSupportCustomAmount(value) {
+  if (typeof value !== "string" || !/^(?:[1-9]\d{0,3}|10000)$/u.test(value)) return null;
+  const amount = Number(value);
+  return supportAmountIsValid(amount) ? amount : null;
+}
+
+function supportAmountIsValid(amount) {
+  return Number.isInteger(amount) && amount >= 1 && amount <= 10_000;
+}
+
+function continueSupportPayment() {
+  if (
+    !state.support.open
+    || state.support.step !== "amount"
+    || !supportAmountIsValid(state.support.amount)
+    || !state.support.acceptedTerms
+  ) return;
+  state.support.step = "confirm";
+  state.support.status = "idle";
+  state.support.error = "";
+  renderSupportStateChange();
+}
+
+function returnToSupportAmount() {
+  if (!state.support.open || state.support.step !== "confirm") return;
+  state.support.step = "amount";
+  state.support.status = "idle";
+  state.support.error = "";
+  renderSupportStateChange();
+}
+
+async function startSupportPayment() {
+  if (
+    !state.support.open
+    || state.support.step !== "confirm"
+    || !supportAmountIsValid(state.support.amount)
+    || !state.support.acceptedTerms
+    || supportOperationController
+  ) return;
+
+  const client = getStarsSupportClient();
+  if (!client || !state.auth.token) {
+    showSupportResult("unavailable", "support.unavailable");
+    return;
+  }
+
+  const operation = beginSupportOperation();
+  state.support.step = "processing";
+  state.support.status = "creating";
+  state.support.error = "";
+  renderSupportStateChange();
+
+  let operationStage = "create";
+  try {
+    const invoice = await client.createInvoice(
+      { amount: state.support.amount, locale: supportLocale() },
+      { signal: operation.controller.signal },
+    );
+    if (!supportOperationIsCurrent(operation)) return;
+    state.support.invoiceId = invoice.invoiceId;
+    state.support.status = "opening";
+    supportNativeInvoiceActive = true;
+    operationStage = "native";
+    renderSupportStateChange();
+
+    let nativeResult;
+    try {
+      nativeResult = await platform.openInvoice(invoice.invoiceUrl);
+    } finally {
+      if (supportOperationIsCurrent(operation)) supportNativeInvoiceActive = false;
+    }
+    if (!supportOperationIsCurrent(operation)) return;
+    const nativeStatus = nativeResult?.status;
+
+    if (nativeStatus === "cancelled") {
+      finishSupportOperation(operation);
+      state.support.step = "amount";
+      state.support.status = "idle";
+      state.support.error = "";
+      renderSupportStateChange();
+      return;
+    }
+    if (nativeStatus === "pending") {
+      finishSupportOperation(operation);
+      showSupportResult("pending", "");
+      return;
+    }
+    if (
+      nativeStatus === "unsupported"
+      || !["paid", "failed"].includes(nativeStatus)
+    ) {
+      finishSupportOperation(operation);
+      showSupportResult("unavailable", "support.unavailable");
+      return;
+    }
+    if (nativeStatus !== "paid") {
+      finishSupportOperation(operation);
+      showSupportResult("failed", "support.failed");
+      return;
+    }
+
+    state.support.status = "verifying";
+    operationStage = "verify";
+    renderSupportStateChange();
+    const verification = await client.waitForPaid(invoice.invoiceId, {
+      signal: operation.controller.signal,
+    });
+    if (!supportOperationIsCurrent(operation)) return;
+    finishSupportOperation(operation);
+    if (verification?.status === "paid") {
+      showSupportResult("paid", "");
+    } else if (verification?.status === "pending") {
+      showSupportResult("confirmationPending", "");
+    } else {
+      showSupportResult("failed", "support.failed");
+    }
+  } catch (error) {
+    if (!supportOperationIsCurrent(operation)) return;
+    finishSupportOperation(operation);
+    const unavailable = operationStage !== "native" && supportServiceIsUnavailable(error);
+    showSupportResult(unavailable ? "unavailable" : "failed", unavailable ? "support.unavailable" : "support.failed");
+  }
+}
+
+async function retrySupportPayment() {
+  if (!state.support.open || state.support.step !== "result" || state.support.status === "paid") return;
+  if (["pending", "confirmationPending"].includes(state.support.status) && state.support.invoiceId) {
+    await retrySupportVerification();
+    return;
+  }
+  state.support.invoiceId = "";
+  state.support.step = "confirm";
+  state.support.status = "idle";
+  state.support.error = "";
+  renderSupportStateChange();
+  await startSupportPayment();
+}
+
+async function retrySupportVerification() {
+  const client = getStarsSupportClient();
+  if (!client || !state.auth.token || supportOperationController) {
+    showSupportResult("unavailable", "support.unavailable");
+    return;
+  }
+  const operation = beginSupportOperation();
+  const invoiceId = state.support.invoiceId;
+  state.support.step = "processing";
+  state.support.status = "verifying";
+  state.support.error = "";
+  renderSupportStateChange();
+  try {
+    const verification = await client.waitForPaid(invoiceId, { signal: operation.controller.signal });
+    if (!supportOperationIsCurrent(operation)) return;
+    finishSupportOperation(operation);
+    showSupportResult(verification?.status === "paid" ? "paid" : verification?.status === "pending" ? "confirmationPending" : "failed", verification?.status === "paid" || verification?.status === "pending" ? "" : "support.failed");
+  } catch (error) {
+    if (!supportOperationIsCurrent(operation)) return;
+    finishSupportOperation(operation);
+    const unavailable = supportServiceIsUnavailable(error);
+    showSupportResult(unavailable ? "unavailable" : "failed", unavailable ? "support.unavailable" : "support.failed");
+  }
+}
+
+function beginSupportOperation() {
+  supportOperationGeneration += 1;
+  supportOperationController?.abort();
+  const controller = new AbortController();
+  supportOperationController = controller;
+  return { controller, generation: supportOperationGeneration };
+}
+
+function supportOperationIsCurrent(operation) {
+  return Boolean(
+    state.support.open
+    && supportOperationController === operation.controller
+    && supportOperationGeneration === operation.generation
+    && !operation.controller.signal.aborted
+  );
+}
+
+function finishSupportOperation(operation) {
+  if (supportOperationController === operation.controller) supportOperationController = null;
+}
+
+function showSupportResult(status, errorKey) {
+  state.support.step = "result";
+  state.support.status = status;
+  state.support.error = errorKey;
+  renderSupportStateChange();
+}
+
+function supportServiceIsUnavailable(error) {
+  return !Number.isInteger(error?.status) || [0, 401, 403].includes(error.status);
+}
+
+function supportLocale() {
+  if (state.language === "ru") return "ru";
+  if (state.language === "zh-CN") return "zh";
+  return "en";
 }
 
 function toggleTacticalAdvisor() {
@@ -5886,7 +6415,12 @@ const startup = startMobileApp();
 return {
   getState: () => state,
   startup,
-  stop: () => mobileRuntime.stop(),
+  stop: () => {
+    stopSupportOperation();
+    state.support.open = false;
+    supportDialogFocus.deactivate();
+    return mobileRuntime.stop();
+  },
 };
 }
 

@@ -37,6 +37,9 @@ const scenarios = {
   "haptic-runtime": runHapticRuntimeScenario,
   "telegram-theme-build": runTelegramThemeBuildScenario,
   "auth-recovery": runAuthRecoveryScenario,
+  "stars-support-visibility": runStarsSupportVisibilityScenario,
+  "stars-support-selection": runStarsSupportSelectionScenario,
+  "stars-support-lifecycle": runStarsSupportLifecycleScenario,
 };
 const scenario = scenarios[scenarioName];
 assert.ok(scenario, `Unknown app behavior scenario: ${scenarioName}`);
@@ -1902,6 +1905,379 @@ async function runAuthRecoveryScenario() {
   await Promise.all([offlineApp.stop(), persistenceApp.stop()]);
 }
 
+async function runStarsSupportVisibilityScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const cases = [
+    ["web", false, false],
+    ["android", true, false],
+    ["ios", true, false],
+    ["telegram", false, false],
+    ["telegram", true, true],
+  ];
+
+  for (const [platformName, supportsInvoice, expected] of cases) {
+    const harness = createAppHarness({
+      native: platformName === "android" || platformName === "ios",
+      platformName,
+      supportsInvoice,
+      launchData: platformName === "telegram" ? "signed-init-data" : "",
+    });
+    const app = bootSalvoApp(harness.dependencies);
+    await app.startup.done;
+    assert.equal(
+      harness.root.innerHTML.includes('data-action="support-open"'),
+      expected,
+      `${platformName}:${supportsInvoice}`,
+    );
+    await app.stop();
+  }
+}
+
+async function runStarsSupportSelectionScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const harness = createAppHarness({
+    platformName: "telegram",
+    supportsInvoice: true,
+    launchData: "signed-init-data",
+  });
+  const app = bootSalvoApp(harness.dependencies);
+  await app.startup.done;
+  await harness.root.click("toggle-settings");
+  await harness.root.click("support-open", { focus: true });
+
+  assert.equal(app.getState().support.open, true);
+  assert.equal(app.getState().support.amount, null, "opening never preselects a contribution");
+  assert.doesNotMatch(harness.root.innerHTML, /support-preset[^>]*aria-pressed="true"/u);
+  assert.equal(harness.document.activeElement?.id, "support-dialog-title");
+
+  harness.document.keydown("Escape");
+  assert.equal(app.getState().support.open, false, "support is always dismissible before payment");
+  assert.equal(harness.document.activeElement?.dataset.action, "support-open");
+
+  await harness.root.click("support-open", { focus: true });
+  for (const amount of [8, 88, 360]) {
+    await harness.root.click("support-preset", { amount: String(amount) });
+    assert.equal(app.getState().support.amount, amount);
+    assert.equal(app.getState().support.useCustom, false);
+  }
+
+  await harness.root.change("support-terms", { checked: true });
+  const invalidAmounts = ["", " ", "0", "10001", "1.5", "1e2", "+8", "-8", " 8", "8 ", "٨", "８"];
+  for (const value of invalidAmounts) {
+    await harness.root.input("support-custom", { value });
+    assert.equal(app.getState().support.amount, null, `invalid custom amount: ${JSON.stringify(value)}`);
+    assert.match(harness.root.innerHTML, /support-amount-error/u);
+    assert.match(harness.root.innerHTML, /data-action="support-continue"[^>]*disabled/u);
+  }
+
+  await harness.root.input("support-custom", { value: "10000" });
+  assert.equal(app.getState().support.amount, 10000);
+  assert.equal(app.getState().support.useCustom, true);
+  assert.doesNotMatch(harness.root.innerHTML, /data-action="support-continue"[^>]*disabled/u);
+
+  await harness.root.input("support-custom", {
+    value: "1000",
+    selectionStart: 2,
+    selectionEnd: 2,
+    selectionDirection: "none",
+    focus: true,
+  });
+  assert.equal(harness.document.activeElement?.dataset.action, "support-custom");
+  assert.equal(harness.document.activeElement?.selectionStart, 2);
+  assert.equal(harness.document.activeElement?.selectionEnd, 2);
+
+  await harness.root.change("support-terms", { checked: false });
+  assert.match(harness.root.innerHTML, /data-action="support-continue"[^>]*disabled/u);
+  await harness.root.click("support-continue");
+  assert.equal(app.getState().support.step, "amount", "terms are required only to initiate payment");
+
+  await harness.root.change("support-terms", { checked: true });
+  await harness.root.click("support-terms-link");
+  assert.equal(app.getState().support.open, true);
+  assert.deepEqual(harness.calls.openedUrls, ["https://agent-axiom.github.io/agents-salvo/support.html"]);
+
+  await harness.root.click("support-continue");
+  assert.equal(app.getState().support.step, "confirm");
+  assert.match(harness.root.innerHTML, /You chose 1000 Telegram Stars/u);
+  assert.match(harness.root.innerHTML, /data-action="support-pay"/u);
+  await app.stop();
+}
+
+async function runStarsSupportLifecycleScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const invoiceId = `inv_${"A".repeat(22)}`;
+  const invoice = {
+    invoiceId,
+    invoiceUrl: "https://t.me/$support_A-1=",
+    amount: 88,
+    currency: "XTR",
+    expiresAt: "2026-07-20T20:15:00.000Z",
+  };
+  const paidInvoice = {
+    invoiceId,
+    amount: 88,
+    currency: "XTR",
+    status: "paid",
+    createdAt: "2026-07-20T20:00:00.000Z",
+    expiresAt: "2026-07-20T20:15:00.000Z",
+    paidAt: "2026-07-20T20:01:00.000Z",
+  };
+
+  const createPending = deferred();
+  const createSignals = [];
+  let createCalls = 0;
+  let openCalls = 0;
+  const fetching = createAppHarness({
+    platformName: "telegram",
+    supportsInvoice: true,
+    launchData: "signed-init-data",
+    createStarsSupportClient: () => ({
+      createInvoice(_input, { signal }) {
+        createCalls += 1;
+        createSignals.push(signal);
+        return createPending.promise;
+      },
+      async waitForPaid() {
+        assert.fail("polling is not expected before Telegram returns paid");
+      },
+    }),
+    onOpenInvoice() {
+      openCalls += 1;
+      return { status: "paid" };
+    },
+  });
+  const fetchingApp = bootSalvoApp(fetching.dependencies);
+  await fetchingApp.startup.done;
+  await openSupportConfirmation(fetching);
+  const firstPay = fetching.root.click("support-pay");
+  const secondPay = fetching.root.click("support-pay");
+  await waitFor(() => createCalls === 1);
+  assert.equal(fetchingApp.getState().support.step, "processing");
+  assert.match(
+    fetching.root.innerHTML,
+    /stars-support-status[^>]*aria-live="polite"[^>]*>\s*Creating a secure invoice/u,
+  );
+  await fetching.root.click("support-close");
+  assert.equal(fetchingApp.getState().support.open, false);
+  assert.equal(createSignals[0].aborted, true);
+  createPending.resolve(invoice);
+  await Promise.all([firstPay, secondPay]);
+  assert.equal(openCalls, 0, "late invoice creation cannot open Telegram after closing");
+
+  const nativeResult = deferred();
+  const native = createAppHarness({
+    platformName: "telegram",
+    supportsInvoice: true,
+    launchData: "signed-init-data",
+    createStarsSupportClient: () => ({
+      async createInvoice() { return invoice; },
+      async waitForPaid() { return { status: "paid", invoice: paidInvoice }; },
+    }),
+    onOpenInvoice: () => nativeResult.promise,
+  });
+  const nativeApp = bootSalvoApp(native.dependencies);
+  await nativeApp.startup.done;
+  await openSupportConfirmation(native);
+  const nativePay = native.root.click("support-pay");
+  await waitFor(() => nativeApp.getState().support.status === "opening");
+  native.document.keydown("Escape");
+  assert.equal(nativeApp.getState().support.open, true, "Escape cannot hide an active native invoice");
+  nativeResult.resolve({ status: "cancelled" });
+  await nativePay;
+  assert.equal(nativeApp.getState().support.step, "amount");
+  assert.equal(nativeApp.getState().support.error, "");
+
+  native.root.focusAction("support-close");
+  const tabForward = native.document.keydown("Tab");
+  assert.equal(tabForward.defaultPrevented, true);
+  assert.equal(native.document.activeElement?.id, "support-dialog-title");
+  const tabBack = native.document.keydown("Tab", { shiftKey: true });
+  assert.equal(tabBack.defaultPrevented, true);
+  assert.equal(native.document.activeElement?.dataset.action, "support-close");
+
+  let confirmedPayments = 0;
+  const paid = createAppHarness({
+    platformName: "telegram",
+    supportsInvoice: true,
+    launchData: "signed-init-data",
+    createStarsSupportClient: () => ({
+      async createInvoice() { return invoice; },
+      async waitForPaid(receivedInvoiceId) {
+        confirmedPayments += 1;
+        assert.equal(receivedInvoiceId, invoiceId);
+        return { status: "paid", invoice: paidInvoice };
+      },
+    }),
+    onOpenInvoice: () => ({ status: "paid" }),
+  });
+  const paidApp = bootSalvoApp(paid.dependencies);
+  await paidApp.startup.done;
+  await openSupportConfirmation(paid);
+  await paid.root.click("support-pay");
+  assert.equal(confirmedPayments, 1);
+  assert.equal(paidApp.getState().support.status, "paid");
+  assert.match(paid.root.innerHTML, /support-thanks/u);
+  assert.doesNotMatch(paid.root.innerHTML, /stars-support-result is-error/u);
+
+  const polling = deferred();
+  const verifying = createAppHarness({
+    platformName: "telegram",
+    supportsInvoice: true,
+    launchData: "signed-init-data",
+    createStarsSupportClient: () => ({
+      async createInvoice() { return invoice; },
+      waitForPaid(_invoiceId, { signal }) {
+        assert.equal(signal.aborted, false);
+        return polling.promise;
+      },
+    }),
+    onOpenInvoice: () => ({ status: "paid" }),
+  });
+  const verifyingApp = bootSalvoApp(verifying.dependencies);
+  await verifyingApp.startup.done;
+  await openSupportConfirmation(verifying);
+  const verifyPay = verifying.root.click("support-pay");
+  await waitFor(() => verifyingApp.getState().support.status === "verifying");
+  await verifying.root.click("support-close");
+  polling.resolve({ status: "paid", invoice: paidInvoice });
+  await verifyPay;
+  assert.equal(verifyingApp.getState().support.open, false);
+  assert.doesNotMatch(verifying.root.innerHTML, /support-thanks/u);
+
+  const failed = createAppHarness({
+    platformName: "telegram",
+    supportsInvoice: true,
+    launchData: "signed-init-data",
+    createStarsSupportClient: () => ({
+      async createInvoice() { return invoice; },
+      async waitForPaid() { return { status: "pending", invoice: { ...paidInvoice, status: "pending", paidAt: null } }; },
+    }),
+    onOpenInvoice: () => ({ status: "failed" }),
+  });
+  const failedApp = bootSalvoApp(failed.dependencies);
+  await failedApp.startup.done;
+  await openSupportConfirmation(failed);
+  await failed.root.click("support-pay");
+  assert.equal(failedApp.getState().support.step, "result");
+  assert.equal(failedApp.getState().support.status, "failed");
+  assert.match(failed.root.innerHTML, /data-action="support-retry"/u);
+  await failed.root.click("support-close");
+  await failed.root.click("support-open");
+  assert.equal(failedApp.getState().support.amount, null, "reopening after failure remains voluntary");
+
+  let pendingVerificationCalls = 0;
+  const pending = createAppHarness({
+    platformName: "telegram",
+    supportsInvoice: true,
+    launchData: "signed-init-data",
+    createStarsSupportClient: () => ({
+      async createInvoice() { return invoice; },
+      async waitForPaid(receivedInvoiceId) {
+        pendingVerificationCalls += 1;
+        assert.equal(receivedInvoiceId, invoiceId);
+        return { status: "paid", invoice: paidInvoice };
+      },
+    }),
+    onOpenInvoice: () => ({ status: "pending" }),
+  });
+  const pendingApp = bootSalvoApp(pending.dependencies);
+  await pendingApp.startup.done;
+  await openSupportConfirmation(pending);
+  await pending.root.click("support-pay");
+  assert.equal(pendingApp.getState().support.status, "pending");
+  assert.equal(pendingVerificationCalls, 0, "native pending does not poll automatically");
+  assert.doesNotMatch(pending.root.innerHTML, /stars-support-result is-error/u);
+  await pending.root.click("support-retry");
+  assert.equal(pendingVerificationCalls, 1);
+  assert.equal(pendingApp.getState().support.status, "paid");
+
+  let confirmationChecks = 0;
+  const confirmationPending = createAppHarness({
+    platformName: "telegram",
+    supportsInvoice: true,
+    launchData: "signed-init-data",
+    createStarsSupportClient: () => ({
+      async createInvoice() { return invoice; },
+      async waitForPaid() {
+        confirmationChecks += 1;
+        return confirmationChecks === 1
+          ? { status: "pending", invoice: { ...paidInvoice, status: "pending", paidAt: null } }
+          : { status: "paid", invoice: paidInvoice };
+      },
+    }),
+    onOpenInvoice: () => ({ status: "paid" }),
+  });
+  const confirmationPendingApp = bootSalvoApp(confirmationPending.dependencies);
+  await confirmationPendingApp.startup.done;
+  await openSupportConfirmation(confirmationPending);
+  await confirmationPending.root.click("support-pay");
+  assert.equal(confirmationPendingApp.getState().support.status, "confirmationPending");
+  assert.doesNotMatch(confirmationPending.root.innerHTML, /stars-support-result is-error/u);
+  await confirmationPending.root.click("support-retry");
+  assert.equal(confirmationChecks, 2);
+  assert.equal(confirmationPendingApp.getState().support.status, "paid");
+
+  const unavailableNativeApps = [];
+  for (const [name, nativeResponse] of [
+    ["unsupported native invoices", { status: "unsupported" }],
+    ["malformed native invoice response", { status: "unexpected" }],
+  ]) {
+    const nativeUnavailable = createAppHarness({
+      platformName: "telegram",
+      supportsInvoice: true,
+      launchData: "signed-init-data",
+      createStarsSupportClient: () => ({
+        async createInvoice() { return invoice; },
+        async waitForPaid() { assert.fail(`${name} must not poll`); },
+      }),
+      onOpenInvoice: () => nativeResponse,
+    });
+    const nativeUnavailableApp = bootSalvoApp(nativeUnavailable.dependencies);
+    unavailableNativeApps.push(nativeUnavailableApp);
+    await nativeUnavailableApp.startup.done;
+    await openSupportConfirmation(nativeUnavailable);
+    await nativeUnavailable.root.click("support-pay");
+    assert.equal(nativeUnavailableApp.getState().support.status, "unavailable", name);
+    assert.match(nativeUnavailable.root.innerHTML, /Support is temporarily unavailable/u, name);
+  }
+
+  const unavailable = createAppHarness({
+    platformName: "telegram",
+    supportsInvoice: true,
+    launchData: "signed-init-data",
+    createStarsSupportClient: () => ({
+      async createInvoice() { throw Object.assign(new Error("private network detail"), { status: 0 }); },
+      async waitForPaid() { assert.fail("unavailable create never polls"); },
+    }),
+  });
+  const unavailableApp = bootSalvoApp(unavailable.dependencies);
+  await unavailableApp.startup.done;
+  await openSupportConfirmation(unavailable);
+  await unavailable.root.click("support-pay");
+  assert.equal(unavailableApp.getState().support.status, "unavailable");
+  assert.doesNotMatch(unavailable.root.innerHTML, /private network detail/u);
+
+  await Promise.all([
+    fetchingApp.stop(),
+    nativeApp.stop(),
+    paidApp.stop(),
+    verifyingApp.stop(),
+    failedApp.stop(),
+    pendingApp.stop(),
+    confirmationPendingApp.stop(),
+    ...unavailableNativeApps.map((app) => app.stop()),
+    unavailableApp.stop(),
+  ]);
+}
+
+async function openSupportConfirmation(harness, amount = 88) {
+  await harness.root.click("toggle-settings");
+  await harness.root.click("support-open", { focus: true });
+  await harness.root.click("support-preset", { amount: String(amount) });
+  await harness.root.change("support-terms", { checked: true });
+  await harness.root.click("support-continue");
+}
+
 function createAppHarness({
   network = resolvedDeferred({ connected: true, connectionType: "wifi" }),
   snapshot = resolvedDeferred(null),
@@ -1909,6 +2285,7 @@ function createAppHarness({
   secureSession = resolvedDeferred(""),
   native = false,
   platformName = native ? "android" : "web",
+  supportsInvoice = false,
   launchData = "",
   startParam = "",
   platformAvailable = Boolean(launchData),
@@ -1930,6 +2307,7 @@ function createAppHarness({
   onSecureClear = () => Promise.resolve(),
   onSecureSet = () => Promise.resolve(),
   onOpenExternalUrl = () => Promise.resolve(),
+  onOpenInvoice = () => ({ status: "cancelled" }),
   onCloseExternalUrl = () => Promise.resolve(),
   onSetBackButtonVisible = () => Promise.resolve(),
   onSetClosingConfirmation = () => Promise.resolve(),
@@ -1939,6 +2317,7 @@ function createAppHarness({
   createRemoteClient = () => {
     throw new Error("Remote client was not expected");
   },
+  createStarsSupportClient,
   fetchResponse = (url) => {
     if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
     throw new Error(`Unexpected fetch: ${url}`);
@@ -1966,6 +2345,7 @@ function createAppHarness({
     backButtonVisibility: [],
     closingConfirmations: [],
     haptics: [],
+    openedInvoices: [],
     audioPauses: 0,
     audioResumes: 0,
   };
@@ -2087,6 +2467,13 @@ function createAppHarness({
       calls.openedUrls.push(url);
       await onOpenExternalUrl(url);
     },
+    supportsInvoice() {
+      return supportsInvoice;
+    },
+    async openInvoice(url) {
+      calls.openedInvoices.push(url);
+      return onOpenInvoice(url);
+    },
     async closeExternalUrl() {
       calls.closedUrls += 1;
       await onCloseExternalUrl();
@@ -2167,6 +2554,7 @@ function createAppHarness({
       platform,
       audio,
       createRemoteClient,
+      ...(createStarsSupportClient ? { createStarsSupportClient } : {}),
       fetch: async (input, init) => {
         const url = String(input);
         fetchCalls.push({ url, init });
@@ -2259,6 +2647,7 @@ function createRootHarness(document) {
   let cancelControl = null;
   let confirmControl = null;
   let competingDialogControl = null;
+  let supportDialogControls = [];
   let telegramSlot = null;
 
   const makeActionElement = (action, extraDataset = {}) => {
@@ -2266,8 +2655,16 @@ function createRootHarness(document) {
       dataset: { action, ...extraDataset },
       id: "",
       isConnected: true,
+      selectionStart: null,
+      selectionEnd: null,
+      selectionDirection: "none",
       focus() {
         document.activeElement = element;
+      },
+      setSelectionRange(start, end, direction = "none") {
+        element.selectionStart = start;
+        element.selectionEnd = end;
+        element.selectionDirection = direction;
       },
       closest(selector) {
         return selector === "[data-action]" ? element : null;
@@ -2308,6 +2705,18 @@ function createRootHarness(document) {
       competingDialogControl = html.includes("leaderboard-popover")
         ? makeActionElement("close-leaderboard")
         : null;
+      supportDialogControls = html.includes('data-dialog="stars-support"')
+        ? [
+            Object.assign(makeActionElement("support-dialog-title"), { id: "support-dialog-title" }),
+            makeActionElement("support-preset", { amount: "8" }),
+            makeActionElement("support-preset", { amount: "88" }),
+            makeActionElement("support-preset", { amount: "360" }),
+            makeActionElement("support-custom"),
+            makeActionElement("support-terms"),
+            makeActionElement("support-continue"),
+            makeActionElement("support-close"),
+          ]
+        : [];
     },
     addEventListener(type, listener) {
       const entries = listeners.get(type) ?? [];
@@ -2327,6 +2736,19 @@ function createRootHarness(document) {
           },
         };
       }
+      if (selector === '[data-dialog="stars-support"]' && supportDialogControls.length > 0) {
+        return {
+          contains(element) {
+            return supportDialogControls.includes(element);
+          },
+          querySelectorAll() {
+            return supportDialogControls;
+          },
+        };
+      }
+      if (selector === '[data-action="support-custom"]') {
+        return supportDialogControls.find((element) => element.dataset.action === "support-custom") ?? null;
+      }
       if (selector === '[role="dialog"]' && competingDialogControl) {
         return {
           contains: (element) => element === competingDialogControl,
@@ -2336,7 +2758,9 @@ function createRootHarness(document) {
       return null;
     },
     querySelectorAll(selector) {
-      if (selector === "[data-action]") return [...actionElements.values()];
+      if (selector === "[data-action]") {
+        return [...supportDialogControls, ...actionElements.values()];
+      }
       if (selector === "[id]") return [];
       return [];
     },
@@ -2344,8 +2768,28 @@ function createRootHarness(document) {
       const target = makeActionElement(action, dataset);
       actionElements.set(action, target);
       if (focus) target.focus();
-      const event = { target };
+      const event = {
+        target,
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      };
       await Promise.all((listeners.get("click") ?? []).map((listener) => listener(event)));
+    },
+    focusAction(action) {
+      const target = supportDialogControls.find((element) => element.dataset.action === action)
+        ?? actionElements.get(action);
+      assert.ok(target, `Action is not focusable: ${action}`);
+      target.focus();
+    },
+    async input(action, values = {}) {
+      const target = makeActionElement(action);
+      const { focus = false, ...inputValues } = values;
+      Object.assign(target, inputValues);
+      if (focus) target.focus();
+      const event = { target };
+      await Promise.all((listeners.get("input") ?? []).map((listener) => listener(event)));
     },
     async change(action, values = {}) {
       const target = makeActionElement(action);

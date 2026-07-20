@@ -594,6 +594,17 @@ html[data-runtime="telegram"] .shell {
   border-top: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
 }
 
+.support-entry-button {
+  min-width: 148px;
+  min-height: 44px;
+  grid-template-columns: 22px minmax(0, 1fr);
+}
+
+.support-entry-button > span {
+  color: var(--accent-strong);
+  font-size: 18px;
+}
+
 .telegram-login-slot {
   min-height: 42px;
   display: flex;
@@ -3033,6 +3044,210 @@ html[data-runtime="telegram"] .result-modal {
     0 22px 70px rgba(0, 0, 0, 0.24);
 }
 
+.stars-support-dialog {
+  display: grid;
+  width: min(480px, 100%);
+  max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 36px);
+  gap: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 20px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 2px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow), 0 22px 70px rgba(0, 0, 0, 0.24);
+}
+
+html[data-runtime="telegram"] .stars-support-dialog {
+  max-height: calc(
+    var(--tg-viewport-stable-height, 100dvh) -
+    var(--salvo-safe-top) -
+    var(--salvo-safe-bottom) -
+    36px
+  );
+}
+
+.stars-support-header,
+.stars-support-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.stars-support-header h2,
+.stars-support-confirm h3,
+.stars-support-dialog p {
+  margin: 0;
+}
+
+.stars-support-header h2:focus-visible {
+  outline: 3px solid var(--accent-strong);
+  outline-offset: 4px;
+}
+
+.stars-support-close {
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  flex: 0 0 auto;
+}
+
+.stars-support-voluntary {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.stars-support-status {
+  min-height: 20px;
+  color: var(--hit);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.stars-support-body,
+.stars-support-amounts,
+.stars-support-custom,
+.stars-support-confirm,
+.stars-support-processing,
+.stars-support-result {
+  display: grid;
+  gap: 12px;
+}
+
+.stars-support-amounts {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.stars-support-amounts legend,
+.stars-support-custom > span {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.stars-support-presets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.support-preset {
+  min-width: 0;
+  min-height: 52px;
+  grid-template-columns: 20px auto;
+  gap: 7px;
+}
+
+.support-preset span {
+  color: var(--accent-strong);
+}
+
+.support-preset[aria-pressed="true"] {
+  color: var(--primary-ink);
+  background: var(--accent);
+  border-color: var(--accent-strong);
+}
+
+.stars-support-custom input {
+  min-height: 48px;
+}
+
+.support-amount-error {
+  min-height: 34px;
+  color: transparent;
+  line-height: 1.35;
+}
+
+.support-amount-error.is-visible {
+  color: var(--hit);
+}
+
+.stars-support-terms {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  line-height: 1.45;
+}
+
+.stars-support-terms input {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent-strong);
+  box-shadow: none;
+}
+
+.stars-support-terms a {
+  color: var(--primary-ink);
+  font-weight: 800;
+}
+
+.stars-support-command,
+.stars-support-actions > button,
+.stars-support-result > button {
+  min-height: 48px;
+}
+
+.stars-support-actions > button {
+  flex: 1 1 0;
+}
+
+.stars-support-processing {
+  min-height: 150px;
+  place-items: center;
+  align-content: center;
+  text-align: center;
+}
+
+.support-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid color-mix(in srgb, var(--line) 45%, transparent);
+  border-top-color: var(--accent-strong);
+  border-radius: 50%;
+  animation: support-spin 0.8s linear infinite;
+}
+
+.stars-support-result {
+  min-height: 148px;
+  align-content: center;
+  text-align: center;
+}
+
+.stars-support-result.support-thanks > strong {
+  color: var(--success);
+}
+
+.stars-support-result.is-pending > strong {
+  color: var(--accent-strong);
+}
+
+.stars-support-result.is-error > strong {
+  color: var(--hit);
+}
+
+@keyframes support-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .support-spinner {
+    animation: none;
+    border-color: var(--accent-strong);
+  }
+}
+
 .leave-battle-dialog h2,
 .leave-battle-dialog p {
   margin: 0;
@@ -4598,6 +4813,25 @@ html[data-runtime="telegram"] .result-modal {
   .settings-row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .support-entry-button {
+    width: 100%;
+  }
+
+  .stars-support-backdrop {
+    align-items: end;
+    padding: calc(10px + var(--safe-top)) calc(10px + var(--safe-right)) calc(10px + var(--safe-bottom)) calc(10px + var(--safe-left));
+  }
+
+  .stars-support-dialog {
+    width: 100%;
+    max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 20px);
+    padding: 16px;
+  }
+
+  .stars-support-presets {
+    gap: 8px;
   }
 
   .hub-cta {

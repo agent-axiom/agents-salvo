@@ -432,6 +432,45 @@ test("i18n translates result modal, theme, and history labels in every language"
   }
 });
 
+test("Telegram Stars support has complete localized copy and safe amount interpolation", () => {
+  const supportKeys = [
+    "support.entry",
+    "support.entryDescription",
+    "support.title",
+    "support.voluntary",
+    "support.amountLabel",
+    "support.customAmount",
+    "support.customPlaceholder",
+    "support.rangeError",
+    "support.terms",
+    "support.termsLink",
+    "support.continue",
+    "support.confirmTitle",
+    "support.confirmAmount",
+    "support.pay",
+    "support.back",
+    "support.creating",
+    "support.opening",
+    "support.verifying",
+    "support.thanks",
+    "support.pending",
+    "support.confirmationPending",
+    "support.cancelled",
+    "support.failed",
+    "support.unavailable",
+    "support.retry",
+    "support.close",
+  ];
+
+  for (const language of languages) {
+    for (const key of supportKeys) {
+      assert.notEqual(t(language.code, key, { amount: 360 }), key, `${language.code}:${key}`);
+    }
+    assert.match(t(language.code, "support.confirmAmount", { amount: 360 }), /360/u);
+    assert.doesNotMatch(t(language.code, "support.confirmAmount", { amount: 360 }), /\{amount\}/u);
+  }
+});
+
 test("legacy online battles explain why no replay can be opened", () => {
   assert.equal(t("en", "archive.historicalUnavailable"), "Replay unavailable for this historical battle.");
   assert.equal(t("ru", "archive.historicalUnavailable"), "Повтор недоступен для этого исторического боя.");

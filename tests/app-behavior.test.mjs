@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -85,6 +86,26 @@ test("actual app honors Telegram theme precedence and renders safe build metadat
 
 test("actual app retries Telegram capability and rejects failed secure persistence", async () => {
   await runScenarioInChild("auth-recovery");
+});
+
+test("actual app shows voluntary Stars support only in capable Telegram Mini Apps", async () => {
+  await runScenarioInChild("stars-support-visibility");
+});
+
+test("actual app validates optional Stars amounts and terms without preselection", async () => {
+  await runScenarioInChild("stars-support-selection");
+});
+
+test("actual app keeps Stars payment lifecycle cancellable, focused, and race-safe", async () => {
+  await runScenarioInChild("stars-support-lifecycle");
+});
+
+test("Stars support terms expose a full-size touch target", () => {
+  const styles = readFileSync("src/styles.css", "utf8");
+  assert.match(
+    styles,
+    /\.stars-support-terms\s*\{[^}]*min-height:\s*44px;/u,
+  );
 });
 
 async function runScenarioInChild(name) {
