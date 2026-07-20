@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import worker from "../worker/index.js";
+import { createSession } from "../worker/session.js";
 import * as starsSupportModule from "../worker/stars-support.js";
 
 const [profileSchema, sessionSchema, paymentSchema] = await Promise.all([
@@ -27,6 +29,1041 @@ const authenticatedUser = Object.freeze({
   photoUrl: "https://t.me/i/userpic/320/example.jpg",
 });
 const serviceNow = 1_784_332_800;
+const botToken = "123456:test-bot-token";
+const webhookSecret = "stars_webhook_secret_1234567890AB";
+
+test("Worker exposes only the exact Stars payment and Telegram webhook routes", async () => {
+  let durableObjectReads = 0;
+  const env = {
+    get BATTLE_ROOM() {
+      durableObjectReads += 1;
+      throw new Error("payment routes must not access Durable Objects");
+    },
+  };
+
+  const create = await worker.fetch(
+    new Request("https://worker.test/payments/stars/invoices", { method: "POST" }),
+    env,
+  );
+  assert.equal(create.status, 401);
+  assert.equal(create.headers.get("Access-Control-Allow-Origin"), "*");
+
+  const status = await worker.fetch(
+    new Request(`https://worker.test/payments/stars/invoices/${pendingInvoice.invoiceId}`),
+    env,
+  );
+  assert.equal(status.status, 401);
+  assert.equal(status.headers.get("Access-Control-Allow-Origin"), "*");
+
+  for (const path of [
+    "/payments/stars/invoices/",
+    "/Payments/stars/invoices",
+    "/payments/stars/invoices/extra/path",
+    "/payments/stars/invoices?next=1",
+    `/payments/stars/invoices/${pendingInvoice.invoiceId}/`,
+    `/payments/stars/invoices/${pendingInvoice.invoiceId}?next=1`,
+    "/payments/stars/invoices/inv_short",
+    `/payments/stars/invoices/inv_${"A".repeat(21)}!`,
+  ]) {
+    const response = await worker.fetch(
+      new Request(`https://worker.test${path}`, { method: path.includes(pendingInvoice.invoiceId) ? "GET" : "POST" }),
+      env,
+    );
+    assert.equal(response.status, 404, path);
+  }
+
+  for (const [method, path] of [
+    ["GET", "/payments/stars/invoices"],
+    ["PUT", "/payments/stars/invoices"],
+    ["POST", `/payments/stars/invoices/${pendingInvoice.invoiceId}`],
+    ["PUT", `/payments/stars/invoices/${pendingInvoice.invoiceId}`],
+  ]) {
+    const response = await worker.fetch(new Request(`https://worker.test${path}`, { method }), env);
+    assert.equal(response.status, 404, `${method} ${path}`);
+  }
+
+  for (const path of [
+    "/payments/stars/invoices",
+    `/payments/stars/invoices/${pendingInvoice.invoiceId}`,
+  ]) {
+    const response = await worker.fetch(new Request(`https://worker.test${path}`, { method: "OPTIONS" }), env);
+    assert.equal(response.status, 200, `OPTIONS ${path}`);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+  }
+
+  const webhook = await worker.fetch(
+    new Request("https://worker.test/telegram/webhook", { method: "POST" }),
+    env,
+  );
+  assert.equal(webhook.status, 503);
+  assertWebhookHeaders(webhook);
+
+  for (const method of ["GET", "PUT", "OPTIONS"]) {
+    const response = await worker.fetch(
+      new Request("https://worker.test/telegram/webhook", { method }),
+      env,
+    );
+    assert.equal(response.status, 404, `${method} /telegram/webhook`);
+    assert.deepEqual(await response.json(), { error: "Not found" });
+    assertWebhookHeaders(response);
+  }
+
+  for (const path of [
+    "/telegram/webhook/",
+    "/Telegram/webhook",
+    "/telegram/webhook/extra",
+    "/telegram/webhook?update=1",
+  ]) {
+    const response = await worker.fetch(
+      new Request(`https://worker.test${path}`, { method: "POST" }),
+      env,
+    );
+    assert.equal(response.status, 404, path);
+    assertWebhookHeaders(response);
+  }
+
+  assert.equal(durableObjectReads, 0);
+});
+
+test("Worker creates an owner-bound Stars invoice before calling Telegram", async (t) => {
+  const db = memoryD1(t);
+  const token = await createWorkerSession(db);
+  const providerCalls = [];
+  const env = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    async TELEGRAM_FETCH(url, init) {
+      providerCalls.push({ url, init, body: JSON.parse(init.body) });
+      const row = db.queryOne("SELECT * FROM star_support_payments");
+      assert.ok(row, "invoice must be persisted before the Bot API call");
+      assert.equal(row.status, "pending");
+      return telegramResponse(`https://t.me/$${"I".repeat(22)}`);
+    },
+  };
+
+  const response = await postStarsInvoice({ amount: 88, locale: "ru" }, env, token);
+
+  assert.equal(response.status, 201);
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+  const payload = await response.json();
+  assert.deepEqual(Object.keys(payload), ["invoiceId", "invoiceUrl", "amount", "currency", "expiresAt"]);
+  assert.match(payload.invoiceId, /^inv_[A-Za-z0-9_-]{22}$/u);
+  assert.equal(payload.invoiceUrl, `https://t.me/$${"I".repeat(22)}`);
+  assert.equal(payload.amount, 88);
+  assert.equal(payload.currency, "XTR");
+  assert.equal(typeof payload.expiresAt, "string");
+
+  assert.equal(providerCalls.length, 1);
+  assert.equal(providerCalls[0].url, `https://api.telegram.org/bot${botToken}/createInvoiceLink`);
+  assert.deepEqual(providerCalls[0].body, {
+    title: "Поддержать Salvo",
+    description: "Добровольная поддержка Salvo. Она не дает преимуществ в игре.",
+    payload: providerCalls[0].body.payload,
+    currency: "XTR",
+    prices: [{ label: "Добровольная поддержка", amount: 88 }],
+  });
+  assert.match(providerCalls[0].body.payload, /^pay_[A-Za-z0-9_-]{43}$/u);
+
+  const row = db.queryOne("SELECT * FROM star_support_payments");
+  assert.equal(row.invoice_id, payload.invoiceId);
+  assert.equal(row.invoice_payload, providerCalls[0].body.payload);
+  assert.equal(row.user_key, pendingInvoice.userKey);
+  assert.equal(row.telegram_user_id, pendingInvoice.telegramUserId);
+  assert.equal(row.amount, 88);
+  assert.equal(row.currency, "XTR");
+  assert.equal(row.status, "pending");
+  assert.equal(new Date(row.expires_at * 1_000).toISOString(), payload.expiresAt);
+});
+
+test("Worker returns only owner-scoped public Stars invoice statuses", async (t) => {
+  const db = memoryD1(t);
+  const ownerToken = await createWorkerSession(db);
+  const outsiderToken = await createWorkerSession(db, {
+    ...authenticatedUser,
+    id: "8710001169",
+    username: "outsider",
+  });
+  const now = Math.floor(Date.now() / 1_000);
+  const statuses = [
+    {
+      invoiceId: `inv_${"P".repeat(22)}`,
+      invoicePayload: `pay_${"P".repeat(43)}`,
+      status: "pending",
+      createdAt: now - 30,
+      expiresAt: now + 870,
+      expected: "pending",
+    },
+    {
+      invoiceId: `inv_${"A".repeat(22)}`,
+      invoicePayload: `pay_${"A".repeat(43)}`,
+      status: "pending",
+      createdAt: now - 1_000,
+      expiresAt: now - 100,
+      expected: "expired",
+    },
+    {
+      invoiceId: `inv_${"D".repeat(22)}`,
+      invoicePayload: `pay_${"D".repeat(43)}`,
+      status: "paid",
+      createdAt: now - 100,
+      expiresAt: now + 800,
+      paidAt: now - 10,
+      telegramPaymentChargeId: "charge_public_projection_test",
+      expected: "paid",
+    },
+    {
+      invoiceId: `inv_${"F".repeat(22)}`,
+      invoicePayload: `pay_${"F".repeat(43)}`,
+      status: "failed",
+      createdAt: now - 100,
+      expiresAt: now + 800,
+      failedAt: now - 20,
+      expected: "failed",
+    },
+  ];
+  for (const invoice of statuses) {
+    insertPayment(db, invoice);
+  }
+  const env = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_FETCH: async () => {
+      throw new Error("status reads must not call Telegram");
+    },
+  };
+
+  for (const invoice of statuses) {
+    const response = await worker.fetch(
+      new Request(`https://worker.test/payments/stars/invoices/${invoice.invoiceId}`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      }),
+      env,
+    );
+    assert.equal(response.status, 200, invoice.expected);
+    const payload = await response.json();
+    assert.deepEqual(Object.keys(payload), [
+      "invoiceId",
+      "amount",
+      "currency",
+      "status",
+      "createdAt",
+      "expiresAt",
+      "paidAt",
+    ]);
+    assert.equal(payload.invoiceId, invoice.invoiceId);
+    assert.equal(payload.status, invoice.expected);
+    assert.equal(payload.amount, pendingInvoice.amount);
+    assert.equal(payload.currency, "XTR");
+    assert.equal(payload.paidAt, invoice.paidAt ? new Date(invoice.paidAt * 1_000).toISOString() : null);
+    const serialized = JSON.stringify(payload);
+    assert.equal(serialized.includes(invoice.invoicePayload), false);
+    assert.equal(serialized.includes(invoice.telegramPaymentChargeId ?? "never-present"), false);
+  }
+
+  for (const [name, invoiceId, bearer] of [
+    ["wrong owner", statuses[0].invoiceId, outsiderToken],
+    ["unknown", `inv_${"U".repeat(22)}`, ownerToken],
+  ]) {
+    const response = await worker.fetch(
+      new Request(`https://worker.test/payments/stars/invoices/${invoiceId}`, {
+        headers: { Authorization: `Bearer ${bearer}` },
+      }),
+      env,
+    );
+    assert.equal(response.status, 404, name);
+    assert.deepEqual(await response.json(), { error: "Stars invoice not found" });
+  }
+});
+
+test("Worker rejects unauthorized Stars requests before body or provider access", async (t) => {
+  const db = memoryD1(t);
+  const now = Math.floor(Date.now() / 1_000);
+  const expiredToken = (
+    await createSession(db, authenticatedUser, {
+      now: now - 10,
+      ttlSeconds: 1,
+    })
+  ).token;
+  let providerCalls = 0;
+  const env = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    async TELEGRAM_FETCH() {
+      providerCalls += 1;
+      throw new Error("provider must not be called");
+    },
+  };
+
+  const cases = [
+    ["missing", undefined, "Authentication required"],
+    ["malformed", "invalid", "Authentication failed"],
+    ["expired", expiredToken, "Authentication failed"],
+  ];
+  for (const [name, token, message] of cases) {
+    const create = await rawStarsInvoiceRequest("{not-json", env, token);
+    assert.equal(create.status, 401, name);
+    assert.deepEqual(await create.json(), { error: message });
+
+    const status = await worker.fetch(
+      new Request(`https://worker.test/payments/stars/invoices/${pendingInvoice.invoiceId}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      }),
+      env,
+    );
+    assert.equal(status.status, 401, name);
+    assert.deepEqual(await status.json(), { error: message });
+  }
+
+  assert.equal(providerCalls, 0);
+  assert.equal(db.queryOne("SELECT COUNT(*) AS count FROM star_support_payments").count, 0);
+});
+
+test("Worker accepts only the exact bounded Stars create JSON schema", async (t) => {
+  const db = memoryD1(t);
+  const token = await createWorkerSession(db);
+  let providerCalls = 0;
+  const env = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    async TELEGRAM_FETCH() {
+      providerCalls += 1;
+      return telegramResponse(`https://t.me/$${"V".repeat(22)}`);
+    },
+  };
+  const invalidBodies = [
+    ["malformed JSON", "{not-json"],
+    ["null", "null"],
+    ["array", '[88,"en"]'],
+    ["empty object", "{}"],
+    ["missing amount", '{"locale":"en"}'],
+    ["missing locale", '{"amount":88}'],
+    ["unknown field", '{"amount":88,"locale":"en","currency":"XTR"}'],
+    ["identity field", '{"amount":88,"locale":"en","user":{"id":"8710001168"}}'],
+    ["title field", '{"amount":88,"locale":"en","title":"Owned by client"}'],
+    ["duplicate amount", '{"amount":1,"amount":88,"locale":"en"}'],
+    ["escaped duplicate amount", '{"amount":1,"am\\u006funt":88,"locale":"en"}'],
+    ["duplicate locale", '{"amount":88,"locale":"en","locale":"ru"}'],
+    ["string amount", '{"amount":"88","locale":"en"}'],
+    ["fractional amount", '{"amount":8.8,"locale":"en"}'],
+    ["zero amount", '{"amount":0,"locale":"en"}'],
+    ["negative amount", '{"amount":-1,"locale":"en"}'],
+    ["large amount", '{"amount":10001,"locale":"en"}'],
+    ["boolean amount", '{"amount":true,"locale":"en"}'],
+    ["array locale", '{"amount":88,"locale":["en"]}'],
+    ["coercive locale", '{"amount":88,"locale":{"toString":"en"}}'],
+    ["unsupported locale", '{"amount":88,"locale":"EN"}'],
+  ];
+
+  for (const [name, body] of invalidBodies) {
+    const response = await rawStarsInvoiceRequest(body, env, token);
+    assert.equal(response.status, 400, name);
+    assert.deepEqual(await response.json(), { error: "Invalid Stars support request" }, name);
+  }
+
+  for (const contentType of [
+    null,
+    "text/plain",
+    "application/problem+json",
+    "application/json; charset=utf-8",
+    "Application/JSON",
+  ]) {
+    const response = await rawStarsInvoiceRequest(
+      '{"amount":88,"locale":"en"}',
+      env,
+      token,
+      contentType,
+    );
+    assert.equal(response.status, 400, String(contentType));
+    assert.deepEqual(await response.json(), { error: "Invalid Stars support request" });
+  }
+
+  for (const contentLength of ["1025", "-1", "1.5", "not-a-number", "999999999999999999999999"]) {
+    const response = await rawStarsInvoiceRequest(
+      '{"amount":88,"locale":"en"}',
+      env,
+      token,
+      "application/json",
+      { "Content-Length": contentLength },
+    );
+    assert.equal(response.status, 400, contentLength);
+  }
+
+  const oversizedBody = `${'{"amount":88,"locale":"en"}'}${" ".repeat(1025)}`;
+  const oversized = await rawStarsInvoiceRequest(oversizedBody, env, token);
+  assert.equal(oversized.status, 400);
+  assert.deepEqual(await oversized.json(), { error: "Invalid Stars support request" });
+
+  assert.equal(providerCalls, 0);
+  assert.equal(db.queryOne("SELECT COUNT(*) AS count FROM star_support_payments").count, 0);
+
+  const compactBody = '{"amount":88,"locale":"en"}';
+  const exactBoundary = `${compactBody}${" ".repeat(1024 - textByteLength(compactBody))}`;
+  assert.equal(textByteLength(exactBoundary), 1024);
+  const accepted = await rawStarsInvoiceRequest(exactBoundary, env, token);
+  assert.equal(accepted.status, 201);
+  assert.equal(providerCalls, 1);
+});
+
+test("Worker classifies Stars configuration, D1, and provider failures as redacted 503s", async (t) => {
+  const db = memoryD1(t);
+  const token = await createWorkerSession(db);
+  const secrets = [
+    botToken,
+    "private-config-getter-value",
+    "private-session-sql-value",
+    "private-payment-sql-value",
+    "private-provider-response-value",
+  ];
+  const baseEnv = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_FETCH: async () => telegramResponse(`https://t.me/$${"S".repeat(22)}`),
+  };
+  const paymentFailureDb = {
+    prepare(sql) {
+      if (sql.includes("star_support_payments")) {
+        throw new Error("private-payment-sql-value");
+      }
+      return db.prepare(sql);
+    },
+  };
+  const sessionFailureDb = {
+    prepare(sql) {
+      if (sql.includes("auth_sessions")) {
+        throw new Error("private-session-sql-value");
+      }
+      return db.prepare(sql);
+    },
+  };
+  const throwingConfig = { DB: db };
+  Object.defineProperty(throwingConfig, "TELEGRAM_BOT_TOKEN", {
+    get() {
+      throw new Error("private-config-getter-value");
+    },
+  });
+  const createCases = [
+    ["missing token", { DB: db }],
+    ["malformed token", { ...baseEnv, TELEGRAM_BOT_TOKEN: "malformed-private-token" }],
+    ["malformed fetcher", { ...baseEnv, TELEGRAM_FETCH: "not-a-function" }],
+    ["throwing config", throwingConfig],
+    ["payment D1 failure", { ...baseEnv, DB: paymentFailureDb }],
+    [
+      "provider failure",
+      {
+        ...baseEnv,
+        async TELEGRAM_FETCH() {
+          throw new Error("private-provider-response-value");
+        },
+      },
+    ],
+  ];
+
+  for (const [name, env] of createCases) {
+    const response = await postStarsInvoice({ amount: 88, locale: "en" }, env, token);
+    const text = await response.text();
+    assert.equal(response.status, 503, name);
+    assert.equal(text, JSON.stringify({ error: "Stars support is unavailable" }), name);
+    assert.equal(textByteLength(text) < 256, true);
+    assertRedacted(text, secrets);
+  }
+
+  const sessionFailure = await postStarsInvoice(
+    { amount: 88, locale: "en" },
+    { ...baseEnv, DB: sessionFailureDb },
+    token,
+  );
+  const sessionFailureText = await sessionFailure.text();
+  assert.equal(sessionFailure.status, 503);
+  assert.equal(sessionFailureText, JSON.stringify({ error: "Stars support is unavailable" }));
+  assertRedacted(sessionFailureText, secrets);
+
+  for (const [name, env] of [
+    ["missing status config", { DB: db }],
+    ["status D1 failure", { ...baseEnv, DB: paymentFailureDb }],
+  ]) {
+    const response = await worker.fetch(
+      new Request(`https://worker.test/payments/stars/invoices/${pendingInvoice.invoiceId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env,
+    );
+    const text = await response.text();
+    assert.equal(response.status, 503, name);
+    assert.equal(text, JSON.stringify({ error: "Stars support is unavailable" }));
+    assertRedacted(text, secrets);
+  }
+});
+
+test("Worker strictly validates the bounded Stars invoice creation body", async (t) => {
+  const db = memoryD1(t);
+  const token = await createWorkerSession(db);
+  let telegramCalls = 0;
+  const env = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_FETCH: async () => {
+      telegramCalls += 1;
+      return telegramResponse(`https://t.me/$${"V".repeat(22)}`);
+    },
+  };
+  const invalidBodies = [
+    { name: "unknown key", body: '{"amount":88,"locale":"en","private":"pay_secret"}' },
+    { name: "missing amount", body: '{"locale":"en"}' },
+    { name: "missing locale", body: '{"amount":88}' },
+    { name: "duplicate amount", body: '{"amount":88,"amount":89,"locale":"en"}' },
+    { name: "duplicate locale", body: '{"amount":88,"locale":"en","locale":"ru"}' },
+    { name: "malformed JSON", body: '{"amount":88,"locale":"en"' },
+    { name: "array", body: '[88,"en"]' },
+    { name: "string amount", body: '{"amount":"88","locale":"en"}' },
+    { name: "boolean amount", body: '{"amount":true,"locale":"en"}' },
+    { name: "fractional amount", body: '{"amount":1.5,"locale":"en"}' },
+    { name: "amount below range", body: '{"amount":0,"locale":"en"}' },
+    { name: "amount above range", body: '{"amount":10001,"locale":"en"}' },
+    { name: "coerced locale", body: '{"amount":88,"locale":["en"]}' },
+    { name: "unknown locale", body: '{"amount":88,"locale":"EN"}' },
+    {
+      name: "oversized body",
+      body: `{"amount":88,"locale":"en"${" ".repeat(1_024)}}`,
+    },
+  ];
+
+  for (const { name, body } of invalidBodies) {
+    const response = await postStarsInvoice(body, env, token);
+    const text = await response.text();
+    assert.equal(response.status, 400, name);
+    assert.deepEqual(JSON.parse(text), { error: "Invalid Stars support request" }, name);
+    assert.doesNotMatch(text, /pay_secret|private|stack|syntax|position/i, name);
+  }
+
+  const wrongContentType = await postStarsInvoice(
+    { amount: 88, locale: "en" },
+    env,
+    token,
+    "text/plain",
+  );
+  assert.equal(wrongContentType.status, 400);
+  assert.deepEqual(await wrongContentType.json(), { error: "Invalid Stars support request" });
+
+  assert.equal(telegramCalls, 0);
+  assert.equal(db.queryOne("SELECT COUNT(*) AS count FROM star_support_payments").count, 0);
+});
+
+test("Telegram webhook requires valid configuration and an exact secret", async (t) => {
+  const db = memoryD1(t);
+  const baseEnv = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_WEBHOOK_SECRET: webhookSecret,
+    TELEGRAM_FETCH: async () => {
+      throw new Error("ignored updates must not call Telegram");
+    },
+  };
+
+  for (const suppliedSecret of [
+    undefined,
+    "wrong_webhook_secret_1234567890AB",
+    `${webhookSecret}x`,
+    `x${webhookSecret}`,
+    webhookSecret.toUpperCase(),
+  ]) {
+    const response = await postTelegramWebhook(
+      { update_id: 101 },
+      baseEnv,
+      suppliedSecret,
+    );
+    assert.equal(response.status, 403, String(suppliedSecret));
+    assert.deepEqual(await response.json(), { error: "Forbidden" });
+    assertWebhookHeaders(response);
+  }
+
+  const valid = await postTelegramWebhook({ update_id: 102 }, baseEnv, webhookSecret);
+  assert.equal(valid.status, 200);
+  assert.deepEqual(await valid.json(), { ok: true });
+  assertWebhookHeaders(valid);
+
+  const invalidConfigurations = [
+    { TELEGRAM_WEBHOOK_SECRET: undefined },
+    { TELEGRAM_WEBHOOK_SECRET: "A".repeat(31) },
+    { TELEGRAM_WEBHOOK_SECRET: "A".repeat(257) },
+    { TELEGRAM_WEBHOOK_SECRET: "A".repeat(31) + ":" },
+    { TELEGRAM_WEBHOOK_SECRET: new String(webhookSecret) },
+    { TELEGRAM_BOT_TOKEN: "token_private_malformed" },
+    { DB: null },
+    { DB: {} },
+    { TELEGRAM_FETCH: "not-a-fetch-function" },
+  ];
+  for (const override of invalidConfigurations) {
+    const response = await postTelegramWebhook(
+      { update_id: 103 },
+      { ...baseEnv, ...override },
+      webhookSecret,
+    );
+    const text = await response.text();
+    assert.equal(response.status, 503, JSON.stringify(override));
+    assert.deepEqual(JSON.parse(text), { error: "Stars support is unavailable" });
+    assert.doesNotMatch(text, /token_private|webhook_secret|stack|prepare|fetch/i);
+    assertWebhookHeaders(response);
+  }
+});
+
+test("Telegram webhook accepts only an exact bounded JSON object body", async (t) => {
+  const db = memoryD1(t);
+  let telegramCalls = 0;
+  const env = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_WEBHOOK_SECRET: webhookSecret,
+    async TELEGRAM_FETCH() {
+      telegramCalls += 1;
+      throw new Error("ignored updates must not call Telegram");
+    },
+  };
+  const invalidBodies = [
+    ["empty", ""],
+    ["malformed", "{not-json"],
+    ["null", "null"],
+    ["array", "[]"],
+    ["string", '"update"'],
+    ["number", "42"],
+  ];
+  for (const [name, body] of invalidBodies) {
+    const response = await rawTelegramWebhookRequest(body, env, webhookSecret);
+    assert.equal(response.status, 400, name);
+    assert.deepEqual(await response.json(), { error: "Invalid Telegram update" });
+    assertWebhookHeaders(response);
+  }
+
+  for (const contentType of [null, "text/plain", "application/problem+json", "application/json; charset=utf-8", "Application/JSON"]) {
+    const response = await rawTelegramWebhookRequest("{}", env, webhookSecret, contentType);
+    assert.equal(response.status, 400, String(contentType));
+    assert.deepEqual(await response.json(), { error: "Invalid Telegram update" });
+    assertWebhookHeaders(response);
+  }
+
+  for (const contentLength of ["65537", "-1", "1.5", "not-a-number", "999999999999999999999999"]) {
+    const response = await rawTelegramWebhookRequest(
+      "{}",
+      env,
+      webhookSecret,
+      "application/json",
+      { "Content-Length": contentLength },
+    );
+    assert.equal(response.status, 400, contentLength);
+    assertWebhookHeaders(response);
+  }
+
+  const compactUpdate = '{"update_id":500}';
+  const boundaryUpdate = `${compactUpdate}${" ".repeat(64 * 1024 - textByteLength(compactUpdate))}`;
+  assert.equal(textByteLength(boundaryUpdate), 64 * 1024);
+  const boundary = await rawTelegramWebhookRequest(boundaryUpdate, env, webhookSecret);
+  assert.equal(boundary.status, 200);
+  assert.deepEqual(await boundary.json(), { ok: true });
+
+  const oversized = await rawTelegramWebhookRequest(`${boundaryUpdate} `, env, webhookSecret);
+  assert.equal(oversized.status, 400);
+  assert.deepEqual(await oversized.json(), { error: "Invalid Telegram update" });
+
+  const forbiddenBeforeBody = await rawTelegramWebhookRequest(
+    `${boundaryUpdate} `,
+    env,
+    "wrong_webhook_secret_1234567890AB",
+  );
+  assert.equal(forbiddenBeforeBody.status, 403);
+  assert.deepEqual(await forbiddenBeforeBody.json(), { error: "Forbidden" });
+  assertWebhookHeaders(forbiddenBeforeBody);
+  assert.equal(telegramCalls, 0);
+});
+
+test("Telegram webhook reads only bounded application/json streams", async (t) => {
+  const db = memoryD1(t);
+  const env = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_WEBHOOK_SECRET: webhookSecret,
+    TELEGRAM_FETCH: async () => {
+      throw new Error("invalid updates must not call Telegram");
+    },
+  };
+
+  for (const [name, body, contentType] of [
+    ["missing media type", '{"update_id":301}', null],
+    ["wrong media type", '{"update_id":302}', "text/plain"],
+    ["media type parameter", '{"update_id":303}', "application/json; charset=utf-8"],
+    ["malformed JSON", '{"update_id":304', "application/json"],
+    ["null JSON", "null", "application/json"],
+    ["array JSON", "[]", "application/json"],
+  ]) {
+    const response = await rawTelegramWebhookRequest(body, env, {
+      contentType,
+      secret: webhookSecret,
+    });
+    assert.equal(response.status, 400, name);
+    assert.deepEqual(await response.json(), { error: "Invalid Telegram update" }, name);
+    assertWebhookHeaders(response);
+  }
+
+  for (const contentLength of ["65537", "-1", "1.5", "unknown", "9".repeat(128)]) {
+    const response = await rawTelegramWebhookRequest('{"update_id":305}', env, {
+      contentLength,
+      secret: webhookSecret,
+    });
+    assert.equal(response.status, 400, contentLength);
+    assert.deepEqual(await response.json(), { error: "Invalid Telegram update" });
+  }
+
+  const oversized = `{"update_id":306,"padding":"${"x".repeat(64 * 1024)}"}`;
+  const oversizedResponse = await rawTelegramWebhookRequest(oversized, env, {
+    secret: webhookSecret,
+  });
+  assert.equal(oversizedResponse.status, 400);
+  assert.deepEqual(await oversizedResponse.json(), { error: "Invalid Telegram update" });
+
+  const compact = '{"update_id":307,"padding":""}';
+  const exactBoundary = compact.replace(
+    '""',
+    `"${"x".repeat(64 * 1024 - textByteLength(compact))}"`,
+  );
+  assert.equal(textByteLength(exactBoundary), 64 * 1024);
+  let textCalls = 0;
+  let jsonCalls = 0;
+  const streamedRequest = streamTelegramWebhookRequest(exactBoundary, {
+    onText() {
+      textCalls += 1;
+    },
+    onJson() {
+      jsonCalls += 1;
+    },
+  });
+  const accepted = await worker.fetch(streamedRequest, env);
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(await accepted.json(), { ok: true });
+  assert.equal(textCalls, 0);
+  assert.equal(jsonCalls, 0);
+});
+
+test("Telegram webhook processes pre-checkout and successful payment with a private response", async (t) => {
+  const db = memoryD1(t);
+  const now = Math.floor(Date.now() / 1_000);
+  const invoice = {
+    ...pendingInvoice,
+    createdAt: now - 30,
+    expiresAt: now + 870,
+  };
+  insertPendingInvoice(db, invoice);
+  const answers = [];
+  const env = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_WEBHOOK_SECRET: webhookSecret,
+    async TELEGRAM_FETCH(url, init) {
+      assert.equal(url, `https://api.telegram.org/bot${botToken}/answerPreCheckoutQuery`);
+      answers.push(JSON.parse(init.body));
+      return telegramResponse(true);
+    },
+  };
+  const preCheckout = {
+    update_id: 600,
+    pre_checkout_query: {
+      id: "pre-checkout-worker-valid",
+      from: { id: Number(invoice.telegramUserId), language_code: "en" },
+      currency: "XTR",
+      total_amount: invoice.amount,
+      invoice_payload: invoice.invoicePayload,
+    },
+  };
+
+  const approved = await postTelegramWebhook(preCheckout, env, webhookSecret);
+  const approvedText = await approved.text();
+  assert.equal(approved.status, 200);
+  assert.equal(approvedText, JSON.stringify({ ok: true }));
+  assertWebhookHeaders(approved);
+  assert.deepEqual(answers, [{ pre_checkout_query_id: "pre-checkout-worker-valid", ok: true }]);
+  assert.equal(db.queryOne("SELECT status FROM star_support_payments").status, "pending");
+
+  const successfulPayment = {
+    update_id: 601,
+    message: {
+      message_id: 602,
+      date: now,
+      from: { id: Number(invoice.telegramUserId), language_code: "en" },
+      chat: { id: Number(invoice.telegramUserId), type: "private" },
+      text: "/support",
+      successful_payment: {
+        currency: "XTR",
+        total_amount: invoice.amount,
+        invoice_payload: invoice.invoicePayload,
+        telegram_payment_charge_id: "charge_worker_success_600",
+        provider_payment_charge_id: "must-not-be-returned",
+      },
+    },
+  };
+  const paid = await postTelegramWebhook(successfulPayment, env, webhookSecret);
+  const paidText = await paid.text();
+  assert.equal(paid.status, 200);
+  assert.equal(paidText, JSON.stringify({ ok: true }));
+  assertWebhookHeaders(paid);
+  assertRedacted(paidText, [
+    invoice.invoicePayload,
+    "charge_worker_success_600",
+    "must-not-be-returned",
+    invoice.userKey,
+  ]);
+  const paidRow = db.queryOne("SELECT * FROM star_support_payments");
+  assert.equal(paidRow.status, "paid");
+  assert.equal(paidRow.telegram_payment_charge_id, "charge_worker_success_600");
+
+  const duplicate = await postTelegramWebhook(successfulPayment, env, webhookSecret);
+  assert.equal(duplicate.status, 200);
+  assert.deepEqual(await duplicate.json(), { ok: true });
+  assert.equal(answers.length, 1, "successful payments must not be treated as commands");
+});
+
+test("Telegram webhook retries transient payment failures but acknowledges permanent conflicts", async (t) => {
+  const db = memoryD1(t);
+  const now = Math.floor(Date.now() / 1_000);
+  const invoice = { ...pendingInvoice, createdAt: now - 30, expiresAt: now + 870 };
+  insertPendingInvoice(db, invoice);
+  const d1Secret = "private-webhook-d1-failure";
+  const providerSecret = "private-webhook-provider-failure";
+  const failingPaymentDb = {
+    prepare(sql) {
+      if (sql.includes("star_support_payments")) {
+        throw new Error(d1Secret);
+      }
+      return db.prepare(sql);
+    },
+  };
+  const preCheckout = {
+    pre_checkout_query: {
+      id: "pre-checkout-worker-retry",
+      from: { id: Number(invoice.telegramUserId), language_code: "en" },
+      currency: "XTR",
+      total_amount: invoice.amount,
+      invoice_payload: invoice.invoicePayload,
+    },
+  };
+  const successfulPayment = {
+    message: {
+      from: { id: Number(invoice.telegramUserId) },
+      successful_payment: {
+        currency: "XTR",
+        total_amount: invoice.amount,
+        invoice_payload: invoice.invoicePayload,
+        telegram_payment_charge_id: "charge_worker_retry_601",
+      },
+    },
+  };
+  const answerSuccess = async () => telegramResponse(true);
+  const baseEnv = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_WEBHOOK_SECRET: webhookSecret,
+    TELEGRAM_FETCH: answerSuccess,
+  };
+
+  const d1PreCheckout = await postTelegramWebhook(
+    preCheckout,
+    { ...baseEnv, DB: failingPaymentDb },
+    webhookSecret,
+  );
+  const d1PreCheckoutText = await d1PreCheckout.text();
+  assert.equal(d1PreCheckout.status, 503);
+  assert.equal(d1PreCheckoutText, JSON.stringify({ error: "Stars support is unavailable" }));
+  assertRedacted(d1PreCheckoutText, [d1Secret, invoice.invoicePayload]);
+
+  const d1Payment = await postTelegramWebhook(
+    successfulPayment,
+    { ...baseEnv, DB: failingPaymentDb },
+    webhookSecret,
+  );
+  const d1PaymentText = await d1Payment.text();
+  assert.equal(d1Payment.status, 503);
+  assert.equal(d1PaymentText, JSON.stringify({ error: "Stars support is unavailable" }));
+  assertRedacted(d1PaymentText, [d1Secret, invoice.invoicePayload, "charge_worker_retry_601"]);
+
+  const providerFailure = await postTelegramWebhook(
+    preCheckout,
+    {
+      ...baseEnv,
+      async TELEGRAM_FETCH() {
+        throw new Error(providerSecret);
+      },
+    },
+    webhookSecret,
+  );
+  const providerFailureText = await providerFailure.text();
+  assert.equal(providerFailure.status, 503);
+  assert.equal(providerFailureText, JSON.stringify({ error: "Stars support is unavailable" }));
+  assertRedacted(providerFailureText, [providerSecret, invoice.invoicePayload]);
+
+  const conflictDb = memoryD1(t);
+  insertPendingInvoice(conflictDb, invoice);
+  insertPayment(conflictDb, {
+    invoiceId: `inv_${"C".repeat(22)}`,
+    invoicePayload: `pay_${"C".repeat(43)}`,
+    status: "paid",
+    createdAt: now - 100,
+    expiresAt: now + 800,
+    paidAt: now - 20,
+    telegramPaymentChargeId: "charge_worker_retry_601",
+  });
+  const permanentConflict = await postTelegramWebhook(
+    successfulPayment,
+    { ...baseEnv, DB: conflictDb },
+    webhookSecret,
+  );
+  assert.equal(permanentConflict.status, 200);
+  assert.deepEqual(await permanentConflict.json(), { ok: true });
+  assert.equal(
+    conflictDb.queryOne("SELECT status FROM star_support_payments WHERE invoice_id = ?", invoice.invoiceId).status,
+    "pending",
+  );
+});
+
+test("Telegram webhook sends localized private support command replies", async (t) => {
+  const db = memoryD1(t);
+  const sent = [];
+  const env = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_WEBHOOK_SECRET: webhookSecret,
+    async TELEGRAM_FETCH(url, init) {
+      sent.push({ url, body: JSON.parse(init.body) });
+      const body = sent.at(-1).body;
+      return telegramResponse({
+        message_id: sent.length,
+        date: 1_784_332_800,
+        chat: { id: Number(body.chat_id), type: "private" },
+      });
+    },
+  };
+  const cases = [
+    {
+      text: "/terms",
+      languageCode: "en",
+      command: "terms",
+      expectedText: "Terms of Support: https://agent-axiom.github.io/agents-salvo/support.html",
+    },
+    {
+      text: "/support@agents_salvo_bot",
+      languageCode: "ru-RU",
+      command: "support",
+      expectedText:
+        "Поддержка покупок: https://github.com/agent-axiom/agents-salvo/issues. Поддержка Telegram не может решить проблему с этой покупкой. Не публикуйте токены сессий, содержимое счетов или идентификаторы платежных списаний.",
+    },
+    {
+      text: "/paysupport",
+      languageCode: "zh-CN",
+      command: "paysupport",
+      expectedText:
+        "购买支持：https://github.com/agent-axiom/agents-salvo/issues。Telegram 支持无法解决此购买问题。请勿发布会话令牌、账单载荷或付款扣款 ID。",
+    },
+  ];
+
+  for (const [index, commandCase] of cases.entries()) {
+    const chatId = 8710001168 + index;
+    const response = await postTelegramWebhook(
+      {
+        update_id: 200 + index,
+        message: {
+          message_id: 300 + index,
+          date: 1_784_332_800,
+          from: { id: chatId, language_code: commandCase.languageCode },
+          chat: { id: chatId, type: "private" },
+          text: commandCase.text,
+        },
+      },
+      env,
+      webhookSecret,
+    );
+    assert.equal(response.status, 200, commandCase.command);
+    assert.deepEqual(await response.json(), { ok: true });
+    assertWebhookHeaders(response);
+    assert.equal(sent.at(-1).url, `https://api.telegram.org/bot${botToken}/sendMessage`);
+    assert.deepEqual(sent.at(-1).body, {
+      chat_id: chatId,
+      text: commandCase.expectedText,
+      disable_web_page_preview: true,
+    });
+  }
+});
+
+test("Telegram webhook ignores unsupported and malformed command updates without side effects", async (t) => {
+  const db = memoryD1(t);
+  let telegramCalls = 0;
+  const env = {
+    DB: db,
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_WEBHOOK_SECRET: webhookSecret,
+    async TELEGRAM_FETCH() {
+      telegramCalls += 1;
+      throw new Error("unsupported updates must not call Telegram");
+    },
+  };
+  const privateMessage = {
+    message_id: 900,
+    date: Math.floor(Date.now() / 1_000),
+    from: { id: 8710001168, language_code: "en" },
+    chat: { id: 8710001168, type: "private" },
+    text: "/terms",
+  };
+  const updates = [
+    {},
+    { update_id: 900, edited_message: privateMessage },
+    { message: { ...privateMessage, text: "/Terms" } },
+    { message: { ...privateMessage, text: "/terms " } },
+    { message: { ...privateMessage, text: "/terms@other_bot" } },
+    { message: { ...privateMessage, text: "/unknown" } },
+    { message: { ...privateMessage, chat: { id: 8710001168, type: "group" } } },
+    { message: { ...privateMessage, chat: { id: 0, type: "private" } } },
+    { message: { ...privateMessage, chat: { id: Number.MAX_SAFE_INTEGER + 1, type: "private" } } },
+    { message: { ...privateMessage, chat: { id: "01", type: "private" } } },
+    { message: { ...privateMessage, chat: null } },
+    { message: { ...privateMessage, from: null } },
+    { message: { ...privateMessage, text: null } },
+    { message: { ...privateMessage, successful_payment: {}, text: "/paysupport" } },
+  ];
+
+  for (const [index, update] of updates.entries()) {
+    const response = await postTelegramWebhook(
+      { update_id: 910 + index, ...update },
+      env,
+      webhookSecret,
+    );
+    assert.equal(response.status, 200, String(index));
+    assert.deepEqual(await response.json(), { ok: true }, String(index));
+    assertWebhookHeaders(response);
+  }
+  assert.equal(telegramCalls, 0);
+});
+
+test("Telegram webhook redacts support command provider failures", async (t) => {
+  const db = memoryD1(t);
+  const providerSecret = "private-command-provider-response";
+  const response = await postTelegramWebhook(
+    {
+      message: {
+        from: { id: 8710001168, language_code: "en" },
+        chat: { id: 8710001168, type: "private" },
+        text: "/support",
+      },
+    },
+    {
+      DB: db,
+      TELEGRAM_BOT_TOKEN: botToken,
+      TELEGRAM_WEBHOOK_SECRET: webhookSecret,
+      async TELEGRAM_FETCH() {
+        throw new Error(providerSecret);
+      },
+    },
+    webhookSecret,
+  );
+  const text = await response.text();
+  assert.equal(response.status, 503);
+  assert.equal(text, JSON.stringify({ error: "Stars support is unavailable" }));
+  assertRedacted(text, [providerSecret, botToken, webhookSecret]);
+  assertWebhookHeaders(response);
+});
 
 test("Stars support service exports its public limits and factory", () => {
   assert.ok(starsSupportModule, "Stars support module should exist");
@@ -3620,4 +4657,134 @@ function assertThrowsWithPublicError(callback, expected) {
     assert.equal(Object.hasOwn(error ?? {}, "cause"), false);
     return true;
   });
+}
+
+function assertWebhookHeaders(response) {
+  assert.equal(response.headers.get("Content-Type"), "application/json");
+  for (const name of response.headers.keys()) {
+    assert.equal(name.toLowerCase().startsWith("access-control-allow-"), false, name);
+  }
+}
+
+async function createWorkerSession(db, user = authenticatedUser) {
+  return (await createSession(db, user)).token;
+}
+
+function postStarsInvoice(body, env, token, contentType = "application/json") {
+  return rawStarsInvoiceRequest(
+    typeof body === "string" ? body : JSON.stringify(body),
+    env,
+    token,
+    contentType,
+  );
+}
+
+function rawStarsInvoiceRequest(body, env, token, contentType = "application/json", extraHeaders = {}) {
+  const headers = new Headers(extraHeaders);
+  if (token !== undefined) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  if (typeof contentType === "string") {
+    headers.set("Content-Type", contentType);
+  }
+  return worker.fetch(
+    new Request("https://worker.test/payments/stars/invoices", {
+      method: "POST",
+      headers,
+      body,
+    }),
+    env,
+  );
+}
+
+function postTelegramWebhook(body, env, secret, contentType = "application/json") {
+  return rawTelegramWebhookRequest(
+    typeof body === "string" ? body : JSON.stringify(body),
+    env,
+    secret,
+    contentType,
+  );
+}
+
+function rawTelegramWebhookRequest(
+  body,
+  env,
+  secretOrOptions,
+  contentType = "application/json",
+  extraHeaders = {},
+) {
+  const options =
+    secretOrOptions !== null && typeof secretOrOptions === "object"
+      ? secretOrOptions
+      : { secret: secretOrOptions, contentType, extraHeaders };
+  const {
+    secret,
+    contentType: resolvedContentType = "application/json",
+    contentLength,
+    extraHeaders: resolvedExtraHeaders = {},
+  } = options;
+  const headers = new Headers(resolvedExtraHeaders);
+  if (typeof resolvedContentType === "string") {
+    headers.set("Content-Type", resolvedContentType);
+  }
+  if (secret !== undefined) {
+    headers.set("X-Telegram-Bot-Api-Secret-Token", secret);
+  }
+  if (contentLength !== undefined) {
+    headers.set("Content-Length", contentLength);
+  }
+  return worker.fetch(
+    new Request("https://worker.test/telegram/webhook", {
+      method: "POST",
+      headers,
+      body,
+    }),
+    env,
+  );
+}
+
+function streamTelegramWebhookRequest(body, { onText, onJson } = {}) {
+  const bytes = new TextEncoder().encode(body);
+  return {
+    url: "https://worker.test/telegram/webhook",
+    method: "POST",
+    headers: new Headers({
+      "Content-Type": "application/json",
+      "X-Telegram-Bot-Api-Secret-Token": webhookSecret,
+    }),
+    body: new ReadableStream({
+      start(controller) {
+        const midpoint = Math.floor(bytes.byteLength / 2);
+        controller.enqueue(bytes.slice(0, midpoint));
+        controller.enqueue(bytes.slice(midpoint));
+        controller.close();
+      },
+    }),
+    text() {
+      onText?.();
+      throw new Error("webhook must not call text()");
+    },
+    json() {
+      onJson?.();
+      throw new Error("webhook must not call json()");
+    },
+  };
+}
+
+function telegramResponse(result, init = {}) {
+  return new Response(JSON.stringify({ ok: true, result }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+    ...init,
+  });
+}
+
+function textByteLength(value) {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function assertRedacted(value, secrets) {
+  for (const secret of secrets) {
+    assert.equal(value.includes(secret), false, `response leaked ${secret}`);
+  }
 }

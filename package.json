@@ -10,7 +10,7 @@
     "coverage:app": "SALVO_APP_CHILD_COVERAGE=inherit node --experimental-test-coverage --test-coverage-include=src/app.js --test-coverage-lines=39 --test tests/app-behavior.test.mjs",
     "coverage:critical:build-publication": "SALVO_APP_CHILD_COVERAGE=isolated node --experimental-test-coverage --test-coverage-include=scripts/build-publication.mjs --test-coverage-lines=98 --test tests/telegram-build.test.mjs",
     "coverage:critical:build": "SALVO_APP_CHILD_COVERAGE=isolated node --experimental-test-coverage --test-coverage-include=scripts/build.mjs --test-coverage-lines=98 --test tests/telegram-build.test.mjs",
-    "coverage:critical:worker": "node --experimental-test-coverage --test-coverage-include=worker/index.js --test-coverage-lines=98 --test tests/worker.test.mjs tests/profile.test.mjs tests/telegram-mini-app-worker.test.mjs tests/telegram-oidc-worker.test.mjs",
+    "coverage:critical:worker": "node --experimental-test-coverage --test-coverage-include=worker/index.js --test-coverage-lines=98 --test tests/worker.test.mjs tests/profile.test.mjs tests/stars-support-worker.test.mjs tests/telegram-mini-app-worker.test.mjs tests/telegram-oidc-worker.test.mjs",
     "build": "node scripts/build.mjs",
     "start": "python3 -m http.server 5173 -d dist",
     "mobile:sync": "npm run build && cap sync",

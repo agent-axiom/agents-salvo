@@ -34,6 +34,8 @@ import {
   listPlayerReplays,
   parseReplayPayload,
 } from "./replay.js";
+import { createStarsSupportService, starsAmountLimits } from "./stars-support.js";
+import { createTelegramBotApiClient } from "./telegram-bot-api.js";
 
 const archiveOutboxPrefix = "replayArchiveOutbox:";
 const archiveDeadLetterPrefix = "replayArchiveDeadLetter:";
@@ -48,9 +50,31 @@ const maxTelegramJsonBytes = 1024;
 const telegramMiniAppJsonEnvelopeBytes = 15;
 const maxTelegramMiniAppJsonBytes = 16 * 1024 + telegramMiniAppJsonEnvelopeBytes;
 const maxTelegramCodeLength = 4096;
+const maxStarsInvoiceJsonBytes = 1024;
 const telegramSecretPattern = /^[A-Za-z0-9_-]{43}$/;
 const telegramPlatforms = new Set(["web", "android", "ios"]);
+const starsLocales = new Set(["en", "ru", "zh"]);
 const telegramTextEncoder = new TextEncoder();
+const telegramWebhookJsonMaxBytes = 64 * 1024;
+const telegramWebhookSecretPattern = /^[A-Za-z0-9_-]{32,256}$/u;
+
+const telegramTermsUrl = "https://agent-axiom.github.io/agents-salvo/support.html";
+const telegramSupportUrl = "https://github.com/agent-axiom/agents-salvo/issues";
+const telegramSupportCommandPattern = /^\/(terms|support|paysupport)(?:@agents_salvo_bot)?$/u;
+const telegramSupportCommandText = Object.freeze({
+  en: Object.freeze({
+    terms: `Terms of Support: ${telegramTermsUrl}`,
+    support: `Purchase support: ${telegramSupportUrl}. Telegram Support cannot resolve this purchase. Do not publish session tokens, invoice payloads, or payment charge IDs.`,
+  }),
+  ru: Object.freeze({
+    terms: `Условия поддержки: ${telegramTermsUrl}`,
+    support: `Поддержка покупок: ${telegramSupportUrl}. Поддержка Telegram не может решить проблему с этой покупкой. Не публикуйте токены сессий, содержимое счетов или идентификаторы платежных списаний.`,
+  }),
+  zh: Object.freeze({
+    terms: `支持条款：${telegramTermsUrl}`,
+    support: `购买支持：${telegramSupportUrl}。Telegram 支持无法解决此购买问题。请勿发布会话令牌、账单载荷或付款扣款 ID。`,
+  }),
+});
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -60,18 +84,40 @@ const corsHeaders = {
 
 export default {
   async fetch(request, env, ctx) {
-    if (request.method === "OPTIONS") {
-      return new Response(null, { headers: corsHeaders });
-    }
-
     const url = new URL(request.url);
+    const isWebhookPath = isTelegramWebhookPath(url.pathname);
     let route;
     try {
       route = routeRequest(url);
     } catch (error) {
+      if (isWebhookPath) {
+        return webhookJson({ error: "Not found" }, 404);
+      }
+      if (request.method === "OPTIONS") {
+        return new Response(null, { headers: corsHeaders });
+      }
       return json({ error: error.message }, 400);
     }
+    if (isWebhookPath) {
+      if (route?.kind === "telegramWebhook" && request.method === "POST") {
+        return telegramWebhook(request, env);
+      }
+      return webhookJson({ error: "Not found" }, 404);
+    }
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
+    }
     if (!route) {
+      return json({ error: "Not found" }, 404);
+    }
+
+    if (route.kind === "starsInvoiceCreate" && request.method === "POST") {
+      return createStarsInvoice(request, env);
+    }
+    if (route.kind === "starsInvoiceStatus" && request.method === "GET") {
+      return getStarsInvoice(request, env, route.invoiceId);
+    }
+    if (route.kind === "starsInvoiceCreate" || route.kind === "starsInvoiceStatus") {
       return json({ error: "Not found" }, 404);
     }
 
@@ -744,6 +790,18 @@ function startRematch(room, preset) {
 }
 
 function routeRequest(url) {
+  if (url.search === "" && url.pathname === "/payments/stars/invoices") {
+    return { kind: "starsInvoiceCreate" };
+  }
+  if (url.search === "") {
+    const starsInvoiceMatch = /^\/payments\/stars\/invoices\/(inv_[A-Za-z0-9_-]{22})$/u.exec(url.pathname);
+    if (starsInvoiceMatch) {
+      return { kind: "starsInvoiceStatus", invoiceId: starsInvoiceMatch[1] };
+    }
+  }
+  if (url.search === "" && url.pathname === "/telegram/webhook") {
+    return { kind: "telegramWebhook" };
+  }
   if (url.pathname === "/auth/telegram/config") {
     return { kind: "authTelegramConfig" };
   }
@@ -794,6 +852,473 @@ function routeRequest(url) {
     return { kind: "socket", roomCode: sanitizeRoomCode(parts[1]) };
   }
   return null;
+}
+
+function isTelegramWebhookPath(pathname) {
+  const normalized = pathname.toLowerCase();
+  return normalized === "/telegram/webhook" || normalized.startsWith("/telegram/webhook/");
+}
+
+async function createStarsInvoice(request, env) {
+  let user;
+  try {
+    ({ user } = await authorizeStarsRequest(request, env));
+  } catch (error) {
+    if (error?.category === "service_unavailable") {
+      return starsErrorJson("service_unavailable");
+    }
+    return json({ error: authenticationErrorMessage(error) }, 401);
+  }
+
+  let payload;
+  try {
+    payload = await readStrictStarsInvoiceJson(request);
+  } catch {
+    return starsErrorJson("invalid_request");
+  }
+
+  try {
+    const invoice = await createWorkerStarsService(env).createInvoice({ user, ...payload });
+    return json(invoice, 201);
+  } catch (error) {
+    return starsErrorJson(starsErrorCategory(error));
+  }
+}
+
+async function getStarsInvoice(request, env, invoiceId) {
+  let user;
+  try {
+    ({ user } = await authorizeStarsRequest(request, env));
+  } catch (error) {
+    if (error?.category === "service_unavailable") {
+      return starsErrorJson("service_unavailable");
+    }
+    return json({ error: authenticationErrorMessage(error) }, 401);
+  }
+  try {
+    const invoice = await createWorkerStarsService(env).getInvoice({ user, invoiceId });
+    return json(invoice);
+  } catch (error) {
+    return starsErrorJson(starsErrorCategory(error));
+  }
+}
+
+async function telegramWebhook(request, env) {
+  let service;
+  let botApi;
+  let d1Failed;
+  let expectedSecret;
+  try {
+    expectedSecret = env?.TELEGRAM_WEBHOOK_SECRET;
+    if (
+      typeof expectedSecret !== "string" ||
+      !telegramWebhookSecretPattern.test(expectedSecret)
+    ) {
+      throw new Error("Invalid webhook configuration");
+    }
+    ({ botApi, d1Failed, service } = createWorkerStarsDependencies(env, { observeD1: true }));
+  } catch {
+    return webhookJson({ error: "Stars support is unavailable" }, 503);
+  }
+
+  try {
+    const suppliedSecret = request.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
+    if (!(await telegramSecretsEqual(expectedSecret, suppliedSecret))) {
+      return webhookJson({ error: "Forbidden" }, 403);
+    }
+  } catch {
+    return webhookJson({ error: "Stars support is unavailable" }, 503);
+  }
+
+  let update;
+  try {
+    ({ payload: update } = await readBoundedJsonBody(request, telegramWebhookJsonMaxBytes));
+    if (update === null || typeof update !== "object" || Array.isArray(update)) {
+      throw new Error("Invalid Telegram update");
+    }
+  } catch {
+    return webhookJson({ error: "Invalid Telegram update" }, 400);
+  }
+
+  try {
+    const serviceResult = await service.handleUpdate(update);
+    if (serviceResult.kind === "pre_checkout" && d1Failed()) {
+      return webhookJson({ error: "Stars support is unavailable" }, 503);
+    }
+    if (serviceResult.kind !== "ignored") {
+      return webhookJson({ ok: true });
+    }
+    const command = snapshotTelegramSupportCommand(update);
+    if (command === null) {
+      return webhookJson({ ok: true });
+    }
+    await botApi.sendMessage({ chatId: command.chatId, text: command.text });
+    return webhookJson({ ok: true });
+  } catch {
+    return webhookJson({ error: "Stars support is unavailable" }, 503);
+  }
+}
+
+function createWorkerStarsService(env) {
+  return createWorkerStarsDependencies(env).service;
+}
+
+function createWorkerStarsDependencies(env, { observeD1 = false } = {}) {
+  try {
+    const configuredDb = env.DB;
+    const botToken = env.TELEGRAM_BOT_TOKEN;
+    const configuredFetcher = env.TELEGRAM_FETCH;
+    let observedFailure = false;
+    const db = observeD1
+      ? observedD1Binding(configuredDb, () => {
+          observedFailure = true;
+        })
+      : configuredDb;
+    const botApi = createTelegramBotApiClient({
+      botToken,
+      fetcher: configuredFetcher ?? globalThis.fetch,
+    });
+    return {
+      botApi,
+      d1Failed: () => observedFailure,
+      service: createStarsSupportService({ db, botApi }),
+    };
+  } catch {
+    throw new Error("Stars support unavailable");
+  }
+}
+
+function observedD1Binding(db, onFailure) {
+  const prepare = db?.prepare;
+  if (typeof prepare !== "function") {
+    throw new Error("Invalid D1 binding");
+  }
+  return {
+    prepare(sql) {
+      try {
+        return observedD1Statement(prepare.call(db, sql), onFailure);
+      } catch (error) {
+        onFailure();
+        throw error;
+      }
+    },
+  };
+}
+
+function observedD1Statement(statement, onFailure) {
+  return {
+    bind(...values) {
+      try {
+        const bind = statement?.bind;
+        if (typeof bind !== "function") {
+          throw new Error("Invalid D1 statement");
+        }
+        return observedD1Statement(bind.call(statement, ...values), onFailure);
+      } catch (error) {
+        onFailure();
+        throw error;
+      }
+    },
+    async first(...values) {
+      return observedD1StatementCall(statement, "first", values, onFailure);
+    },
+    async run(...values) {
+      return observedD1StatementCall(statement, "run", values, onFailure);
+    },
+    async all(...values) {
+      return observedD1StatementCall(statement, "all", values, onFailure);
+    },
+  };
+}
+
+async function observedD1StatementCall(statement, methodName, values, onFailure) {
+  try {
+    const method = statement?.[methodName];
+    if (typeof method !== "function") {
+      throw new Error("Invalid D1 statement");
+    }
+    return await method.call(statement, ...values);
+  } catch (error) {
+    onFailure();
+    throw error;
+  }
+}
+
+function starsErrorCategory(error) {
+  try {
+    const category = error?.category;
+    const status = error?.status;
+    if (
+      (category === "invalid_request" && status === 400) ||
+      (category === "not_found" && status === 404) ||
+      (category === "service_unavailable" && status === 503)
+    ) {
+      return category;
+    }
+  } catch {
+    // Unowned failures collapse to one unavailable category.
+  }
+  return "service_unavailable";
+}
+
+function starsErrorJson(category) {
+  if (category === "invalid_request") {
+    return json({ error: "Invalid Stars support request" }, 400);
+  }
+  if (category === "not_found") {
+    return json({ error: "Stars invoice not found" }, 404);
+  }
+  return json({ error: "Stars support is unavailable" }, 503);
+}
+
+async function authorizeStarsRequest(request, env) {
+  const token = parseBearerToken(request);
+  if (!token) {
+    throw new Error("Authentication required");
+  }
+  try {
+    return { token, user: await resolveSession(env.DB, token) };
+  } catch (error) {
+    if (error instanceof Error && error.message === "Session invalid") {
+      throw new Error("Authentication failed");
+    }
+    const unavailable = new Error("Stars support unavailable");
+    unavailable.category = "service_unavailable";
+    throw unavailable;
+  }
+}
+
+async function telegramSecretsEqual(expected, supplied) {
+  const expectedBytes = telegramTextEncoder.encode(expected);
+  const suppliedBytes = telegramTextEncoder.encode(supplied);
+  const [expectedDigest, suppliedDigest] = await Promise.all([
+    crypto.subtle.digest("SHA-256", expectedBytes),
+    crypto.subtle.digest("SHA-256", suppliedBytes),
+  ]);
+  const expectedHash = new Uint8Array(expectedDigest);
+  const suppliedHash = new Uint8Array(suppliedDigest);
+  let difference = 0;
+  for (let index = 0; index < 32; index += 1) {
+    difference |= expectedHash[index] ^ suppliedHash[index];
+  }
+  return difference === 0;
+}
+
+function snapshotTelegramSupportCommand(update) {
+  const messageRead = readWorkerProperty(update, "message");
+  if (!messageRead.ok || !isWorkerRecord(messageRead.value)) {
+    return null;
+  }
+  const message = messageRead.value;
+  const paymentRead = readWorkerProperty(message, "successful_payment");
+  const chatRead = readWorkerProperty(message, "chat");
+  const textRead = readWorkerProperty(message, "text");
+  const fromRead = readWorkerProperty(message, "from");
+  if (
+    !paymentRead.ok ||
+    paymentRead.value !== undefined ||
+    !chatRead.ok ||
+    !isWorkerRecord(chatRead.value) ||
+    !textRead.ok ||
+    typeof textRead.value !== "string" ||
+    !fromRead.ok ||
+    !isWorkerRecord(fromRead.value)
+  ) {
+    return null;
+  }
+  const chatIdRead = readWorkerProperty(chatRead.value, "id");
+  const chatTypeRead = readWorkerProperty(chatRead.value, "type");
+  if (
+    !chatIdRead.ok ||
+    !isSafeTelegramChatId(chatIdRead.value) ||
+    !chatTypeRead.ok ||
+    chatTypeRead.value !== "private"
+  ) {
+    return null;
+  }
+  const match = telegramSupportCommandPattern.exec(textRead.value);
+  if (match === null) {
+    return null;
+  }
+  let languageCode;
+  const languageRead = readWorkerProperty(fromRead.value, "language_code");
+  if (!languageRead.ok) {
+    return null;
+  }
+  languageCode = languageRead.value;
+  const locale = telegramSupportLocale(languageCode);
+  const name = match[1];
+  return Object.freeze({
+    chatId: chatIdRead.value,
+    name,
+    text: name === "terms"
+      ? telegramSupportCommandText[locale].terms
+      : telegramSupportCommandText[locale].support,
+  });
+}
+
+function telegramSupportLocale(languageCode) {
+  if (typeof languageCode === "string") {
+    const normalized = languageCode.toLowerCase();
+    if (normalized.startsWith("ru")) {
+      return "ru";
+    }
+    if (normalized.startsWith("zh")) {
+      return "zh";
+    }
+  }
+  return "en";
+}
+
+function isSafeTelegramChatId(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value !== 0;
+  }
+  return (
+    typeof value === "string" &&
+    /^-?[1-9]\d{0,15}$/u.test(value) &&
+    Number.isSafeInteger(Number(value))
+  );
+}
+
+function readWorkerProperty(record, key) {
+  try {
+    return { ok: true, value: record[key] };
+  } catch {
+    return { ok: false, value: undefined };
+  }
+}
+
+function isWorkerRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function readStrictStarsInvoiceJson(request) {
+  const { payload, text } = await readBoundedJsonBody(request, maxStarsInvoiceJsonBytes);
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Invalid JSON object");
+  }
+  const keys = topLevelJsonObjectKeys(text);
+  const amount = Object.getOwnPropertyDescriptor(payload, "amount");
+  const locale = Object.getOwnPropertyDescriptor(payload, "locale");
+  if (
+    keys.length !== 2 ||
+    new Set(keys).size !== 2 ||
+    !keys.includes("amount") ||
+    !keys.includes("locale") ||
+    !amount ||
+    !Object.hasOwn(amount, "value") ||
+    !locale ||
+    !Object.hasOwn(locale, "value") ||
+    typeof amount.value !== "number" ||
+    !Number.isInteger(amount.value) ||
+    amount.value < starsAmountLimits.min ||
+    amount.value > starsAmountLimits.max ||
+    typeof locale.value !== "string" ||
+    !starsLocales.has(locale.value)
+  ) {
+    throw new Error("Invalid Stars values");
+  }
+  return { amount: amount.value, locale: locale.value };
+}
+
+async function readBoundedJsonBody(request, maxBytes) {
+  if (request.headers.get("Content-Type") !== "application/json") {
+    await cancelUnreadRequestBody(request);
+    throw new Error("Invalid content type");
+  }
+  const contentLengthHeader = request.headers.get("Content-Length");
+  if (contentLengthHeader !== null) {
+    const contentLength = Number(contentLengthHeader);
+    if (
+      !/^(?:0|[1-9]\d*)$/u.test(contentLengthHeader) ||
+      !Number.isSafeInteger(contentLength) ||
+      contentLength > maxBytes
+    ) {
+      await cancelUnreadRequestBody(request);
+      throw new Error("Request too large");
+    }
+  }
+  const reader = request.body?.getReader();
+  if (!reader) {
+    throw new Error("Request body required");
+  }
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (!chunk || typeof chunk.done !== "boolean") {
+        throw new Error("Invalid request stream");
+      }
+      if (chunk.done) {
+        break;
+      }
+      if (!(chunk.value instanceof Uint8Array) || chunk.value.byteLength > maxBytes - length) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The fixed public validation failure remains authoritative.
+        }
+        throw new Error("Request too large");
+      }
+      chunks.push(chunk.value);
+      length += chunk.value.byteLength;
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return { payload: JSON.parse(text), text };
+}
+
+async function cancelUnreadRequestBody(request) {
+  try {
+    await request.body?.cancel();
+  } catch {
+    // The caller still returns its fixed validation failure.
+  }
+}
+
+function topLevelJsonObjectKeys(text) {
+  const keys = [];
+  const containers = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === "{" || character === "[") {
+      containers.push(character);
+      continue;
+    }
+    if (character === "}" || character === "]") {
+      containers.pop();
+      continue;
+    }
+    if (character !== '"') {
+      continue;
+    }
+    const start = index;
+    for (index += 1; index < text.length; index += 1) {
+      if (text[index] === "\\") {
+        index += 1;
+      } else if (text[index] === '"') {
+        break;
+      }
+    }
+    let next = index + 1;
+    while (/\s/u.test(text[next] ?? "")) {
+      next += 1;
+    }
+    if (containers.length === 1 && containers[0] === "{" && text[next] === ":") {
+      keys.push(JSON.parse(text.slice(start, index + 1)));
+    }
+  }
+  return keys;
 }
 
 async function authenticateTelegram(request, env) {
@@ -1566,5 +2091,12 @@ function json(payload, status = 200) {
       ...corsHeaders,
       "Content-Type": "application/json",
     },
+  });
+}
+
+function webhookJson(payload, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "Content-Type": "application/json" },
   });
 }
