@@ -123,6 +123,8 @@ export function createNativePlatform(plugins = defaultPlugins) {
       }
     },
     openExternalUrl: (url) => browser.open({ url }),
+    supportsInvoice: () => false,
+    openInvoice: async () => ({ status: "unsupported" }),
     closeExternalUrl: () => browser.close(),
     async onDeepLink(listener) {
       const startupUrls = new Set();

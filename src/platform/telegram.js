@@ -22,6 +22,11 @@ const closingConfirmationErrorMessage = "Telegram closing confirmation update fa
 const eventCleanupErrorMessage = "Telegram event cleanup failed";
 const settingsStorageErrorMessage = "Settings storage unavailable";
 const resolvedCleanup = Promise.resolve();
+const invoiceApiVersion = "6.1";
+const defaultInvoiceTimeoutMs = 5 * 60 * 1000;
+const maximumInvoiceUrlLength = 2048;
+const invoiceUrlPattern = /^https:\/\/t\.me\/(?:\$|invoice\/)[A-Za-z0-9_=-]+$/;
+const invoiceStatuses = new Set(["paid", "pending", "cancelled", "failed"]);
 
 function noOp() {}
 
@@ -233,6 +238,9 @@ export function createTelegramPlatform({
   window: host = globalThis.window,
   navigator: nav = globalThis.navigator,
   storage,
+  invoiceTimeoutMs = defaultInvoiceTimeoutMs,
+  setTimeoutFn = globalThis.setTimeout,
+  clearTimeoutFn = globalThis.clearTimeout,
 } = {}) {
   let sessionToken = "";
   const settingsStorage = storage === undefined
@@ -253,6 +261,28 @@ export function createTelegramPlatform({
     () => webApp?.isVersionAtLeast?.("8.0") === true,
     false,
   );
+
+  const getInvoiceCapability = () => {
+    try {
+      const isVersionAtLeast = webApp?.isVersionAtLeast;
+      if (
+        typeof isVersionAtLeast !== "function"
+        || isVersionAtLeast.call(webApp, invoiceApiVersion) !== true
+      ) {
+        return null;
+      }
+      const openInvoice = webApp?.openInvoice;
+      return typeof openInvoice === "function" ? openInvoice : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const boundedInvoiceTimeoutMs = (
+    Number.isInteger(invoiceTimeoutMs)
+    && invoiceTimeoutMs > 0
+    && invoiceTimeoutMs <= defaultInvoiceTimeoutMs
+  ) ? invoiceTimeoutMs : defaultInvoiceTimeoutMs;
 
   const getStyle = () => readOr(
     () => host?.document?.documentElement?.style,
@@ -391,6 +421,69 @@ export function createTelegramPlatform({
       const method = telegramUrl ? "openTelegramLink" : "openLink";
       if (await callOptionalAsync(webApp, method, telegramUrl ?? url)) return;
       await callOptionalAsync(host, "open", url, "_blank", "noopener,noreferrer");
+    },
+    supportsInvoice: () => getInvoiceCapability() !== null,
+    async openInvoice(url) {
+      if (
+        typeof url !== "string"
+        || url.length > maximumInvoiceUrlLength
+        || !invoiceUrlPattern.test(url)
+      ) {
+        return { status: "unsupported" };
+      }
+      const providerOpenInvoice = getInvoiceCapability();
+      if (!providerOpenInvoice) return { status: "unsupported" };
+      if (
+        typeof setTimeoutFn !== "function"
+        || typeof clearTimeoutFn !== "function"
+      ) {
+        return { status: "failed" };
+      }
+
+      return new Promise((resolve) => {
+        let settled = false;
+        let timerActive = false;
+        let timerId;
+        const settle = (status) => {
+          if (settled) return;
+          settled = true;
+          if (timerActive) {
+            try {
+              clearTimeoutFn(timerId);
+            } catch {
+              // Timer cleanup is best-effort after the result is fixed.
+            }
+            timerActive = false;
+          }
+          resolve({ status });
+        };
+
+        try {
+          timerId = setTimeoutFn(() => settle("failed"), boundedInvoiceTimeoutMs);
+          timerActive = true;
+          if (settled) {
+            try {
+              clearTimeoutFn(timerId);
+            } catch {
+              // A synchronous injected timer has already fixed the result.
+            }
+            timerActive = false;
+            return;
+          }
+        } catch {
+          settle("failed");
+          return;
+        }
+
+        try {
+          const providerResult = providerOpenInvoice.call(webApp, url, (status) => {
+            settle(invoiceStatuses.has(status) ? status : "failed");
+          });
+          void Promise.resolve(providerResult).catch(() => settle("failed"));
+        } catch {
+          settle("failed");
+        }
+      });
     },
     closeExternalUrl: async () => {},
     onDeepLink: async () => noOpCleanup,

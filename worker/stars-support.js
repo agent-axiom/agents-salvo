@@ -8,7 +8,8 @@ const starsUnpaidRetentionSeconds = 30 * 24 * 60 * 60;
 const starsCleanupBatchSize = 25;
 const telegramMaximumUserId = 2 ** 52 - 1;
 const textEncoder = new TextEncoder();
-const telegramInvoiceUrlPattern = /^https:\/\/t\.me\/\$[A-Za-z0-9_-]{1,128}$/u;
+const maximumTelegramInvoiceUrlLength = 2048;
+const telegramInvoiceUrlPattern = /^https:\/\/t\.me\/(?:\$|invoice\/)[A-Za-z0-9_=-]+$/u;
 const internalInvoiceStatuses = new Set(["pending", "paid", "failed", "refunded"]);
 const preCheckoutRejectionText = Object.freeze({
   en: "Payment unavailable. Please create a new invoice.",
@@ -968,6 +969,7 @@ async function markInvoiceFailed({ db, prepare, invoiceId, userKey, failedAt }) 
 function isTelegramInvoiceUrl(value) {
   return (
     typeof value === "string" &&
+    value.length <= maximumTelegramInvoiceUrlLength &&
     value.trim() === value &&
     !/[\u0000-\u001F\u007F]/.test(value) &&
     telegramInvoiceUrlPattern.test(value)

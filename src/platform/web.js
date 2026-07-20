@@ -44,6 +44,8 @@ export function createWebPlatform({
     async openExternalUrl(url) {
       host?.open?.(url, "_blank", "noopener,noreferrer");
     },
+    supportsInvoice: () => false,
+    openInvoice: async () => ({ status: "unsupported" }),
     closeExternalUrl: async () => {},
     onDeepLink: async () => () => {},
     onBack: async () => () => {},

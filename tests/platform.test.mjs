@@ -818,6 +818,8 @@ test("platform selection is explicit and safe during Node import", () => {
       "share",
       "haptic",
       "openExternalUrl",
+      "supportsInvoice",
+      "openInvoice",
       "onDeepLink",
       "onBack",
       "onLifecycleChange",
@@ -863,4 +865,26 @@ test("web and native expose safe no-op Telegram capabilities", async () => {
     removeTheme();
     removeViewport();
   }
+});
+
+test("web and native reject Telegram invoices without opening a browser", async () => {
+  const calls = [];
+  const web = createWebPlatform({
+    window: { open: (...args) => calls.push(["window", ...args]) },
+  });
+  const native = createNativePlatform(nativePlugins({
+    Browser: {
+      open: async (...args) => calls.push(["browser", ...args]),
+      close: async () => {},
+    },
+  }));
+
+  for (const adapter of [web, native]) {
+    assert.equal(adapter.supportsInvoice(), false);
+    assert.deepEqual(
+      await adapter.openInvoice("https://t.me/$invoice_token"),
+      { status: "unsupported" },
+    );
+  }
+  assert.deepEqual(calls, []);
 });

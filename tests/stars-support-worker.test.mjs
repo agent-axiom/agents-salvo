@@ -3986,6 +3986,37 @@ test("createInvoice marks provider failures failed without leaking provider deta
   );
 });
 
+test("createInvoice accepts official Telegram invoice link forms", async (t) => {
+  const validUrls = [
+    "https://t.me/$invoice_A-1=",
+    "https://t.me/invoice/invoice_A-1=",
+    `https://t.me/invoice/${"a".repeat(512)}=`,
+  ];
+
+  for (const [index, invoiceUrl] of validUrls.entries()) {
+    await t.test(invoiceUrl.slice(0, 80), async (subtest) => {
+      const db = memoryD1(subtest);
+      const service = starsSupportModule.createStarsSupportService({
+        db,
+        botApi: fakeBotApi({ createInvoiceLink: async () => invoiceUrl }),
+        now: () => serviceNow,
+        randomBytes: (size) => new Uint8Array(size).fill(index + 80),
+      });
+
+      const created = await service.createInvoice({
+        user: authenticatedUser,
+        amount: 8,
+        locale: "en",
+      });
+      assert.equal(created.invoiceUrl, invoiceUrl);
+      assert.equal(
+        db.queryOne("SELECT status FROM star_support_payments").status,
+        "pending",
+      );
+    });
+  }
+});
+
 test("createInvoice rejects invalid provider URLs and marks each row failed", async (t) => {
   const invalidUrls = [
     "http://t.me/$invoice",
@@ -3997,7 +4028,8 @@ test("createInvoice rejects invalid provider URLs and marks each row failed", as
     "https://t.me/$bad.slug",
     "https://t.me/$bad/slug",
     "https://t.me/$",
-    `https://t.me/$${"A".repeat(129)}`,
+    "https://t.me/invoice/",
+    `https://t.me/$${"A".repeat(2048)}`,
     "https://t.me:443/$invoice",
     "https://t.me.evil.example/$invoice",
     "https://evil.example/t.me/$invoice",

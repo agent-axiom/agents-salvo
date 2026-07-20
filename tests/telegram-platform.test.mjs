@@ -39,6 +39,35 @@ function deferred() {
   return { promise, reject, resolve };
 }
 
+function timerHarness() {
+  let nextId = 1;
+  const pending = new Map();
+  const scheduled = [];
+  const cleared = [];
+
+  return {
+    cleared,
+    pending,
+    scheduled,
+    setTimeout(callback, delay) {
+      const id = nextId;
+      nextId += 1;
+      scheduled.push([id, delay]);
+      pending.set(id, callback);
+      return id;
+    },
+    clearTimeout(id) {
+      cleared.push(id);
+      pending.delete(id);
+    },
+    fire(id = pending.keys().next().value) {
+      const callback = pending.get(id);
+      pending.delete(id);
+      callback?.();
+    },
+  };
+}
+
 function storageHarness() {
   const calls = [];
   const values = new Map();
@@ -1123,4 +1152,312 @@ test("Telegram unavailable and throwing provider APIs remain safe", async () => 
     const remove = await subscribe(() => {});
     await assert.doesNotReject(async () => remove());
   }
+});
+
+test("Telegram invoice capability requires Bot API 6.1 and the native method", async () => {
+  const supported = fakeTelegram();
+  supported.webApp.openInvoice = () => {};
+  const adapter = createTelegramPlatform({
+    webApp: supported.webApp,
+    window: supported.window,
+  });
+
+  assert.equal(adapter.supportsInvoice(), true);
+  assert.ok(supported.calls.some(([name, version]) => (
+    name === "version" && version === "6.1"
+  )));
+
+  const unavailable = fakeTelegram();
+  const unavailableAdapter = createTelegramPlatform({
+    webApp: unavailable.webApp,
+    window: unavailable.window,
+  });
+  assert.equal(unavailableAdapter.supportsInvoice(), false);
+  assert.deepEqual(
+    await unavailableAdapter.openInvoice("https://t.me/$invoice"),
+    { status: "unsupported" },
+  );
+
+  const oldVersion = fakeTelegram({ versionAtLeast: false });
+  oldVersion.webApp.openInvoice = () => {
+    oldVersion.calls.push(["invoice-opened"]);
+  };
+  const oldAdapter = createTelegramPlatform({
+    webApp: oldVersion.webApp,
+    window: oldVersion.window,
+  });
+  assert.equal(oldAdapter.supportsInvoice(), false);
+  assert.deepEqual(
+    await oldAdapter.openInvoice("https://t.me/$invoice"),
+    { status: "unsupported" },
+  );
+  assert.equal(oldVersion.calls.some(([name]) => name === "invoice-opened"), false);
+  assert.equal(oldVersion.calls.some(([name]) => name === "window-open"), false);
+});
+
+test("Telegram normalizes every documented invoice callback and settles once", async () => {
+  for (const status of ["paid", "pending", "cancelled", "failed"]) {
+    const fake = fakeTelegram();
+    const timer = timerHarness();
+    let callback;
+    fake.webApp.openInvoice = (url, next) => {
+      fake.calls.push(["invoice", url]);
+      callback = next;
+    };
+    const adapter = createTelegramPlatform({
+      webApp: fake.webApp,
+      window: fake.window,
+      invoiceTimeoutMs: 1234,
+      setTimeoutFn: timer.setTimeout,
+      clearTimeoutFn: timer.clearTimeout,
+    });
+
+    const resultPromise = adapter.openInvoice("https://t.me/$invoice_A-1");
+    callback(status);
+    callback(status === "paid" ? "failed" : "paid");
+    assert.deepEqual(await resultPromise, { status });
+    assert.deepEqual(fake.calls.filter(([name]) => name === "invoice"), [
+      ["invoice", "https://t.me/$invoice_A-1"],
+    ]);
+    assert.deepEqual(timer.scheduled, [[1, 1234]]);
+    assert.deepEqual(timer.cleared, [1]);
+    assert.equal(timer.pending.size, 0);
+    assert.equal(fake.calls.some(([name]) => name === "window-open"), false);
+  }
+});
+
+test("Telegram accepts only exact primitive t.me invoice URLs", async () => {
+  const fake = fakeTelegram();
+  const opened = [];
+  fake.webApp.openInvoice = (url, callback) => {
+    opened.push(url);
+    callback("paid");
+  };
+  const adapter = createTelegramPlatform({ webApp: fake.webApp, window: fake.window });
+  const longToken = `${"a".repeat(512)}=`;
+  const validUrls = [
+    "https://t.me/$a",
+    "https://t.me/$invoice_A-1=",
+    "https://t.me/invoice/invoice_A-1=",
+    `https://t.me/invoice/${longToken}`,
+  ];
+  for (const value of validUrls) {
+    assert.deepEqual(await adapter.openInvoice(value), { status: "paid" });
+  }
+  for (const value of [
+    new String("https://t.me/$invoice"),
+    "http://t.me/$invoice",
+    "https://telegram.me/$invoice",
+    "https://T.ME/$invoice",
+    "https://t.me:443/$invoice",
+    "https://user@t.me/$invoice",
+    "https://t.me/$invoice/",
+    "https://t.me/$invoice?start=1",
+    "https://t.me/$invoice#fragment",
+    "https://t.me/$invoice.dot",
+    "https://t.me/$invoice%20token",
+    "https://t.me/$",
+    "https://t.me/invoice/",
+    `https://t.me/$${"a".repeat(2048)}`,
+    null,
+  ]) {
+    assert.deepEqual(await adapter.openInvoice(value), { status: "unsupported" });
+  }
+  assert.deepEqual(opened, validUrls);
+  assert.equal(fake.calls.some(([name]) => name === "window-open"), false);
+});
+
+test("Telegram fails closed for inaccessible invoice capabilities", async () => {
+  const failure = () => {
+    throw new Error("private provider secret");
+  };
+  for (const webApp of [
+    {
+      get isVersionAtLeast() { return failure(); },
+      openInvoice() {},
+    },
+    {
+      isVersionAtLeast: () => true,
+      get openInvoice() { return failure(); },
+    },
+  ]) {
+    const calls = [];
+    const adapter = createTelegramPlatform({
+      webApp,
+      window: { open: (...args) => calls.push(args) },
+    });
+    assert.equal(adapter.supportsInvoice(), false);
+    assert.deepEqual(
+      await adapter.openInvoice("https://t.me/$invoice"),
+      { status: "unsupported" },
+    );
+    assert.deepEqual(calls, []);
+  }
+});
+
+test("Telegram normalizes provider failures, unknown callbacks, and timeouts", async () => {
+  const thrown = fakeTelegram();
+  thrown.webApp.openInvoice = () => {
+    throw new Error("private invoice provider detail");
+  };
+  const thrownAdapter = createTelegramPlatform({
+    webApp: thrown.webApp,
+    window: thrown.window,
+  });
+  assert.deepEqual(
+    await thrownAdapter.openInvoice("https://t.me/$invoice"),
+    { status: "failed" },
+  );
+
+  const unknown = fakeTelegram();
+  unknown.webApp.openInvoice = (_url, callback) => callback("PAID");
+  const unknownAdapter = createTelegramPlatform({
+    webApp: unknown.webApp,
+    window: unknown.window,
+  });
+  assert.deepEqual(
+    await unknownAdapter.openInvoice("https://t.me/$invoice"),
+    { status: "failed" },
+  );
+
+  const omitted = fakeTelegram();
+  const timer = timerHarness();
+  let lateCallback;
+  omitted.webApp.openInvoice = (_url, callback) => {
+    lateCallback = callback;
+  };
+  const omittedAdapter = createTelegramPlatform({
+    webApp: omitted.webApp,
+    window: omitted.window,
+    invoiceTimeoutMs: 25,
+    setTimeoutFn: timer.setTimeout,
+    clearTimeoutFn: timer.clearTimeout,
+  });
+  const timedOut = omittedAdapter.openInvoice("https://t.me/$invoice");
+  timer.fire();
+  assert.deepEqual(await timedOut, { status: "failed" });
+  lateCallback("paid");
+  assert.deepEqual(timer.scheduled, [[1, 25]]);
+  assert.deepEqual(timer.cleared, [1]);
+  assert.equal(timer.pending.size, 0);
+  assert.equal(omitted.calls.some(([name]) => name === "window-open"), false);
+});
+
+test("Telegram bounds invoice timers and contains timer plumbing failures", async () => {
+  const bounded = fakeTelegram();
+  const boundedTimer = timerHarness();
+  bounded.webApp.openInvoice = () => {};
+  const boundedAdapter = createTelegramPlatform({
+    webApp: bounded.webApp,
+    invoiceTimeoutMs: Number.POSITIVE_INFINITY,
+    setTimeoutFn: boundedTimer.setTimeout,
+    clearTimeoutFn: boundedTimer.clearTimeout,
+  });
+  const boundedResult = boundedAdapter.openInvoice("https://t.me/$invoice");
+  assert.deepEqual(boundedTimer.scheduled, [[1, 5 * 60 * 1000]]);
+  boundedTimer.fire();
+  assert.deepEqual(await boundedResult, { status: "failed" });
+
+  const missingTimer = fakeTelegram();
+  let missingTimerOpened = false;
+  missingTimer.webApp.openInvoice = () => {
+    missingTimerOpened = true;
+  };
+  const missingTimerAdapter = createTelegramPlatform({
+    webApp: missingTimer.webApp,
+    setTimeoutFn: null,
+  });
+  assert.deepEqual(
+    await missingTimerAdapter.openInvoice("https://t.me/$invoice"),
+    { status: "failed" },
+  );
+  assert.equal(missingTimerOpened, false);
+
+  const throwingTimer = fakeTelegram();
+  throwingTimer.webApp.openInvoice = () => {
+    throw new Error("provider must not be reached");
+  };
+  const throwingTimerAdapter = createTelegramPlatform({
+    webApp: throwingTimer.webApp,
+    setTimeoutFn() {
+      throw new Error("private timer detail");
+    },
+    clearTimeoutFn() {},
+  });
+  assert.deepEqual(
+    await throwingTimerAdapter.openInvoice("https://t.me/$invoice"),
+    { status: "failed" },
+  );
+
+  const throwingClear = fakeTelegram();
+  throwingClear.webApp.openInvoice = (_url, callback) => callback("paid");
+  const throwingClearAdapter = createTelegramPlatform({
+    webApp: throwingClear.webApp,
+    setTimeoutFn: () => 7,
+    clearTimeoutFn() {
+      throw new Error("private clear detail");
+    },
+  });
+  assert.deepEqual(
+    await throwingClearAdapter.openInvoice("https://t.me/$invoice"),
+    { status: "paid" },
+  );
+
+  const synchronousTimer = fakeTelegram();
+  let synchronousTimerOpened = false;
+  let synchronousTimerCleared = false;
+  synchronousTimer.webApp.openInvoice = () => {
+    synchronousTimerOpened = true;
+  };
+  const synchronousTimerAdapter = createTelegramPlatform({
+    webApp: synchronousTimer.webApp,
+    setTimeoutFn(callback) {
+      callback();
+      return 9;
+    },
+    clearTimeoutFn(id) {
+      synchronousTimerCleared = id === 9;
+    },
+  });
+  assert.deepEqual(
+    await synchronousTimerAdapter.openInvoice("https://t.me/$invoice"),
+    { status: "failed" },
+  );
+  assert.equal(synchronousTimerOpened, false);
+  assert.equal(synchronousTimerCleared, true);
+
+  const rejectedProvider = fakeTelegram();
+  const rejectedTimer = timerHarness();
+  rejectedProvider.webApp.openInvoice = () => Promise.reject(
+    new Error("private asynchronous provider detail"),
+  );
+  const rejectedProviderAdapter = createTelegramPlatform({
+    webApp: rejectedProvider.webApp,
+    setTimeoutFn: rejectedTimer.setTimeout,
+    clearTimeoutFn: rejectedTimer.clearTimeout,
+  });
+  assert.deepEqual(
+    await rejectedProviderAdapter.openInvoice("https://t.me/$invoice"),
+    { status: "failed" },
+  );
+  assert.equal(rejectedTimer.pending.size, 0);
+
+  const customCatch = fakeTelegram();
+  const customCatchTimer = timerHarness();
+  let customCatchCalls = 0;
+  customCatch.webApp.openInvoice = () => ({
+    catch() {
+      customCatchCalls += 1;
+      return Promise.reject(new Error("private provider catch detail"));
+    },
+  });
+  const customCatchAdapter = createTelegramPlatform({
+    webApp: customCatch.webApp,
+    setTimeoutFn: customCatchTimer.setTimeout,
+    clearTimeoutFn: customCatchTimer.clearTimeout,
+  });
+  const customCatchResult = customCatchAdapter.openInvoice("https://t.me/$invoice");
+  assert.equal(customCatchCalls, 0, "provider return values are assimilated without invoking .catch directly");
+  customCatchTimer.fire();
+  assert.deepEqual(await customCatchResult, { status: "failed" });
 });
