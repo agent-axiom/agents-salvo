@@ -143,6 +143,74 @@ Apply D1 migrations before deploying a fresh Worker:
 npx wrangler d1 migrations apply agents-salvo-profile --remote
 ```
 
+### Telegram Stars webhook operations
+
+Telegram permits only one webhook per bot, so registration is an explicit
+production operation. It is not part of tests, builds, Pages deployment, native
+packaging, or Worker deployment. Before running the sequence below, inject
+`TELEGRAM_BOT_TOKEN` and the same high-entropy `TELEGRAM_WEBHOOK_SECRET` into an
+ephemeral operator shell using the team secret manager. The ellipses below are
+placeholders, not values to commit or paste into shared logs. Keep the bot token
+exported in that shell for the final read-only check.
+
+Run the production operations in this exact order:
+
+```bash
+npx wrangler d1 migrations apply agents-salvo-profile --remote
+npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
+npx wrangler deploy
+TELEGRAM_BOT_TOKEN=... TELEGRAM_WEBHOOK_SECRET=... npm run telegram:stars:webhook:set
+npm run telegram:stars:webhook:check
+```
+
+`telegram:stars:webhook:set` registers
+`https://agents-salvo-room.if-ab6.workers.dev/telegram/webhook` for only
+`message` and `pre_checkout_query` updates, preserves pending updates, and then
+checks the exact registered URL. `telegram:stars:webhook:check` is read-only.
+Both commands print only the public webhook URL and redact Telegram responses.
+Do not run either command against a second environment that uses the same bot.
+
+The real 8-Star smoke test is manual and requires explicit operator action. It
+must never run in CI or as part of deployment.
+
+For a legitimate manual refund, ask the requester to send `/paysupport` in a
+private chat with `@agents_salvo_bot` and put only the returned safe support
+reference in the GitHub issue. The bot derives that reference from the
+requester's Telegram identity; it never sends a charge ID, payload, user ID, or
+session token. Inspect the payment privately in the D1 console. Query
+`star_support_payments` by that support reference (the opaque `invoice_id`) and
+verify that `status = 'paid'`, `currency = 'XTR'`, and
+that `telegram_user_id` and `telegram_payment_charge_id` are present. Keep the
+following query and its result in the private operator session:
+
+```sql
+SELECT invoice_id, telegram_user_id, telegram_payment_charge_id,
+       amount, currency, status, paid_at
+  FROM star_support_payments
+ WHERE invoice_id = ? AND status = 'paid';
+```
+
+From an approved private Telegram Bot API client, call
+`refundStarPayment` with exactly the stored `telegram_user_id` as `user_id` and
+the stored `telegram_payment_charge_id` as `telegram_payment_charge_id`. Supply
+the bot token from the secret manager; never place it, the charge ID, or the
+Telegram user ID in source control, shell history, screenshots, issues, or
+shared logs. Only after Telegram returns `ok: true`, mark that same row
+`refunded` and set `refunded_at` in D1 using a parameterized private query. Never
+change D1 first, and never refund from user-supplied identifiers.
+The public support reference is a lookup key, not authority to redirect a
+refund: Telegram can return Stars only to the original stored Telegram payer.
+
+```sql
+UPDATE star_support_payments
+   SET status = 'refunded', refunded_at = ?
+ WHERE invoice_id = ? AND status = 'paid'
+   AND telegram_user_id = ? AND telegram_payment_charge_id = ?;
+```
+
+Use the current Unix timestamp in seconds for `refunded_at` and only values read
+from the verified receipt for the remaining parameters.
+
 ## Online Protocol
 
 - `POST /rooms` creates a room and returns `roomCode`, `playerId`, and `playerToken`.

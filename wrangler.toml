@@ -2,6 +2,8 @@ name = "agents-salvo-room"
 main = "worker/index.js"
 compatibility_date = "2026-07-04"
 
+# Required production secret for Telegram webhook verification: TELEGRAM_WEBHOOK_SECRET
+
 [[durable_objects.bindings]]
 name = "BATTLE_ROOM"
 class_name = "BattleRoom"

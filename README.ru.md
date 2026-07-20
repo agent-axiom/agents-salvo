@@ -139,6 +139,78 @@ database_id = "fd744630-0b47-4432-8371-c059f5953989"
 npx wrangler d1 migrations apply agents-salvo-profile --remote
 ```
 
+### Операции с Telegram Stars webhook
+
+Telegram разрешает только один webhook на бота, поэтому его регистрация —
+отдельная production-операция. Она не запускается из тестов, сборки, деплоя
+Pages, упаковки нативных приложений или деплоя Worker. Перед выполнением
+последовательности ниже нужно через менеджер секретов передать в одноразовое
+окружение оператора `TELEGRAM_BOT_TOKEN` и тот же стойкий
+`TELEGRAM_WEBHOOK_SECRET`. Многоточия ниже — только обозначения значений: их
+нельзя коммитить или отправлять в общие логи. Токен бота должен оставаться
+экспортированным в этом окружении для финальной read-only проверки.
+
+Production-операции выполняются строго в таком порядке:
+
+```bash
+npx wrangler d1 migrations apply agents-salvo-profile --remote
+npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
+npx wrangler deploy
+TELEGRAM_BOT_TOKEN=... TELEGRAM_WEBHOOK_SECRET=... npm run telegram:stars:webhook:set
+npm run telegram:stars:webhook:check
+```
+
+Команда `telegram:stars:webhook:set` регистрирует
+`https://agents-salvo-room.if-ab6.workers.dev/telegram/webhook` только для
+событий `message` и `pre_checkout_query`, не удаляет накопившиеся события и
+затем проверяет точное совпадение URL. Команда
+`telegram:stars:webhook:check` ничего не изменяет. Обе команды выводят только
+публичный URL webhook и скрывают ответы Telegram. Нельзя запускать их для
+второго окружения с тем же ботом.
+
+Реальная smoke-проверка на 8 Stars выполняется только вручную и требует явного
+действия оператора. Она никогда не запускается в CI или при деплое.
+
+Для обоснованного ручного возврата попросите пользователя отправить
+`/paysupport` в приватном чате с `@agents_salvo_bot` и указать в GitHub issue
+только полученный безопасный идентификатор поддержки. Бот формирует его из Telegram
+identity отправителя и не выдаёт charge ID, payload, Telegram user ID или session
+token. Затем приватно проверьте платёж в D1 Console. В таблице
+`star_support_payments` найдите запись по этому идентификатору (opaque `invoice_id`) и убедитесь, что
+`status = 'paid'`, `currency = 'XTR'`, а поля `telegram_user_id` и
+`telegram_payment_charge_id` заполнены. Запрос и его результат должны оставаться
+только в приватной операторской сессии:
+
+```sql
+SELECT invoice_id, telegram_user_id, telegram_payment_charge_id,
+       amount, currency, status, paid_at
+  FROM star_support_payments
+ WHERE invoice_id = ? AND status = 'paid';
+```
+
+В одобренном приватном клиенте Telegram Bot API вызвать
+`refundStarPayment`, передав сохранённый `telegram_user_id` как `user_id`, а
+сохранённый `telegram_payment_charge_id` как
+`telegram_payment_charge_id`. Токен бота брать из менеджера секретов; нельзя
+помещать его, charge ID или Telegram user ID в репозиторий, историю shell,
+скриншоты, issue или общие логи. Только после ответа Telegram `ok: true`
+перевести ту же запись в статус `refunded` и установить `refunded_at`
+параметризованным приватным запросом D1. Нельзя сначала менять D1 или выполнять
+возврат по идентификаторам, присланным пользователем.
+Публичный безопасный идентификатор служит только ключом поиска и не позволяет изменить
+получателя: Telegram возвращает Stars исключительно исходному сохранённому
+Telegram-плательщику.
+
+```sql
+UPDATE star_support_payments
+   SET status = 'refunded', refunded_at = ?
+ WHERE invoice_id = ? AND status = 'paid'
+   AND telegram_user_id = ? AND telegram_payment_charge_id = ?;
+```
+
+Для `refunded_at` используется текущее Unix-время в секундах, а для остальных
+параметров — только значения из проверенной квитанции.
+
 ## Profile API
 
 - `POST /auth/telegram` проверяет Telegram Login Widget payload и возвращает подписанную сессию.

@@ -139,6 +139,68 @@ database_id = "fd744630-0b47-4432-8371-c059f5953989"
 npx wrangler d1 migrations apply agents-salvo-profile --remote
 ```
 
+### Telegram Stars webhook 运维
+
+Telegram 每个机器人只允许一个 webhook，因此注册 webhook 必须由运维人员
+明确执行，不能由测试、构建、Pages 部署、原生应用打包或 Worker 部署自动
+触发。执行以下步骤前，请通过团队密码管理器把 `TELEGRAM_BOT_TOKEN` 和同一
+个高强度 `TELEGRAM_WEBHOOK_SECRET` 注入临时运维 shell。下方省略号只是占位
+符，不能提交到仓库或粘贴到共享日志。最后的只读检查仍需要该 shell 中已导出
+的机器人 token。
+
+生产操作必须严格按以下顺序执行：
+
+```bash
+npx wrangler d1 migrations apply agents-salvo-profile --remote
+npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
+npx wrangler deploy
+TELEGRAM_BOT_TOKEN=... TELEGRAM_WEBHOOK_SECRET=... npm run telegram:stars:webhook:set
+npm run telegram:stars:webhook:check
+```
+
+`telegram:stars:webhook:set` 只为 `message` 和 `pre_checkout_query` 更新注册
+`https://agents-salvo-room.if-ab6.workers.dev/telegram/webhook`，不会删除待处理
+更新，并会随后核对完整 URL。`telegram:stars:webhook:check` 仅执行读取检查。
+两条命令只输出公开 webhook URL，不输出 Telegram 响应内容。不能让使用同一
+机器人的第二个环境执行这些命令。
+
+真实的 8 Stars 冒烟测试必须由运维人员明确手动触发，不能在 CI 或部署流程
+中运行。
+
+处理合法的人工退款时，请申请者先在与 `@agents_salvo_bot` 的私聊中发送
+`/paysupport`，并且只在 GitHub issue 中填写机器人返回的安全支持参考号。
+机器人会根据发送者的 Telegram 身份生成该参考号，不会发送 charge ID、payload、
+Telegram user ID 或 session token。然后在 D1 Console 的私有会话中检查付款。
+按该参考号（不透明的 `invoice_id`）查询 `star_support_payments`，确认
+`status = 'paid'`、`currency = 'XTR'`，并确认 `telegram_user_id` 和
+`telegram_payment_charge_id` 均已保存。查询及结果只能保留在私有运维会话：
+
+```sql
+SELECT invoice_id, telegram_user_id, telegram_payment_charge_id,
+       amount, currency, status, paid_at
+  FROM star_support_payments
+ WHERE invoice_id = ? AND status = 'paid';
+```
+
+在获准使用的私有 Telegram Bot API 客户端中调用 `refundStarPayment`：把已
+保存的 `telegram_user_id` 作为 `user_id`，把已保存的
+`telegram_payment_charge_id` 作为 `telegram_payment_charge_id`。机器人
+token 必须从密码管理器提供；不得把 token、charge ID 或 Telegram user ID
+写入源码、shell 历史、截图、issue 或共享日志。只有 Telegram 返回
+`ok: true` 后，才用参数化的私有 D1 查询把同一记录改为 `refunded` 并设置
+`refunded_at`。不得先修改 D1，也不得使用用户提交的标识符直接退款。
+公开的安全参考号仅用于查找记录，不能更改退款接收者；Telegram 只会把 Stars
+退回原始保存的 Telegram 付款账号。
+
+```sql
+UPDATE star_support_payments
+   SET status = 'refunded', refunded_at = ?
+ WHERE invoice_id = ? AND status = 'paid'
+   AND telegram_user_id = ? AND telegram_payment_charge_id = ?;
+```
+
+`refunded_at` 使用当前 Unix 秒级时间戳，其余参数只能使用已验证收据中的值。
+
 ## Profile API
 
 - `POST /auth/telegram` 校验 Telegram Login Widget payload 并返回签名 session。

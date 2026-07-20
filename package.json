@@ -21,7 +21,9 @@
     "rustore:assets:verify": "node scripts/verify-rustore-assets.mjs",
     "rustore:api:check": "node scripts/rustore-api.mjs check",
     "rustore:api:submit": "node scripts/rustore-api.mjs submit",
-    "rustore:api:rollout": "node scripts/rustore-api.mjs rollout"
+    "rustore:api:rollout": "node scripts/rustore-api.mjs rollout",
+    "telegram:stars:webhook:set": "node scripts/configure-telegram-stars-webhook.mjs set",
+    "telegram:stars:webhook:check": "node scripts/configure-telegram-stars-webhook.mjs check"
   },
   "engines": {
     "node": ">=24.14.1 <25"
