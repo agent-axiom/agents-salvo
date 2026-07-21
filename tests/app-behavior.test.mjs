@@ -108,6 +108,14 @@ test("Stars support terms expose a full-size touch target", () => {
   );
 });
 
+test("Stars support terms link uses a theme-aware contrast color", () => {
+  const styles = readFileSync("src/styles.css", "utf8");
+  assert.match(
+    styles,
+    /\.stars-support-terms a\s*\{[^}]*color:\s*var\(--accent-strong\);/u,
+  );
+});
+
 async function runScenarioInChild(name) {
   const inheritCoverage = childCoverageMode === "inherit";
   const childEnvironment = {

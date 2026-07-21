@@ -3189,7 +3189,7 @@ html[data-runtime="telegram"] .stars-support-dialog {
 }
 
 .stars-support-terms a {
-  color: var(--primary-ink);
+  color: var(--accent-strong);
   font-weight: 800;
 }
 
