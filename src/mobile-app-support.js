@@ -22,6 +22,46 @@ export function hasConfirmedNetworkConnection(network) {
   return network?.confirmed === true && network.connected === true;
 }
 
+export function captureVisibleViewportAnchor(element, viewportHeight) {
+  const height = Number(viewportHeight);
+  if (!element || typeof element.getBoundingClientRect !== "function" || !Number.isFinite(height) || height <= 0) {
+    return null;
+  }
+
+  try {
+    const rect = element.getBoundingClientRect();
+    const top = Number(rect?.top);
+    const bottom = Number(rect?.bottom);
+    if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom <= 0 || top >= height) {
+      return null;
+    }
+    return { top };
+  } catch {
+    return null;
+  }
+}
+
+export function restoreViewportAnchor(anchor, element, scrollBy) {
+  if (
+    !Number.isFinite(anchor?.top)
+    || !element
+    || typeof element.getBoundingClientRect !== "function"
+    || typeof scrollBy !== "function"
+  ) {
+    return false;
+  }
+
+  try {
+    const currentTop = Number(element.getBoundingClientRect()?.top);
+    const offset = currentTop - anchor.top;
+    if (!Number.isFinite(offset) || Math.abs(offset) < 0.5) return false;
+    scrollBy(0, offset);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function createAppNavigationCoordinator({
   shouldDiscardLocalBattle,
   discardLocalBattle,

@@ -586,6 +586,15 @@ test("mobile setup controls use compact topbar and full-width actions", () => {
   assert.match(css, /\.setup-action-ready:not\(:disabled\)/);
 });
 
+test("embedded battle rerenders preserve the visible target board position", () => {
+  assert.match(app, /captureVisibleViewportAnchor/);
+  assert.match(app, /function captureBattleViewportAnchor/);
+  assert.match(app, /function restoreBattleViewportAnchor/);
+  assert.match(app, /restoreViewportAnchor/);
+  assert.match(app, /isEmbeddedMiniApp/);
+  assert.match(app, /requestAnimationFrame/);
+});
+
 test("private archive renders replay-enabled rows and complete request states", () => {
   assert.match(app, /function renderReplayArchive\(\)/);
   assert.match(app, /class="archive-list"/);

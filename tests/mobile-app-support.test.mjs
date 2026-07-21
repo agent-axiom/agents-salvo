@@ -132,6 +132,33 @@ test("network requests stay fail closed until a connected platform sample", () =
   );
 });
 
+test("a visible viewport anchor compensates layout growth above the battle board", async () => {
+  const support = await import("../src/mobile-app-support.js");
+  assert.equal(typeof support.captureVisibleViewportAnchor, "function");
+  assert.equal(typeof support.restoreViewportAnchor, "function");
+
+  let rect = { top: 120, bottom: 480 };
+  const board = {
+    getBoundingClientRect: () => rect,
+  };
+  const anchor = support.captureVisibleViewportAnchor(board, 800);
+  assert.deepEqual(anchor, { top: 120 });
+
+  rect = { top: 198, bottom: 558 };
+  const scrolls = [];
+  assert.equal(
+    support.restoreViewportAnchor(anchor, board, (...args) => scrolls.push(args)),
+    true,
+  );
+  assert.deepEqual(scrolls, [[0, 78]]);
+
+  assert.equal(
+    support.captureVisibleViewportAnchor({ getBoundingClientRect: () => ({ top: 801, bottom: 900 }) }, 800),
+    null,
+  );
+  assert.equal(support.restoreViewportAnchor(anchor, null, () => assert.fail()), false);
+});
+
 test("late preference hydration cannot overwrite a newer user action", async () => {
   const read = deferred();
   const writes = [];

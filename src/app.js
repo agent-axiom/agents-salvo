@@ -57,10 +57,12 @@ import {
   createPreferenceCoordinator,
   createSecureSessionCoordinator,
   createUnknownNetworkState,
+  captureVisibleViewportAnchor,
   captureTelegramAuthBootstrap,
   hasConfirmedNetworkConnection,
   networkStateFromSample,
   parseSalvoDeepLink,
+  restoreViewportAnchor,
   startMobileAppServices,
 } from "./mobile-app-support.js";
 import { createMobileRuntime } from "./mobile.js";
@@ -136,6 +138,8 @@ let supportReturnFocus = null;
 let supportOperationGeneration = 0;
 let supportOperationController = null;
 let supportNativeInvoiceActive = false;
+let battleViewportRestoreGeneration = 0;
+let pendingBattleViewportAnchor = null;
 const initialRequestedReplayId = replayIdFromSearch(window.location.search);
 let telegramLaunchRouteCaptured = false;
 let pendingTelegramLaunchRoute = null;
@@ -765,6 +769,8 @@ function localPerspectivePlayerId() {
 }
 
 function render() {
+  const battleViewportAnchor = captureBattleViewportAnchor();
+  const viewportRestoreGeneration = ++battleViewportRestoreGeneration;
   document.documentElement.lang = state.language;
   document.documentElement.dataset.theme = state.theme;
   document.documentElement.dataset.visualStyle = state.visualStyle;
@@ -817,6 +823,38 @@ function render() {
   syncClosingConfirmation();
   mountTelegramLoginWidget();
   syncMenuMusic();
+  restoreBattleViewportAnchor(battleViewportAnchor, viewportRestoreGeneration);
+}
+
+function captureBattleViewportAnchor() {
+  if (!isEmbeddedMiniApp || state.battleTab !== "target") {
+    pendingBattleViewportAnchor = null;
+    return null;
+  }
+  if (pendingBattleViewportAnchor) return pendingBattleViewportAnchor;
+
+  const board = root.querySelector(
+    '.battlefield[data-active-tab="target"] .target-primary .coordinate-board',
+  );
+  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+  pendingBattleViewportAnchor = captureVisibleViewportAnchor(board, viewportHeight);
+  return pendingBattleViewportAnchor;
+}
+
+function restoreBattleViewportAnchor(anchor, generation) {
+  if (!anchor) return;
+  const schedule = window.requestAnimationFrame ?? ((callback) => window.setTimeout(callback, 0));
+  schedule(() => {
+    if (generation !== battleViewportRestoreGeneration) return;
+    try {
+      const board = root.querySelector(
+        '.battlefield[data-active-tab="target"] .target-primary .coordinate-board',
+      );
+      restoreViewportAnchor(anchor, board, (x, y) => window.scrollBy(x, y));
+    } finally {
+      pendingBattleViewportAnchor = null;
+    }
+  });
 }
 
 function renderStatusBanners() {
