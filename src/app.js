@@ -713,19 +713,47 @@ function translate(key, params) {
   return t(state.language, key, params);
 }
 
-function localPlayerName() {
-  const name = state.auth.user?.name?.trim();
+function accountPlayerName(user, fallback) {
+  const name = typeof user?.name === "string" ? user.name.trim() : "";
   if (name) {
     return escapeHtml(name);
   }
-  const username = state.auth.user?.username?.trim();
+  const username = typeof user?.username === "string" ? user.username.trim() : "";
   if (username) {
     return `@${escapeHtml(username)}`;
   }
-  return translate("game.player1");
+  return fallback;
+}
+
+function fallbackPlayerName(playerId) {
+  return translate(playerId === "p2" ? "game.player2" : "game.player1");
+}
+
+function localPlayerName() {
+  return accountPlayerName(state.auth.user, translate("game.player1"));
+}
+
+function onlinePlayerName(playerId) {
+  const snapshot = state.online.snapshot;
+  if (!snapshot || !["p1", "p2"].includes(snapshot.playerId)) return "";
+  if (playerId === snapshot.playerId) {
+    return accountPlayerName(
+      snapshot.you?.user ?? state.auth.user,
+      fallbackPlayerName(playerId),
+    );
+  }
+  const opponentPlayerId = snapshot.playerId === "p1" ? "p2" : "p1";
+  if (playerId === opponentPlayerId) {
+    return accountPlayerName(snapshot.opponentUser, fallbackPlayerName(playerId));
+  }
+  return "";
 }
 
 function playerName(playerId) {
+  if (state.mode === "online") {
+    const name = onlinePlayerName(playerId);
+    if (name) return name;
+  }
   if (playerId === "p1") {
     return localPlayerName();
   }
@@ -6336,9 +6364,10 @@ function renderOnlineStatus(snapshot) {
   if (snapshot) {
     lines.push(translate("online.youAre", { player: playerName(snapshot.playerId) }));
     if (snapshot.opponentUser) {
+      const opponentPlayerId = snapshot.playerId === "p1" ? "p2" : "p1";
       lines.push(
         translate("online.opponent", {
-          player: snapshot.opponentUser.name || snapshot.opponentUser.username || translate("game.player2"),
+          player: playerName(opponentPlayerId),
         }),
       );
     }

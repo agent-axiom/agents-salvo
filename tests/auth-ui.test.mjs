@@ -157,11 +157,13 @@ test("frontend exposes player profile and completed battle recording hooks", () 
   assert.match(app, /data-action="refresh-profile"/);
 });
 
-test("authenticated local player labels use the Telegram display name safely", () => {
+test("authenticated local player labels use the account display name safely", () => {
+  assert.match(app, /function accountPlayerName\(user, fallback\)/);
   assert.match(app, /function localPlayerName\(\)/);
   assert.match(app, /function setupPlayerTitle\(playerId\)/);
-  assert.match(app, /state\.auth\.user\?\.name/);
-  assert.match(app, /escapeHtml\((?:name|state\.auth\.user\.name)\)/);
+  assert.match(app, /const name = typeof user\?\.name === "string"/);
+  assert.match(app, /if \(name\) return escapeHtml\(name\)/);
+  assert.match(app, /return accountPlayerName\(state\.auth\.user,/);
   assert.match(app, /if \(playerId === "p1"\) \{\s*return localPlayerName\(\);\s*\}/s);
   assert.match(app, /:\s*setupPlayerTitle\(state\.setupPlayerId\)/);
 });

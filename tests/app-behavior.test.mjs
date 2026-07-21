@@ -52,6 +52,10 @@ test("actual app authenticates MAX Mini App and shares MAX launch routes", async
   await runScenarioInChild("max-bootstrap");
 });
 
+test("actual app names online players from the viewer perspective", async () => {
+  await runScenarioInChild("online-player-names");
+});
+
 test("actual app routes Telegram room and replay launches after authentication", async () => {
   await runScenarioInChild("telegram-launch-routing");
 });

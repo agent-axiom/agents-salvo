@@ -28,6 +28,7 @@ const scenarios = {
   "auth-bootstrap": runAuthBootstrapScenario,
   "telegram-bootstrap": runTelegramBootstrapScenario,
   "max-bootstrap": runMaxBootstrapScenario,
+  "online-player-names": runOnlinePlayerNamesScenario,
   "telegram-launch-routing": runTelegramLaunchRoutingScenario,
   "telegram-launch-retry": runTelegramLaunchRetryScenario,
   "telegram-launch-authority": runTelegramLaunchAuthorityScenario,
@@ -732,6 +733,75 @@ async function runMaxBootstrapScenario() {
   assert.equal(harness.calls.sharePayloads.at(-1).url, "https://max.ru/se13661945_bot?startapp=room_MAX1");
   await harness.root.click("toggle-settings");
   assert.doesNotMatch(harness.root.innerHTML, /data-action="support-open"/);
+  await app.stop();
+}
+
+async function runOnlinePlayerNamesScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const localUser = telegramUser("telegram-guest", "Telegram Captain");
+  let remoteHandlers = null;
+  const harness = createAppHarness({
+    platformName: "telegram",
+    launchData: "signed-online-name-init-data",
+    startParam: "room_NAME",
+    miniAppResponse: {
+      token: "n".repeat(43),
+      user: localUser,
+    },
+    createRemoteClient(handlers) {
+      remoteHandlers = handlers;
+      return remoteClientHarness({
+        async joinRoom(roomCode) {
+          return {
+            roomCode,
+            playerId: "p2",
+            playerToken: "private-player-token",
+            presetId: "classic",
+          };
+        },
+      });
+    },
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+
+  const app = bootSalvoApp(harness.dependencies);
+  await app.startup.done;
+  assert.ok(remoteHandlers);
+  remoteHandlers.onMessage({
+    type: "snapshot",
+    snapshot: {
+      roomCode: "NAME",
+      playerId: "p2",
+      phase: "lobby",
+      presetId: "classic",
+      size: 10,
+      salvoRemaining: 1,
+      isYourTurn: false,
+      opponentJoined: true,
+      winnerId: null,
+      you: { user: localUser },
+      opponentUser: {
+        provider: "max",
+        id: "max-host",
+        name: "Host <Captain>",
+        username: "max_host",
+        photoUrl: "",
+      },
+      opponentShots: [],
+      log: [],
+      ratingChange: null,
+      rematch: null,
+    },
+  });
+
+  assert.match(harness.root.innerHTML, /You are Telegram Captain/);
+  assert.doesNotMatch(harness.root.innerHTML, /You are Player 2/);
+  assert.match(harness.root.innerHTML, /Opponent: Host &lt;Captain&gt;/);
+  assert.doesNotMatch(harness.root.innerHTML, /Host <Captain>/);
   await app.stop();
 }
 
