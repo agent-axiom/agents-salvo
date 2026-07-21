@@ -10,15 +10,43 @@ export function createMaxPlatform({
 } = {}) {
   const web = createWebPlatform({ window: host, navigator: nav, storage });
   let sessionToken = "";
+  const launchData = () => {
+    try {
+      return typeof webApp?.initData === "string" ? webApp.initData : "";
+    } catch {
+      return "";
+    }
+  };
+  const networkStatus = () => {
+    // MAX WebView can report navigator.onLine=false while its bridge and API remain reachable.
+    const connected = launchData().length > 0 || nav?.onLine !== false;
+    return {
+      connected,
+      connectionType: connected ? "unknown" : "none",
+    };
+  };
 
   return {
     ...web,
     getPlatform: () => "max",
-    isAvailable: () => typeof webApp?.initData === "string" && webApp.initData.length > 0,
-    getLaunchData: () => typeof webApp?.initData === "string" ? webApp.initData : "",
+    isAvailable: () => launchData().length > 0,
+    getLaunchData: launchData,
     getStartParam: () => typeof webApp?.initDataUnsafe?.start_param === "string"
       ? webApp.initDataUnsafe.start_param
       : "",
+    getNetworkStatus: async () => networkStatus(),
+    async onNetworkChange(listener) {
+      const update = () => listener(networkStatus());
+      host?.addEventListener?.("online", update);
+      host?.addEventListener?.("offline", update);
+      let removed = false;
+      return () => {
+        if (removed) return;
+        removed = true;
+        host?.removeEventListener?.("online", update);
+        host?.removeEventListener?.("offline", update);
+      };
+    },
     async share({ text = "", url = "" } = {}) {
       const payload = {
         ...(text ? { text } : {}),

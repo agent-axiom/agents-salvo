@@ -105,6 +105,37 @@ test("MAX adapter exposes signed launch data and shared platform contract", asyn
   ]);
 });
 
+test("MAX adapter keeps authenticated Mini App sessions online when WebView reports offline", async () => {
+  const fake = fakeMax();
+  const listeners = new Map();
+  const host = {
+    addEventListener(name, listener) {
+      listeners.set(name, listener);
+    },
+    removeEventListener(name, listener) {
+      if (listeners.get(name) === listener) listeners.delete(name);
+    },
+  };
+  const adapter = createMaxPlatform({
+    webApp: fake.webApp,
+    window: host,
+    navigator: { onLine: false },
+  });
+
+  assert.deepEqual(await adapter.getNetworkStatus(), {
+    connected: true,
+    connectionType: "unknown",
+  });
+
+  const changes = [];
+  const remove = await adapter.onNetworkChange((status) => changes.push(status));
+  listeners.get("offline")();
+  assert.deepEqual(changes, [{ connected: true, connectionType: "unknown" }]);
+
+  remove();
+  assert.equal(listeners.size, 0);
+});
+
 test("MAX adapter shares in MAX and keeps external URLs on the right bridge method", async () => {
   const fake = fakeMax();
   const adapter = createMaxPlatform({ webApp: fake.webApp });
