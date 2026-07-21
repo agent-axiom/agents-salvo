@@ -75,6 +75,39 @@ jobs:
           grep -Fq "buildId: \"$SALVO_BUILD_ID\"" dist/index.html
           grep -Fq "buildId: \"$SALVO_BUILD_ID\"" dist/telegram/index.html
 
+      - name: Verify MAX Mini App artifacts
+        env:
+          SALVO_BUILD_ID: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f dist/max/index.html
+          sdk_occurrences="$(
+            awk '
+              {
+                remainder = $0
+                token = "max-web-app.js"
+                while ((position = index(remainder, token)) > 0) {
+                  count += 1
+                  remainder = substr(remainder, position + length(token))
+                }
+              }
+              END { print count + 0 }
+            ' dist/max/index.html
+          )"
+          test "$sdk_occurrences" -eq 1
+          ! grep -Fq 'max-web-app.js' dist/index.html
+          web_app="$(grep -oE 'app\.[a-f0-9]{10}\.js' dist/index.html)"
+          max_app="$(grep -oE 'app\.[a-f0-9]{10}\.js' dist/max/index.html)"
+          test "$web_app" = "$max_app"
+          test -f "dist/$web_app"
+          web_styles="$(grep -oE 'styles\.[a-f0-9]{10}\.css' dist/index.html)"
+          max_styles="$(grep -oE 'styles\.[a-f0-9]{10}\.css' dist/max/index.html)"
+          test "$web_styles" = "$max_styles"
+          test -f "dist/$web_styles"
+          grep -Fq "buildId: \"$SALVO_BUILD_ID\"" dist/index.html
+          grep -Fq "buildId: \"$SALVO_BUILD_ID\"" dist/max/index.html
+
       - name: Configure Pages
         uses: actions/configure-pages@v6
 

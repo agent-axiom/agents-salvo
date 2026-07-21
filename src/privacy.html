@@ -27,7 +27,7 @@
     <header>
       <h1>Залп / Salvo / 海战</h1>
       <p>Уведомление о конфиденциальности / Privacy notice / 隐私声明</p>
-      <p><strong>Дата вступления в силу / Effective date / 生效日期:</strong> 20 July 2026</p>
+      <p><strong>Дата вступления в силу / Effective date / 生效日期:</strong> 21 July 2026</p>
       <nav aria-label="Language"><a href="#ru">Русский</a><a href="#en">English</a><a href="#zh-CN">中文</a></nav>
     </header>
 
@@ -39,16 +39,17 @@
       <h3>Какие данные используются</h3>
       <p>Для входа через Telegram игра получает Telegram ID, отображаемое имя, Telegram username и URL фотографии профиля (profile photo). Также сохраняются статистика матчей (match statistics), рейтинг, достижения и повторы онлайн-боёв (battle replays), включая ходы и результат.</p>
       <p>При запуске Telegram Mini App игра отправляет подписанные данные запуска Telegram в Cloudflare Workers для проверки личности. Исходные данные запуска не сохраняются. Проверенная личность Telegram использует те же записи профиля, что и вход через сайт или установленное приложение.</p>
+      <p>При запуске MAX Mini App игра получает MAX ID, отображаемое имя, MAX username и URL фотографии профиля, а затем отправляет подписанные данные запуска MAX в Cloudflare Workers для проверки личности. Исходные данные запуска не сохраняются. Идентификаторы Telegram и MAX создают отдельные профили и автоматически не объединяются.</p>
       <h3>Добровольная поддержка через Telegram Stars</h3>
       <p>Если вы добровольно поддерживаете проект, приватная платёжная запись содержит внутренний invoice ID, уникальный invoice payload, внутренний user key, Telegram ID плательщика, Telegram payment charge ID (идентификатор списания), сумму, валюту XTR, статус платежа, а также время создания, истечения, оплаты, ошибки и возврата.</p>
       <p>За исключением непрозрачного invoice ID, эти структурированные поля нужны только для проверки платежа, рассмотрения споров и возвратов и остаются приватными. Непрозрачный invoice ID можно указать публично как безопасный идентификатор поддержки: он не раскрывает invoice payload, charge ID, user key, Telegram-аккаунт или полную платёжную запись. Платёжные данные не используются для рекламы, аналитики, публичного профиля, рейтинга, подбора соперников, значков или лидерборда.</p>
       <p>Просроченные и неуспешные неоплаченные записи могут удаляться спустя 30 дней. Оплаченные и возвращённые записи хранятся до запроса удаления аккаунта; их можно сохранить дольше, пока это необходимо для незавершённого спора, возврата или обязательной проверки.</p>
       <h3>Зачем и где</h3>
-      <p>Данные нужны для авторизации, профиля, лидерборда, онлайн-комнат и личного архива боёв. Публичный leaderboard показывает отображаемое имя, рейтинг и агрегированную статистику матчей. Telegram username и profile photo не публикуются в лидерборде. Статический сайт обслуживает Cloudflare Pages, серверную логику выполняет Cloudflare Workers, а аккаунты, статистика и повторы хранятся в Cloudflare D1.</p>
+      <p>Данные нужны для авторизации, профиля, лидерборда, онлайн-комнат и личного архива боёв. Публичный leaderboard показывает отображаемое имя, рейтинг и агрегированную статистику матчей. Username и profile photo из Telegram и MAX не публикуются в лидерборде. Статический сайт обслуживает Cloudflare Pages, серверную логику выполняет Cloudflare Workers, а аккаунты, статистика и повторы хранятся в Cloudflare D1.</p>
       <h3>Сроки и безопасность</h3>
       <p>Серверная сессия действует до 30 days (30 дней). В базе хранится только хеш session token; сам токен используется приложением для доступа к аккаунту. Данные профиля, матчей и повторов хранятся, пока вы не запросите удаление (until you request deletion).</p>
       <h3>Выбор игрока</h3>
-      <p>На сайте и в установленном приложении игра запрашивает явное согласие на обработку данных Telegram-аккаунта и игровой статистики перед входом через Telegram. В Telegram Mini App проверка личности начинается автоматически при открытии на основании подписанных данных запуска. На сайте и в установленном приложении против агента и на одном устройстве можно играть без входа (without signing in). В игре нет рекламы (no advertising) и нет аналитики поведения (no analytics). Для удаления аккаунта создайте обращение в <a href="https://github.com/agent-axiom/agents-salvo/issues">GitHub Issues</a>. Не указывайте в публичном обращении пароль, session token или другие секреты; сопровождающий проекта сообщит способ подтверждения аккаунта.</p>
+      <p>На сайте и в установленном приложении игра запрашивает явное согласие на обработку данных Telegram-аккаунта и игровой статистики перед входом через Telegram. В Telegram Mini App и MAX Mini App проверка личности начинается автоматически при открытии на основании подписанных данных запуска. На сайте и в установленном приложении против агента и на одном устройстве можно играть без входа (without signing in). В игре нет рекламы (no advertising) и нет аналитики поведения (no analytics). Для удаления аккаунта создайте обращение в <a href="https://github.com/agent-axiom/agents-salvo/issues">GitHub Issues</a>. Не указывайте в публичном обращении пароль, session token или другие секреты; сопровождающий проекта сообщит способ подтверждения аккаунта.</p>
     </section>
 
     <section id="en" lang="en">
@@ -58,16 +59,17 @@
       <h3>Data we process</h3>
       <p>Telegram sign-in provides your Telegram ID, display name, Telegram username, and profile photo URL. The game also stores match statistics, rating, achievements, and online battle replays, including moves and results.</p>
       <p>When you open the Telegram Mini App, the game sends signed Telegram launch data to Cloudflare Workers for identity validation. Raw launch data is not persisted. The validated Telegram identity reuses the same profile records as sign-in on the website or installed app.</p>
+      <p>When you open the MAX Mini App, the game receives your MAX ID, display name, MAX username, and profile photo URL, then sends signed launch data to Cloudflare Workers for identity validation. Raw launch data is not persisted. Telegram and MAX identities create separate profiles and are not linked automatically.</p>
       <h3>Voluntary support through Telegram Stars</h3>
       <p>If you voluntarily support the project, the private payment record contains an internal invoice ID, unique invoice payload, internal user key, Telegram payer ID, Telegram payment charge ID, amount, currency XTR, payment status, and creation, expiry, payment, failure, and refund timestamps.</p>
       <p>Except for the opaque invoice ID, we use these structured fields only for payment verification, disputes, and refunds, and they remain private. The opaque invoice ID may be shared publicly as a safe support reference: it does not reveal the invoice payload, charge ID, user key, Telegram account, or complete payment record. Payment details are not used for advertising, analytics, a public profile, rating, matchmaking, badges, or the leaderboard.</p>
       <p>Expired and failed unpaid records may be removed after 30 days. Paid and refunded records remain until you request account deletion; they may be retained longer while needed for an unresolved dispute, refund, or required verification.</p>
       <h3>Purpose and processors</h3>
-      <p>We use this data for authentication, player profiles, the leaderboard, online rooms, and your private battle archive. The public leaderboard shows the display name, rating, and aggregated match statistics. Telegram username and profile photo are not public in the leaderboard. Cloudflare Pages serves the site, Cloudflare Workers runs the server, and Cloudflare D1 stores account, match, and replay records.</p>
+      <p>We use this data for authentication, player profiles, the leaderboard, online rooms, and your private battle archive. The public leaderboard shows the display name, rating, and aggregated match statistics. Telegram and MAX usernames and profile photos are not public in the leaderboard. Cloudflare Pages serves the site, Cloudflare Workers runs the server, and Cloudflare D1 stores account, match, and replay records.</p>
       <h3>Retention and security</h3>
       <p>A server session expires after 30 days. The database stores a hash of the session token, not the token itself. Profile, match, and replay records remain until you request deletion.</p>
       <h3>Your choices</h3>
-      <p>On the website and installed app, the game requests explicit consent to process Telegram account data and gameplay statistics before Telegram sign-in. In the Telegram Mini App, identity validation starts automatically when you open it from signed launch data. You can play against the agent and on one device without signing in on the website and installed app. Salvo includes no advertising and no analytics. To request account deletion, open a request at <a href="https://github.com/agent-axiom/agents-salvo/issues">GitHub Issues</a>. Do not include a password, session token, or other secret in a public issue; the maintainer will provide an account verification step.</p>
+      <p>On the website and installed app, the game requests explicit consent to process Telegram account data and gameplay statistics before Telegram sign-in. In the Telegram Mini App and MAX Mini App, identity validation starts automatically when you open the game from signed launch data. You can play against the agent and on one device without signing in on the website and installed app. Salvo includes no advertising and no analytics. To request account deletion, open a request at <a href="https://github.com/agent-axiom/agents-salvo/issues">GitHub Issues</a>. Do not include a password, session token, or other secret in a public issue; the maintainer will provide an account verification step.</p>
     </section>
 
     <section id="zh-CN" lang="zh-CN">
@@ -77,16 +79,17 @@
       <h3>处理的数据</h3>
       <p>使用 Telegram 登录时，游戏会接收 Telegram ID、显示名称、Telegram username 和头像链接 (profile photo)。游戏还会保存对局统计 (match statistics)、评级、成就以及在线对局回放 (battle replays)，包括行动和结果。</p>
       <p>打开 Telegram Mini App 时，游戏会将已签名的 Telegram 启动数据发送到 Cloudflare Workers 进行身份验证。原始启动数据不会被持久保存。验证后的 Telegram 身份会复用通过网站或已安装应用登录时使用的同一份档案记录。</p>
+      <p>打开 MAX Mini App 时，游戏会接收 MAX ID、显示名称、MAX username 和头像链接，并将已签名的 MAX 启动数据发送到 Cloudflare Workers 进行身份验证。原始启动数据不会被持久保存。Telegram 和 MAX 身份会创建独立的玩家档案，不会自动合并。</p>
       <h3>通过 Telegram Stars 自愿支持</h3>
       <p>如果您自愿支持项目，私密付款记录会包含内部 invoice ID、唯一 invoice payload、内部 user key、Telegram 付款人 ID、Telegram payment charge ID、金额、币种 XTR、付款状态，以及创建、到期、付款、失败和退款时间。</p>
       <p>除不透明 invoice ID 外，这些结构化字段仅用于付款验证、争议和退款，并保持私密。不透明 invoice ID 可以公开作为安全支持参考号；它不会泄露 invoice payload、charge ID、user key、Telegram 账号或完整付款记录。付款信息不会用于广告、分析、公开个人资料、评级、匹配、徽章或排行榜。</p>
       <p>到期或失败的未付款记录可在 30 天后删除。已付款和已退款记录会保留到您请求删除账号为止；如果未解决的争议、退款或必要验证仍需要这些记录，可能会保留更长时间。</p>
       <h3>用途与处理服务</h3>
-      <p>这些数据用于身份验证、玩家档案、排行榜、在线房间和个人对局档案。公开 leaderboard 显示显示名称、评级和汇总对局统计；Telegram username 和 profile photo 不会公开在排行榜中。Cloudflare Pages 提供静态网站，Cloudflare Workers 运行服务器逻辑，Cloudflare D1 保存账号、对局和回放记录。</p>
+      <p>这些数据用于身份验证、玩家档案、排行榜、在线房间和个人对局档案。公开 leaderboard 显示显示名称、评级和汇总对局统计；Telegram 和 MAX username 与 profile photo 不会公开在排行榜中。Cloudflare Pages 提供静态网站，Cloudflare Workers 运行服务器逻辑，Cloudflare D1 保存账号、对局和回放记录。</p>
       <h3>保留与安全</h3>
       <p>服务器会话在 30 days（30 天）后到期。数据库仅保存 session token 的哈希值。档案、对局和回放数据会保留到您请求删除为止 (until you request deletion)。</p>
       <h3>您的选择</h3>
-      <p>在网站和已安装的应用中，游戏会在通过 Telegram 登录前请求您明确同意处理 Telegram 账号数据和对局统计。在 Telegram Mini App 中，基于已签名启动数据的身份验证会在打开时自动开始。网站和已安装应用中，您无需登录即可与代理对战或在一台设备上游玩。Salvo 不含广告，也不进行行为分析。如需删除账号，请在 <a href="https://github.com/agent-axiom/agents-salvo/issues">GitHub Issues</a> 提交请求。请勿在公开 issue 中包含密码、session token 或其他秘密；维护者会提供账号验证步骤。</p>
+      <p>在网站和已安装的应用中，游戏会在通过 Telegram 登录前请求您明确同意处理 Telegram 账号数据和对局统计。在 Telegram Mini App 和 MAX Mini App 中，基于已签名启动数据的身份验证会在打开时自动开始。网站和已安装应用中，您无需登录即可与代理对战或在一台设备上游玩。Salvo 不含广告，也不进行行为分析。如需删除账号，请在 <a href="https://github.com/agent-axiom/agents-salvo/issues">GitHub Issues</a> 提交请求。请勿在公开 issue 中包含密码、session token 或其他秘密；维护者会提供账号验证步骤。</p>
     </section>
     </main>
   </body>

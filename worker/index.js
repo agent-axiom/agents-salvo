@@ -26,6 +26,7 @@ import {
   verifyTelegramIdToken,
 } from "./telegram-oidc.js";
 import { verifyTelegramMiniAppInitData } from "./telegram-mini-app-auth.js";
+import { verifyMaxMiniAppInitData } from "./max-mini-app-auth.js";
 import {
   getLeaderboard,
   getPlayerProfile,
@@ -55,6 +56,7 @@ const telegramTicketTtlSeconds = 5 * 60;
 const maxTelegramJsonBytes = 1024;
 const telegramMiniAppJsonEnvelopeBytes = 15;
 const maxTelegramMiniAppJsonBytes = 16 * 1024 + telegramMiniAppJsonEnvelopeBytes;
+const maxMaxMiniAppJsonBytes = 16 * 1024 + telegramMiniAppJsonEnvelopeBytes;
 const maxTelegramCodeLength = 4096;
 const maxStarsInvoiceJsonBytes = 1024;
 const telegramSecretPattern = /^[A-Za-z0-9_-]{43}$/;
@@ -161,6 +163,12 @@ export default {
     if (route.kind === "authTelegramMiniApp") {
       if (request.method === "POST") {
         return authenticateTelegramMiniApp(request, env);
+      }
+      return json({ error: "Not found" }, 404);
+    }
+    if (route.kind === "authMaxMiniApp") {
+      if (request.method === "POST") {
+        return authenticateMaxMiniApp(request, env);
       }
       return json({ error: "Not found" }, 404);
     }
@@ -840,6 +848,9 @@ function routeRequest(url) {
   if (url.pathname === "/auth/telegram/miniapp") {
     return { kind: "authTelegramMiniApp" };
   }
+  if (url.pathname === "/auth/max/miniapp") {
+    return { kind: "authMaxMiniApp" };
+  }
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length === 2 && parts[0] === "auth" && parts[1] === "telegram") {
     return { kind: "authTelegram" };
@@ -1362,6 +1373,47 @@ async function authenticateTelegramMiniApp(request, env) {
   } catch {
     return telegramMiniAppAuthFailure(503);
   }
+}
+
+async function authenticateMaxMiniApp(request, env) {
+  const config = maxMiniAppServiceConfig(env);
+  if (!config) return maxMiniAppAuthFailure(503);
+
+  let initData;
+  try {
+    ({ initData } = await readStrictTelegramJson(request, "initData", maxMaxMiniAppJsonBytes));
+  } catch {
+    return maxMiniAppAuthFailure(401);
+  }
+
+  let user;
+  try {
+    ({ user } = await verifyMaxMiniAppInitData(initData, config.botToken));
+  } catch {
+    return maxMiniAppAuthFailure(401);
+  }
+
+  try {
+    const { token } = await createSession(config.db, user);
+    return json({ token, user });
+  } catch {
+    return maxMiniAppAuthFailure(503);
+  }
+}
+
+function maxMiniAppServiceConfig(env) {
+  try {
+    const db = env?.DB;
+    const botToken = env?.MAX_BOT_TOKEN;
+    if (!db || typeof botToken !== "string" || botToken.trim() === "") return null;
+    return { db, botToken };
+  } catch {
+    return null;
+  }
+}
+
+function maxMiniAppAuthFailure(status) {
+  return json({ error: "MAX Mini App authentication failed" }, status);
 }
 
 function telegramMiniAppServiceConfig(env) {

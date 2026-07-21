@@ -53,6 +53,18 @@ html[data-runtime="telegram"] {
   min-height: var(--tg-viewport-stable-height, 100dvh);
 }
 
+html[data-runtime="max"] {
+  --salvo-safe-top: env(safe-area-inset-top, 0px);
+  --salvo-safe-right: env(safe-area-inset-right, 0px);
+  --salvo-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --salvo-safe-left: env(safe-area-inset-left, 0px);
+  --safe-top: var(--salvo-safe-top);
+  --safe-right: var(--salvo-safe-right);
+  --safe-bottom: var(--salvo-safe-bottom);
+  --safe-left: var(--salvo-safe-left);
+  min-height: 100dvh;
+}
+
 :root[data-theme="dark"] {
   color-scheme: dark;
   --paper: #07111f;
@@ -121,6 +133,11 @@ body {
 
 html[data-runtime="telegram"] body {
   min-height: var(--tg-viewport-stable-height, 100dvh);
+  overflow-x: clip;
+}
+
+html[data-runtime="max"] body {
+  min-height: 100dvh;
   overflow-x: clip;
 }
 
@@ -253,6 +270,15 @@ input {
 
 html[data-runtime="telegram"] .shell {
   min-height: var(--tg-viewport-stable-height, 100dvh);
+  padding:
+    calc(22px + var(--salvo-safe-top))
+    var(--salvo-safe-right)
+    calc(32px + var(--salvo-safe-bottom))
+    var(--salvo-safe-left);
+}
+
+html[data-runtime="max"] .shell {
+  min-height: 100dvh;
   padding:
     calc(22px + var(--salvo-safe-top))
     var(--salvo-safe-right)
@@ -2951,6 +2977,15 @@ html[data-runtime="telegram"] .modal-backdrop {
     calc(18px + var(--salvo-safe-left));
 }
 
+html[data-runtime="max"] .modal-backdrop {
+  min-height: 100dvh;
+  padding:
+    calc(18px + var(--salvo-safe-top))
+    calc(18px + var(--salvo-safe-right))
+    calc(18px + var(--salvo-safe-bottom))
+    calc(18px + var(--salvo-safe-left));
+}
+
 .result-modal {
   --result-modal-padding: 22px;
   display: grid;
@@ -2971,6 +3006,15 @@ html[data-runtime="telegram"] .modal-backdrop {
 html[data-runtime="telegram"] .result-modal {
   max-height: calc(
     var(--tg-viewport-stable-height, 100dvh) -
+    var(--salvo-safe-top) -
+    var(--salvo-safe-bottom) -
+    36px
+  );
+}
+
+html[data-runtime="max"] .result-modal {
+  max-height: calc(
+    100dvh -
     var(--salvo-safe-top) -
     var(--salvo-safe-bottom) -
     36px
@@ -4733,6 +4777,10 @@ html[data-runtime="telegram"] .stars-support-dialog {
     padding-top: calc(12px + var(--salvo-safe-top));
   }
 
+  html[data-runtime="max"] .shell {
+    padding-top: calc(12px + var(--salvo-safe-top));
+  }
+
   .icon-button {
     width: 44px;
     height: 44px;
@@ -5072,6 +5120,16 @@ html[data-runtime="telegram"] .stars-support-dialog {
   }
 
   html[data-runtime="telegram"] .replay-board-view .board-panel {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  html[data-runtime="max"] .replay-board-view {
+    overflow-x: clip;
+    scrollbar-gutter: auto;
+  }
+
+  html[data-runtime="max"] .replay-board-view .board-panel {
     width: 100%;
     max-width: 100%;
   }

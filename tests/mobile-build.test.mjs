@@ -242,6 +242,47 @@ function runTelegramArtifactVerification(workflowPath, jobName, sdkCount) {
   });
 }
 
+function runMaxArtifactVerification(workflowPath, jobName, sdkCount) {
+  const workflow = parseWorkflowSource(
+    readFileSync(workflowPath, "utf8"),
+    workflowPath,
+  );
+  const command = namedWorkflowStep(
+    workflow,
+    jobName,
+    "Verify MAX Mini App artifacts",
+  ).step.run;
+
+  return withTemporaryBuildTree((fixtureRoot) => {
+    const dist = join(fixtureRoot, "dist");
+    const maxDist = join(dist, "max");
+    const app = "app.0123456789.js";
+    const styles = "styles.0123456789.css";
+    const buildId = "fixture-build-id";
+    const sdkTag = '<script src="https://st.max.ru/js/max-web-app.js"></script>';
+
+    mkdirSync(maxDist, { recursive: true });
+    writeFileSync(join(dist, app), "", "utf8");
+    writeFileSync(join(dist, styles), "", "utf8");
+    writeFileSync(
+      join(dist, "index.html"),
+      `<script src="./${app}"></script>\n<link href="./${styles}">\n<script>buildId: "${buildId}"</script>`,
+      "utf8",
+    );
+    writeFileSync(
+      join(maxDist, "index.html"),
+      `${sdkTag.repeat(sdkCount)}<script src="../${app}"></script>\n<link href="../${styles}">\n<script>buildId: "${buildId}"</script>`,
+      "utf8",
+    );
+
+    return spawnSync("bash", ["-c", command], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+      env: { ...process.env, SALVO_BUILD_ID: buildId },
+    });
+  });
+}
+
 function readWorkflow(path) {
   assert.equal(existsSync(path), true, `${path} is missing`);
   const source = readFileSync(path, "utf8");
@@ -389,6 +430,32 @@ test -f "dist/$web_styles"
 grep -Fq "buildId: \\"$SALVO_BUILD_ID\\"" dist/index.html
 grep -Fq "buildId: \\"$SALVO_BUILD_ID\\"" dist/telegram/index.html`,
   );
+}
+
+function assertMaxArtifactVerification(workflow, jobName) {
+  const telegram = namedWorkflowStep(
+    workflow,
+    jobName,
+    "Verify Telegram Mini App artifacts",
+  );
+  const verification = namedWorkflowStep(
+    workflow,
+    jobName,
+    "Verify MAX Mini App artifacts",
+  );
+  assert.equal(
+    verification.index,
+    telegram.index + 1,
+    `${jobName} must verify MAX immediately after Telegram`,
+  );
+  assert.equal(verification.step.shell, "bash");
+  assertCommitBuildId(verification.step, `${jobName} MAX artifact verification`);
+  assert.match(verification.step.run, /test -f dist\/max\/index\.html/u);
+  assert.match(verification.step.run, /token = "max-web-app\.js"/u);
+  assert.match(verification.step.run, /test "\$sdk_occurrences" -eq 1/u);
+  assert.match(verification.step.run, /test "\$web_app" = "\$max_app"/u);
+  assert.match(verification.step.run, /test "\$web_styles" = "\$max_styles"/u);
+  assert.match(verification.step.run, /dist\/max\/index\.html/u);
 }
 
 test("mobile toolchain is pinned and uses bundled local web assets", () => {
@@ -1030,6 +1097,22 @@ test("Telegram artifact verification enforces one exact SDK token", () => {
   );
 });
 
+test("MAX artifact verification enforces one exact SDK token", () => {
+  const targets = [
+    [".github/workflows/pages.yml", "build"],
+    [".github/workflows/mobile.yml", "web"],
+  ];
+  const validResults = targets.map(([path, job]) =>
+    runMaxArtifactVerification(path, job, 1),
+  );
+  const duplicateResults = targets.map(([path, job]) =>
+    runMaxArtifactVerification(path, job, 2),
+  );
+
+  assert.deepEqual(validResults.map(({ status }) => status), [0, 0]);
+  assert.deepEqual(duplicateResults.map(({ status }) => status), [1, 1]);
+});
+
 test("Pages CI uses the pinned Node toolchain and preserves deployment", () => {
   const workflow = readWorkflow(".github/workflows/pages.yml");
   const parsedWorkflow = parseWorkflowSource(
@@ -1057,6 +1140,7 @@ test("Pages CI uses the pinned Node toolchain and preserves deployment", () => {
     "npm run build",
   ]);
   assertTelegramArtifactVerification(parsedWorkflow, "build");
+  assertMaxArtifactVerification(parsedWorkflow, "build");
   assert.match(build, /uses: actions\/configure-pages@v6/);
   assert.match(
     build,
@@ -1127,6 +1211,7 @@ test("mobile CI validates the web build and coverage gate", () => {
     "npm run build",
   ]);
   assertTelegramArtifactVerification(parsedWorkflow, "web");
+  assertMaxArtifactVerification(parsedWorkflow, "web");
 });
 
 test("mobile CI tests, lints, and packages the Android debug app", () => {
@@ -1212,41 +1297,51 @@ test("mobile CI builds an unsigned iOS Simulator app and retains failures", () =
   );
 });
 
-test("localized READMEs document Telegram Mini App delivery", () => {
+test("localized READMEs document Telegram and MAX Mini App delivery", () => {
   const publicMiniAppUrl =
     "https://agent-axiom.github.io/agents-salvo/telegram/";
+  const publicMaxMiniAppUrl =
+    "https://agent-axiom.github.io/agents-salvo/max/";
   const expectations = [
     {
       path: "README.md",
       publicUrl: /^Telegram Mini App: https:\/\/agent-axiom\.github\.io\/agents-salvo\/telegram\/$/m,
       automaticAuth: /automatically sends Telegram's signed `initData`/,
+      maxAuth: /MAX Mini App[\s\S]*signed MAX launch data/,
       sharedBuild: /one source tree and one `npm run build`/,
-      delivery: /Pages and the Mini App update immediately[\s\S]*selected commit/,
+      delivery: /Pages and both Mini Apps update immediately[\s\S]*selected commit/,
     },
     {
       path: "README.ru.md",
       publicUrl: /^Публичный Telegram Mini App: https:\/\/agent-axiom\.github\.io\/agents-salvo\/telegram\/$/m,
       automaticAuth: /автоматически отправляет подписанный Telegram `initData`/,
+      maxAuth: /MAX Mini App[\s\S]*подписанные данные запуска MAX/,
       sharedBuild: /единое дерево исходного кода и одну команду `npm run build`/,
       sdkLoading: "Telegram SDK загружается только в Telegram shell.",
-      delivery: /Pages и Mini App обновляются сразу[\s\S]*выбранного коммита/,
+      delivery: /Pages и оба Mini App обновляются сразу[\s\S]*выбранного коммита/,
     },
     {
       path: "README.zh-CN.md",
       publicUrl: /^Telegram Mini App：https:\/\/agent-axiom\.github\.io\/agents-salvo\/telegram\/$/m,
       automaticAuth: /自动将 Telegram 签名的 `initData`/,
+      maxAuth: /MAX Mini App[\s\S]*已签名的 MAX 启动数据/,
       sharedBuild: /共享同一份源代码，并由一次 `npm run build`/,
-      delivery: /Pages 和 Mini App 会立即更新[\s\S]*所选提交/,
+      delivery: /Pages 和两个 Mini App 会立即更新[\s\S]*所选提交/,
     },
   ];
 
   for (const expectation of expectations) {
     const readme = readFileSync(expectation.path, "utf8");
     assert.equal(readme.includes(publicMiniAppUrl), true, expectation.path);
+    assert.equal(readme.includes(publicMaxMiniAppUrl), true, expectation.path);
     assert.match(readme, expectation.publicUrl, expectation.path);
     assert.match(readme, /@BotFather[\s\S]*Main Mini App/, expectation.path);
     assert.match(readme, expectation.automaticAuth, expectation.path);
+    assert.match(readme, expectation.maxAuth, expectation.path);
     assert.match(readme, expectation.sharedBuild, expectation.path);
+    assert.match(readme, /three HTML shells|три HTML shell|三个 HTML shell/u, expectation.path);
+    assert.match(readme, /MAX_BOT_TOKEN/u, expectation.path);
+    assert.match(readme, /POST `?\/auth\/max\/miniapp`?/u, expectation.path);
     if (expectation.sdkLoading) {
       assert.equal(
         readme.includes(expectation.sdkLoading),

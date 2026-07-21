@@ -27,6 +27,7 @@ const scenarios = {
   "auth-races": runAuthRacesScenario,
   "auth-bootstrap": runAuthBootstrapScenario,
   "telegram-bootstrap": runTelegramBootstrapScenario,
+  "max-bootstrap": runMaxBootstrapScenario,
   "telegram-launch-routing": runTelegramLaunchRoutingScenario,
   "telegram-launch-retry": runTelegramLaunchRetryScenario,
   "telegram-launch-authority": runTelegramLaunchAuthorityScenario,
@@ -682,6 +683,58 @@ async function runTelegramBootstrapScenario() {
   await app.stop();
 }
 
+async function runMaxBootstrapScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const authResponse = deferred();
+  const sessionToken = "x".repeat(43);
+  const user = {
+    provider: "max",
+    id: "67890",
+    name: "MAX Captain",
+    username: "max_captain",
+    photoUrl: "",
+  };
+  const harness = createAppHarness({
+    platformName: "max",
+    launchData: "signed-max-init-data",
+    startParam: "",
+    miniAppResponse: () => authResponse.promise,
+    shareResult: { shared: true },
+    createRemoteClient() {
+      return remoteClientHarness({
+        async createRoom() {
+          return { roomCode: "MAX1", playerId: "p1", playerToken: "private-token" };
+        },
+      });
+    },
+    fetchResponse(url) {
+      if (url.endsWith("/profile/me")) return response({ profile: { leaderboard: [] } });
+      if (url.endsWith("/leaderboard")) return response({ leaderboard: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+  });
+
+  const app = bootSalvoApp(harness.dependencies);
+  await waitFor(() => harness.fetchCalls.some(({ url }) => url.endsWith("/auth/max/miniapp")));
+  assert.equal(harness.fetchCalls.some(({ url }) => url.endsWith("/auth/telegram/config")), false);
+  const authRequest = harness.fetchCalls.find(({ url }) => url.endsWith("/auth/max/miniapp"));
+  assert.deepEqual(JSON.parse(authRequest.init.body), { initData: "signed-max-init-data" });
+
+  authResponse.resolve({ token: sessionToken, user });
+  await app.startup.done;
+  assert.equal(app.getState().auth.user.provider, "max");
+  assert.equal(app.getState().auth.token, sessionToken);
+  await harness.root.click("show-online");
+  assert.match(harness.root.innerHTML, /MAX Mini App account confirmed/);
+  await harness.root.click("online-create");
+
+  await harness.root.click("share-telegram");
+  assert.equal(harness.calls.sharePayloads.at(-1).url, "https://max.ru/se13661945_bot?startapp=room_MAX1");
+  await harness.root.click("toggle-settings");
+  assert.doesNotMatch(harness.root.innerHTML, /data-action="support-open"/);
+  await app.stop();
+}
+
 async function runTelegramLaunchRoutingScenario() {
   const { bootSalvoApp } = await import("../src/app.js");
   const sessionToken = "l".repeat(43);
@@ -875,7 +928,7 @@ async function runTelegramLaunchRoutingScenario() {
   await webFailure.root.change("room-code", { value: "ABCD" });
   await webFailure.root.click("online-join");
   assert.equal(webFailureApp.getState().online.error, webFailureMessage);
-  assert.match(webFailure.root.innerHTML, /Telegram confirmed\. Online results are saved to your profile\./);
+  assert.match(webFailure.root.innerHTML, /Account confirmed\. Online results are saved to your profile\./);
   assert.doesNotMatch(webFailure.root.innerHTML, /Telegram Mini App account confirmed/);
   await webFailureApp.stop();
 
@@ -2292,6 +2345,7 @@ function createAppHarness({
   platformTheme = null,
   workerUrl = "https://worker.example.test",
   telegramBotUsername = "salvo_test_bot",
+  maxBotUsername = "se13661945_bot",
   buildId,
   initialUrl = "https://agent-axiom.github.io/agents-salvo/",
   capability = { method: "oidc" },
@@ -2483,6 +2537,7 @@ function createAppHarness({
     initialUrl,
     workerUrl,
     telegramBotUsername,
+    maxBotUsername,
     buildId,
     calls,
   });
@@ -2568,6 +2623,9 @@ function createAppHarness({
           return clientResult(redeemResponse);
         }
         if (url.endsWith("/auth/telegram/miniapp")) {
+          return clientResult(miniAppResponse);
+        }
+        if (url.endsWith("/auth/max/miniapp")) {
           return clientResult(miniAppResponse);
         }
         return fetchResponse(url, init);
@@ -2805,6 +2863,7 @@ function createWindowHarness({
   initialUrl = "https://agent-axiom.github.io/agents-salvo/",
   workerUrl = "https://worker.example.test",
   telegramBotUsername = "salvo_test_bot",
+  maxBotUsername = "se13661945_bot",
   buildId,
   calls,
 } = {}) {
@@ -2831,6 +2890,7 @@ function createWindowHarness({
     SALVO_CONFIG: {
       workerUrl,
       telegramBotUsername,
+      maxBotUsername,
       ...(buildId === undefined ? {} : { buildId }),
     },
     location,

@@ -134,6 +134,35 @@ test("Russian online room invite names the Salvo game clearly", () => {
   assert.equal(t("ru", "online.shareText", { code: "ABC123" }), "Присоединяйся к моей комнате в игре Залп: ABC123");
 });
 
+test("MAX Mini App account and recovery copy is localized", () => {
+  const expected = {
+    en: ["MAX", "Open Salvo in MAX to sign in.", "MAX Mini App account confirmed. Your profile and online progress are available."],
+    ru: ["MAX", "Откройте Залп в MAX, чтобы войти.", "Аккаунт MAX Mini App подтверждён. Ваш профиль и онлайн-прогресс доступны."],
+    "zh-CN": ["MAX", "请在 MAX 中打开 Salvo 以登录。", "MAX Mini App 账号已确认。您可以使用个人档案和在线进度。"],
+  };
+  for (const [language, [provider, open, status]] of Object.entries(expected)) {
+    assert.equal(t(language, "auth.max"), provider);
+    assert.equal(t(language, "auth.miniAppOpenInMax"), open);
+    assert.equal(t(language, "auth.maxMiniAppAccountStatus"), status);
+  }
+});
+
+test("shared authenticated features do not name one identity provider", () => {
+  for (const language of languages) {
+    for (const key of [
+      "profile.loginPrompt",
+      "archive.signInRequired",
+      "archive.signIn",
+      "replayArchive.signInRequired",
+      "online.authHint",
+      "online.authRequired",
+      "online.authReady",
+    ]) {
+      assert.doesNotMatch(t(language.code, key), /Telegram/iu, `${language.code}:${key}`);
+    }
+  }
+});
+
 test("i18n translates result modal, theme, and history labels in every language", () => {
   const keys = [
     "result.title",

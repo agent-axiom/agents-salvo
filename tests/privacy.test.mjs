@@ -110,7 +110,7 @@ test("privacy notice describes account and gameplay processing in all locales", 
   ]) {
     assert.match(privacy, new RegExp(disclosure, "i"));
   }
-  assert.match(privacy, /20 July 2026/);
+  assert.match(privacy, /21 July 2026/);
   assert.match(privacy, /<main>\s*<section id="ru"/u);
   assert.match(privacy, /<\/section>\s*<\/main>\s*<\/body>/u);
   assert.match(privacy, /until you request deletion/i);
@@ -157,6 +157,23 @@ test("privacy notice distinguishes explicit Telegram consent from automatic Mini
   assert.match(sections["zh-CN"], /网站和已安装的应用[\s\S]*Telegram 登录前[\s\S]*明确同意/);
   assert.match(sections["zh-CN"], /Telegram Mini App[\s\S]*已签名启动数据[\s\S]*身份验证会在打开时自动开始/);
   assert.match(sections["zh-CN"], /网站和已安装应用[\s\S]*无需登录/);
+});
+
+test("privacy notice explains MAX Mini App identity processing in all locales", () => {
+  const privacy = readFileSync("src/privacy.html", "utf8");
+  const sections = localizedSections(privacy);
+
+  assert.match(sections.ru, /MAX Mini App[\s\S]*подписанн[а-яё]* данн[а-яё]* запуска[\s\S]*Cloudflare Workers[\s\S]*проверки личности/i);
+  assert.match(sections.ru, /MAX ID[\s\S]*имя[\s\S]*username[\s\S]*фотограф/i);
+  assert.match(sections.ru, /Telegram и MAX[\s\S]*отдельн[а-яё]* профил/i);
+
+  assert.match(sections.en, /MAX Mini App[\s\S]*signed launch data[\s\S]*Cloudflare Workers[\s\S]*identity validation/i);
+  assert.match(sections.en, /MAX ID[\s\S]*display name[\s\S]*username[\s\S]*profile photo/i);
+  assert.match(sections.en, /Telegram and MAX[\s\S]*separate profiles/i);
+
+  assert.match(sections["zh-CN"], /MAX Mini App[\s\S]*已签名[\s\S]*启动数据[\s\S]*Cloudflare Workers[\s\S]*身份验证/);
+  assert.match(sections["zh-CN"], /MAX ID[\s\S]*显示名称[\s\S]*username[\s\S]*头像/);
+  assert.match(sections["zh-CN"], /Telegram 和 MAX[\s\S]*独立.*档案/);
 });
 
 test("privacy notice keeps payment receipt fields private in every locale", () => {

@@ -8,6 +8,8 @@
 
 Публичный Telegram Mini App: https://agent-axiom.github.io/agents-salvo/telegram/
 
+Публичный MAX Mini App: https://agent-axiom.github.io/agents-salvo/max/
+
 ![Иллюстрация бумажного поля Залпа](src/assets/salvo-board-action.png)
 
 ## Возможности
@@ -22,7 +24,7 @@
 - Локализации: English, Русский, 中文.
 - Светлая и тёмная темы.
 - Синтетические звуковые эффекты и музыка главной через Web Audio; MP3 пока не нужны.
-- Авторизация через Telegram для постоянного профиля игрока.
+- Авторизация через Telegram и подписанные данные запуска Telegram/MAX Mini App.
 - Cloudflare Worker backend с Durable Objects для online-комнат и D1 для профилей игроков.
 - GitHub Pages workflow: `.github/workflows/pages.yml`.
 
@@ -42,13 +44,26 @@ npm start
 
 При запуске внутри Telegram Mini App автоматически отправляет подписанный Telegram `initData` в Cloudflare Worker. Worker проверяет подпись и срок действия данных, а затем создаёт существующую сессию «Залпа», поэтому отдельный вход не требуется.
 
-Браузер, Telegram Mini App, iOS-приложение и Android-приложение используют единое дерево исходного кода и одну команду `npm run build`. Эта сборка создаёт обычный и Telegram HTML shell с общими хешированными JavaScript bundle и stylesheet; Telegram SDK загружается только в Telegram shell.
+## MAX Mini App
 
-Pages и Mini App обновляются сразу после публикации Pages artifact. Нативные приложения не загружают Pages при старте: каждый APK или iOS app содержит сборку выбранного коммита и меняется только после упаковки и выпуска этого коммита.
+В настройках бота «Залпа» в MAX нужно указать URL Mini App `https://agent-axiom.github.io/agents-salvo/max/`. Публичная ссылка запуска: `https://max.ru/se13661945_bot?startapp`.
+
+При запуске внутри MAX Mini App отправляет подписанные данные запуска MAX в Cloudflare Worker. Worker проверяет HMAC-подпись и срок действия с приватным `MAX_BOT_TOKEN`, затем создаёт такую же непрозрачную сессию «Залпа», как для других клиентов. Исходные данные запуска и токен бота не сохраняются. MAX и Telegram остаются отдельными профилями, пока не появится явная функция связывания аккаунтов.
+
+Токен MAX-бота нужно хранить только в секретах Worker, затем повторно задеплоить Worker:
+
+```bash
+npx wrangler secret put MAX_BOT_TOKEN
+npx wrangler deploy
+```
+
+Браузер, Telegram Mini App, MAX Mini App, iOS-приложение и Android-приложение используют единое дерево исходного кода и одну команду `npm run build`. Сборка создаёт три HTML shell с общими хешированными JavaScript bundle и stylesheet. Telegram SDK загружается только в Telegram shell. MAX SDK загружается только в MAX shell.
+
+Pages и оба Mini App обновляются сразу после публикации Pages artifact. Нативные приложения не загружают Pages при старте: каждый APK или iOS app содержит сборку выбранного коммита и меняется только после упаковки и выпуска этого коммита.
 
 ## Разработка приложений для iOS и Android
 
-Мобильные приложения используют тот же локально собранный `dist/`, что и GitHub Pages, и не загружают публичный сайт при старте. Поэтому бои с агентом, тренировки и PvP на одном устройстве работают без интернета. Для online-комнат, Telegram-авторизации, профилей и лидерборда нужен доступ к Cloudflare Worker.
+Мобильные приложения используют тот же локально собранный `dist/`, что и GitHub Pages, и не загружают публичный сайт при старте. Поэтому бои с агентом, тренировки и PvP на одном устройстве работают без интернета. Для online-комнат, авторизации, профилей и лидерборда нужен доступ к Cloudflare Worker.
 
 Системные требования:
 
@@ -102,11 +117,11 @@ API-публикация доступна после появления перв
 2. В Settings -> Pages выбрать GitHub Actions.
 3. Запустить workflow `Deploy GitHub Pages` или сделать push в `main`.
 
-Workflow прогоняет тесты и coverage gates, собирает `dist`, проверяет оба HTML shell и общие хешированные артефакты и публикует результат как Pages artifact.
+Workflow прогоняет тесты и coverage gates, собирает `dist`, проверяет все три HTML shell и общие хешированные артефакты и публикует результат как Pages artifact.
 
 ## Online backend
 
-Backend нужен для режима «Онлайн-комната», Telegram-авторизации и сохранённых профилей игроков.
+Backend нужен для режима «Онлайн-комната», Telegram/MAX-авторизации и сохранённых профилей игроков.
 
 ```bash
 npx wrangler deploy
@@ -118,7 +133,7 @@ npx wrangler deploy
 https://agents-salvo-room.if-ab6.workers.dev
 ```
 
-Пользователи этот URL не видят. При смене backend обновить `window.SALVO_CONFIG.workerUrl` в `src/index.html` и заново задеплоить Pages.
+Пользователи этот URL не видят. При смене backend нужно обновить `window.SALVO_CONFIG.workerUrl` во всех исходных shell и заново задеплоить Pages.
 
 `wrangler.toml` использует Durable Objects для комнат и D1 для профиля/истории:
 
@@ -214,11 +229,13 @@ UPDATE star_support_payments
 ## Profile API
 
 - `POST /auth/telegram` проверяет Telegram Login Widget payload и возвращает подписанную сессию.
+- `POST /auth/telegram/miniapp` проверяет подписанные данные запуска Telegram Mini App и создаёт непрозрачную D1-сессию.
+- `POST /auth/max/miniapp` проверяет подписанные данные запуска MAX Mini App и создаёт непрозрачную D1-сессию.
 - `GET /profile/me` возвращает профиль игрока, сводную статистику, online-рейтинг, сезонную статистику, таблицу лидеров и последние бои.
 - `POST /profile/matches` сохраняет завершённые бои против агента; online-результаты записывает сервер комнаты.
 - `GET /leaderboard` возвращает публичную online-таблицу лидеров по серверно записанным online-матчам.
 
-Если при создании или входе в online-комнату передан `Authorization: Bearer ...`, Durable Object привязывает Telegram-профиль к игроку и сам записывает итог боя в D1 после завершения партии.
+Если при создании или входе в online-комнату передан `Authorization: Bearer ...`, Durable Object привязывает подтверждённый профиль к игроку и сам записывает итог боя в D1 после завершения партии.
 
 ## Звук
 

@@ -54,13 +54,27 @@ test("Telegram runtime consumes content safe areas and the stable viewport", () 
   assert.match(styles, /html\[data-runtime="telegram"\] \.modal-backdrop\s*\{[\s\S]*?var\(--salvo-safe-top\)[\s\S]*?var\(--salvo-safe-right\)[\s\S]*?var\(--salvo-safe-bottom\)[\s\S]*?var\(--salvo-safe-left\)/);
 });
 
-test("Telegram phone boards fit without changing web and native replay overflow", () => {
+test("MAX runtime consumes device safe areas and the dynamic viewport", () => {
+  for (const side of ["top", "right", "bottom", "left"]) {
+    assert.match(
+      styles,
+      new RegExp(`html\\[data-runtime="max"\\][\\s\\S]*?--salvo-safe-${side}:\\s*env\\(safe-area-inset-${side},\\s*0px\\)`),
+    );
+  }
+  assert.match(styles, /html\[data-runtime="max"\] \.shell\s*\{[\s\S]*?min-height:\s*100dvh;/);
+  assert.match(styles, /html\[data-runtime="max"\] \.shell\s*\{[\s\S]*?var\(--salvo-safe-top\)[\s\S]*?var\(--salvo-safe-right\)[\s\S]*?var\(--salvo-safe-bottom\)[\s\S]*?var\(--salvo-safe-left\)/);
+  assert.match(styles, /html\[data-runtime="max"\] \.modal-backdrop\s*\{[\s\S]*?var\(--salvo-safe-top\)[\s\S]*?var\(--salvo-safe-right\)[\s\S]*?var\(--salvo-safe-bottom\)[\s\S]*?var\(--salvo-safe-left\)/);
+});
+
+test("embedded Mini App phone boards fit without changing web and native replay overflow", () => {
   const phoneStyles = styles.slice(styles.indexOf("@media (max-width: 720px)"));
   assert.doesNotMatch(phoneStyles, /(?:^|\n)  body\s*\{/);
   assert.match(phoneStyles, /\.board-scroll\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;[^}]*overflow-x:\s*clip/);
   assert.match(phoneStyles, /\.column-headers,[\s\S]*?\.board-grid\s*\{[^}]*minmax\(0,\s*1fr\)/);
   assert.match(phoneStyles, /html\[data-runtime="telegram"\] \.replay-board-view\s*\{[^}]*overflow-x:\s*clip/);
   assert.match(phoneStyles, /html\[data-runtime="telegram"\] \.replay-board-view \.board-panel\s*\{[^}]*width:\s*100%/);
+  assert.match(phoneStyles, /html\[data-runtime="max"\] \.replay-board-view\s*\{[^}]*overflow-x:\s*clip/);
+  assert.match(phoneStyles, /html\[data-runtime="max"\] \.replay-board-view \.board-panel\s*\{[^}]*width:\s*100%/);
   assert.doesNotMatch(phoneStyles, /(?:^|\n)  \.replay-board-view\s*\{/);
   assert.doesNotMatch(phoneStyles, /html\[data-runtime="telegram"\] \.replay-board-view \.column-headers,[^}]*font-size/);
 });
@@ -104,6 +118,17 @@ test("Telegram Mini App auth is isolated from legacy Telegram login startup", ()
   assert.match(app, /auth\.miniAppReopen/);
   assert.match(app, /action: "auth-miniapp-open"/);
   assert.match(app, /action: "auth-miniapp-reopen"/);
+});
+
+test("MAX Mini App uses signed launch auth and provider-specific deep links", () => {
+  assert.match(index, /maxBotUsername:\s*"se13661945_bot"/u);
+  assert.match(app, /import \{ createMaxMiniAppAuthClient \} from "\.\/max-mini-app-auth\.js"/u);
+  assert.match(app, /platform\.getPlatform\(\) === "max"/u);
+  assert.match(app, /createMaxMiniAppAuthClient\(\{/u);
+  assert.match(app, /maxRoomInviteUrl/u);
+  assert.match(app, /maxReplayUrl/u);
+  assert.match(app, /auth\.miniAppOpenInMax/u);
+  assert.match(app, /auth\.max/u);
 });
 
 test("runtime settings metadata validates and escapes the shared build identifier", () => {

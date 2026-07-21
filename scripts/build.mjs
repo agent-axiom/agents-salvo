@@ -37,6 +37,12 @@ const shellReplacements = [
     styleReference: '<link rel="stylesheet" href="../styles.css" />',
     appReference: '<script type="module" src="../app.js"></script>',
   },
+  {
+    path: "max/index.html",
+    assetPrefix: "../",
+    styleReference: '<link rel="stylesheet" href="../styles.css" />',
+    appReference: '<script type="module" src="../app.js"></script>',
+  },
 ];
 
 async function resolveBuildOutput() {

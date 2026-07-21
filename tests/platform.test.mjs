@@ -792,6 +792,13 @@ test("platform selection is explicit and safe during Node import", () => {
       initDataUnsafe: { start_param: "room_ABCD" },
     },
   });
+  const max = selectPlatform(false, {
+    runtime: "max",
+    maxWebApp: {
+      initData: "signed-max-init-data",
+      initDataUnsafe: { start_param: "replay_abc-123" },
+    },
+  });
   const nativeWins = selectPlatform(true, {
     runtime: "telegram",
     telegramWebApp: { initData: "signed-init-data" },
@@ -802,11 +809,13 @@ test("platform selection is explicit and safe during Node import", () => {
   assert.equal(native.isNative(), true);
   assert.equal(telegram.getPlatform(), "telegram");
   assert.equal(telegram.getLaunchData(), "signed-init-data");
+  assert.equal(max.getPlatform(), "max");
+  assert.equal(max.getLaunchData(), "signed-max-init-data");
   assert.equal(nativeWins.isNative(), true);
   assert.notEqual(nativeWins.getPlatform(), "telegram");
   assert.equal(platform.isNative(), false);
 
-  for (const adapter of [web, native, telegram]) {
+  for (const adapter of [web, native, telegram, max]) {
     for (const method of [
       "isNative",
       "getPlatform",

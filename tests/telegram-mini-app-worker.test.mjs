@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { createTelegramMiniAppAuthClient } from "../src/telegram-mini-app-auth.js";
+import { verifyMaxMiniAppInitData } from "../worker/max-mini-app-auth.js";
 import worker from "../worker/index.js";
 import { verifyTelegramMiniAppInitData } from "../worker/telegram-mini-app-auth.js";
 
@@ -33,6 +34,79 @@ const authenticationFailure = JSON.stringify({ error: "Telegram Mini App authent
 const maxInitDataBytes = 16 * 1024;
 const telegramMiniAppJsonEnvelopeBytes = 15;
 const maxTelegramMiniAppJsonBytes = maxInitDataBytes + telegramMiniAppJsonEnvelopeBytes;
+
+test("MAX Mini App auth validates signed initData and creates a MAX session", async (t) => {
+  const db = memoryD1(t);
+  const user = JSON.stringify({
+    id: 67890,
+    first_name: "Max",
+    last_name: "User",
+    username: null,
+    language_code: "ru",
+    photo_url: null,
+  });
+  const initData = await signedInitData({
+    ip: "192.0.2.10",
+    user,
+  });
+
+  assert.deepEqual(await verifyMaxMiniAppInitData(initData, botToken), {
+    user: {
+      provider: "max",
+      id: "67890",
+      name: "Max User",
+      username: "",
+      photoUrl: "",
+    },
+    languageCode: "ru",
+    startParam: "room_ABCD",
+  });
+
+  const response = await worker.fetch(
+    new Request("https://worker.test/auth/max/miniapp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initData }),
+    }),
+    { DB: db, MAX_BOT_TOKEN: botToken },
+  );
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.user.provider, "max");
+  assert.equal(payload.user.id, "67890");
+  assert.match(payload.token, /^[A-Za-z0-9_-]{43}$/u);
+  assert.equal(db.queryOne("SELECT user_key FROM auth_sessions").user_key, "max:67890");
+});
+
+test("MAX Mini App route is exact and fails closed without its secret", async (t) => {
+  const db = memoryD1(t);
+  const initData = await signedInitData();
+
+  for (const [method, path] of [
+    ["GET", "/auth/max/miniapp"],
+    ["POST", "/auth/max/miniapp/"],
+    ["POST", "/AUTH/max/miniapp"],
+  ]) {
+    const response = await worker.fetch(new Request(`https://worker.test${path}`, { method }), {
+      DB: db,
+      MAX_BOT_TOKEN: botToken,
+    });
+    assert.equal(response.status, 404, `${method} ${path}`);
+  }
+
+  const unavailable = await worker.fetch(
+    new Request("https://worker.test/auth/max/miniapp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initData }),
+    }),
+    { DB: db },
+  );
+  assert.equal(unavailable.status, 503);
+  assert.deepEqual(await unavailable.json(), {
+    error: "MAX Mini App authentication failed",
+  });
+});
 
 test("Telegram Mini App auth creates an opaque session for the existing Telegram identity", async (t) => {
   const db = memoryD1(t);

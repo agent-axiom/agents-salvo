@@ -68,6 +68,7 @@ import { platform } from "./platform/index.js";
 import { RemoteClient } from "./remote.js";
 import { createTelegramAuthClient } from "./telegram-auth.js";
 import { createTelegramMiniAppAuthClient } from "./telegram-mini-app-auth.js";
+import { createMaxMiniAppAuthClient } from "./max-mini-app-auth.js";
 import { createStarsSupportClient } from "./stars-support.js";
 import {
   parseTelegramStartParam,
@@ -75,6 +76,12 @@ import {
   telegramReplayUrl,
   telegramRoomInviteUrl,
 } from "./telegram-launch.js";
+import {
+  maxMainMiniAppUrl,
+  maxReplayUrl,
+  maxRoomInviteUrl,
+  parseMaxStartParam,
+} from "./max-launch.js";
 
 export { assetUrl };
 export { menuMusicTracks } from "./core/audio.js";
@@ -96,6 +103,8 @@ const platform = appPlatform;
 const audio = appAudio;
 const fetch = appFetch;
 const isTelegramMiniApp = platform.getPlatform() === "telegram";
+const isMaxMiniApp = platform.getPlatform() === "max";
+const isEmbeddedMiniApp = isTelegramMiniApp || isMaxMiniApp;
 const telegramUnavailableRoomErrorPattern =
   /^room (?:(?:is )?full|(?:(?:is|was) )?not found|(?:(?:is|was) )?closed|(?:(?:is|was) )?unavailable)$/i;
 const buildId = validateBuildId(window.SALVO_CONFIG?.buildId);
@@ -182,6 +191,7 @@ const state = {
   auth: {
     workerUrl: window.SALVO_CONFIG?.workerUrl || "",
     telegramBotUsername: window.SALVO_CONFIG?.telegramBotUsername || "",
+    maxBotUsername: window.SALVO_CONFIG?.maxBotUsername || "",
     method: "unknown",
     consent: false,
     token: "",
@@ -242,6 +252,7 @@ const state = {
 
 let telegramAuthClient = null;
 let telegramMiniAppClient = null;
+let maxMiniAppClient = null;
 let starsSupportClient = null;
 if (state.auth.workerUrl && isTelegramMiniApp) {
   try {
@@ -251,6 +262,15 @@ if (state.auth.workerUrl && isTelegramMiniApp) {
     });
   } catch {
     telegramMiniAppClient = null;
+  }
+} else if (state.auth.workerUrl && isMaxMiniApp) {
+  try {
+    maxMiniAppClient = createMaxMiniAppAuthClient({
+      workerUrl: state.auth.workerUrl,
+      fetcher: fetch,
+    });
+  } catch {
+    maxMiniAppClient = null;
   }
 } else if (state.auth.workerUrl) {
   try {
@@ -317,7 +337,7 @@ const mobileRuntime = createMobileRuntime({
 });
 
 function getInitialTheme() {
-  const platformTheme = isTelegramMiniApp ? platform.getTheme?.() : null;
+  const platformTheme = isEmbeddedMiniApp ? platform.getTheme?.() : null;
   if (["light", "dark"].includes(platformTheme)) return platformTheme;
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
@@ -482,24 +502,24 @@ function startMobileApp() {
     startRuntime: () => mobileRuntime.start(),
     hydratePreferences: hydratePlatformPreferences,
     hydrateSecureSession,
-    refreshAuth: isTelegramMiniApp
+    refreshAuth: isEmbeddedMiniApp
       ? authenticateTelegramMiniApp
       : telegramAuthBootstrap.type === "ticket" ? async () => {} : refreshAuth,
-    processLaunch: isTelegramMiniApp ? processTelegramMiniAppLaunch : undefined,
+    processLaunch: isEmbeddedMiniApp ? processTelegramMiniAppLaunch : undefined,
     refreshLeaderboard,
     onError: reportRuntimeError,
   });
-  if (isTelegramMiniApp) {
+  if (isEmbeddedMiniApp) {
     void services.runtimeReady.then(() => {
       if (backButtonVisibility !== true) return;
       backButtonVisibility = null;
       syncBackButtonVisibility();
     });
   }
-  const capabilityReady = isTelegramMiniApp
+  const capabilityReady = isEmbeddedMiniApp
     ? services.runtimeReady
     : services.runtimeReady.then(loadTelegramAuthCapability);
-  const bootstrapReady = isTelegramMiniApp
+  const bootstrapReady = isEmbeddedMiniApp
     ? services.launchReady
     : Promise.all([
         services.runtimeReady,
@@ -538,7 +558,9 @@ function captureTelegramMiniAppLaunchRoute() {
   if (!telegramLaunchRouteCaptured) {
     telegramLaunchRouteCaptured = true;
     try {
-      pendingTelegramLaunchRoute = parseTelegramStartParam(platform.getStartParam());
+      pendingTelegramLaunchRoute = isMaxMiniApp
+        ? parseMaxStartParam(platform.getStartParam())
+        : parseTelegramStartParam(platform.getStartParam());
     } catch {
       pendingTelegramLaunchRoute = null;
     }
@@ -603,9 +625,14 @@ async function authenticateTelegramMiniApp() {
   } catch {
     available = false;
   }
-  if (!available || !launchData || !telegramMiniAppClient) {
+  const miniAppClientAvailable = isMaxMiniApp
+    ? Boolean(maxMiniAppClient)
+    : Boolean(telegramMiniAppClient);
+  if (!available || !launchData || !miniAppClientAvailable) {
     state.auth.method = "miniapp-unavailable";
-    state.auth.error = translate("auth.miniAppOpenInTelegram");
+    state.auth.error = translate(isMaxMiniApp
+      ? "auth.miniAppOpenInMax"
+      : "auth.miniAppOpenInTelegram");
     state.auth.loading = false;
     render();
     return false;
@@ -613,7 +640,7 @@ async function authenticateTelegramMiniApp() {
 
   state.auth.method = "miniapp";
   if (!requireOnline(() => {
-    state.auth.error = translate("auth.unavailable");
+    state.auth.error = translate(isMaxMiniApp ? "auth.maxUnavailable" : "auth.unavailable");
   })) return false;
 
   authCallbacksBlocked = false;
@@ -624,9 +651,9 @@ async function authenticateTelegramMiniApp() {
   state.auth.error = "";
   render();
   try {
-    const authPayload = await telegramMiniAppClient.authenticate(launchData, {
-      signal: controller.signal,
-    });
+    const authPayload = isMaxMiniApp
+      ? await maxMiniAppClient.authenticate(launchData, { signal: controller.signal })
+      : await telegramMiniAppClient.authenticate(launchData, { signal: controller.signal });
     if (!authOperationIsCurrent(request, controller)) return false;
     const established = await establishAuthSession(
       authPayload.token,
@@ -651,8 +678,8 @@ async function authenticateTelegramMiniApp() {
     const errorKey = error?.authKey === "auth.secureStorageFailed"
       ? "auth.secureStorageFailed"
       : expired
-        ? "auth.miniAppReopen"
-        : "auth.unavailable";
+        ? isMaxMiniApp ? "auth.miniAppReopenMax" : "auth.miniAppReopen"
+        : isMaxMiniApp ? "auth.maxUnavailable" : "auth.unavailable";
     await invalidateAuthSession({
       error: translate(errorKey),
       preserveRequestedId: true,
@@ -822,9 +849,9 @@ function renderTopbarProfile() {
   if (!state.auth.user) {
     return `
       <button class="topbar-profile" data-action="toggle-settings">
-        <span class="auth-avatar" aria-hidden="true">T</span>
+        <span class="auth-avatar" aria-hidden="true">${isMaxMiniApp ? "M" : "T"}</span>
         <span>
-          <strong>${translate("auth.telegram")}</strong>
+          <strong>${translate(authProviderKey())}</strong>
           <small>${translate("profile.compactAnonymous")}</small>
         </span>
       </button>
@@ -844,7 +871,7 @@ function renderTopbarProfile() {
     >
       ${renderAuthAvatar(state.auth.user)}
       <span>
-        <strong>${escapeHtml(state.auth.user.name || translate("auth.telegram"))}</strong>
+        <strong>${escapeHtml(state.auth.user.name || translate(authProviderKey(state.auth.user)))}</strong>
         <small>${translate("profile.compactStats", {
           wins: summary?.wins ?? 0,
           rating: rating?.onlineMatches ? rating.mmr : "—",
@@ -1003,8 +1030,8 @@ function renderAuthControl() {
         <div class="auth-card">
           ${renderAuthAvatar(user)}
           <div class="auth-name">
-            <strong>${escapeHtml(user.name || translate("auth.telegram"))}</strong>
-            <small>${user.username ? `@${escapeHtml(user.username)}` : translate("auth.telegram")}</small>
+            <strong>${escapeHtml(user.name || translate(authProviderKey(user)))}</strong>
+            <small>${user.username ? `@${escapeHtml(user.username)}` : translate(authProviderKey(user))}</small>
           </div>
           <button class="icon-button auth-logout" data-action="auth-logout" aria-label="${translate("auth.logout")}" ${state.auth.loading ? "disabled" : ""}>×</button>
         </div>
@@ -1050,23 +1077,23 @@ function renderAuthControl() {
   if (state.auth.method === "miniapp-unavailable") {
     return renderTelegramMiniAppCommand({
       action: "auth-miniapp-open",
-      errorKey: "auth.miniAppOpenInTelegram",
-      labelKey: "auth.miniAppOpenCommand",
+      errorKey: isMaxMiniApp ? "auth.miniAppOpenInMax" : "auth.miniAppOpenInTelegram",
+      labelKey: isMaxMiniApp ? "auth.miniAppOpenMaxCommand" : "auth.miniAppOpenCommand",
     });
   }
 
   if (state.auth.method === "miniapp-expired") {
     return renderTelegramMiniAppCommand({
       action: "auth-miniapp-reopen",
-      errorKey: "auth.miniAppReopen",
-      labelKey: "auth.miniAppReopenCommand",
+      errorKey: isMaxMiniApp ? "auth.miniAppReopenMax" : "auth.miniAppReopen",
+      labelKey: isMaxMiniApp ? "auth.miniAppReopenMaxCommand" : "auth.miniAppReopenCommand",
     });
   }
 
   return `
     <div class="auth-control">
       <span>${translate("auth.label")}</span>
-      <p class="status-line auth-unavailable">${escapeHtml(state.auth.error || translate("auth.unavailable"))}</p>
+      <p class="status-line auth-unavailable">${escapeHtml(state.auth.error || translate(isMaxMiniApp ? "auth.maxUnavailable" : "auth.unavailable"))}</p>
       <button class="secondary-button auth-retry-button" data-action="auth-telegram-retry">${translate("auth.retry")}</button>
       ${renderTelegramAuthNotices()}
     </div>
@@ -1090,6 +1117,15 @@ function renderTelegramMiniAppCommand({ action, errorKey, labelKey }) {
 function telegramMiniAppLaunchUrl() {
   try {
     const route = captureTelegramMiniAppLaunchRoute();
+    if (isMaxMiniApp) {
+      if (route?.type === "room") {
+        return maxRoomInviteUrl(state.auth.maxBotUsername, route.roomCode);
+      }
+      if (route?.type === "replay") {
+        return maxReplayUrl(state.auth.maxBotUsername, route.replayId);
+      }
+      return maxMainMiniAppUrl(state.auth.maxBotUsername);
+    }
     if (route?.type === "room") {
       return telegramRoomInviteUrl(state.auth.telegramBotUsername, route.roomCode);
     }
@@ -1100,6 +1136,20 @@ function telegramMiniAppLaunchUrl() {
   } catch {
     return "";
   }
+}
+
+function authProviderKey(user = state.auth.user) {
+  return user?.provider === "max" || (!user && isMaxMiniApp)
+    ? "auth.max"
+    : "auth.telegram";
+}
+
+function miniAppAccountStatusKey() {
+  return isMaxMiniApp ? "auth.maxMiniAppAccountStatus" : "auth.miniAppAccountStatus";
+}
+
+function onlineShareLabelKey() {
+  return isMaxMiniApp ? "online.shareMax" : "online.shareTelegram";
 }
 
 async function openTelegramMainMiniApp() {
@@ -1539,7 +1589,7 @@ function renderArchivedReplayContent() {
         <div><dt>${translate("replay.timeline")}</dt><dd>${translate("replay.move", { turn: frame.turn, total: frame.totalTurns })}</dd></div>
       </dl>
       <button data-action="replay-copy-link">${translate(
-        isTelegramMiniApp ? "online.shareTelegram" : "replayArchive.copyLink",
+        isEmbeddedMiniApp ? onlineShareLabelKey() : "replayArchive.copyLink",
       )}</button>
     </div>
     ${
@@ -1547,7 +1597,7 @@ function renderArchivedReplayContent() {
         ? `<p class="replay-copy-status ${state.replayArchive.copyStatus === "error" ? "is-error" : ""}" role="status">${translate(
             state.replayArchive.copyStatus === "copied"
               ? "replayArchive.copied"
-              : isTelegramMiniApp ? "share.failed" : "replayArchive.copyFailed",
+              : isEmbeddedMiniApp ? "share.failed" : "replayArchive.copyFailed",
           )}</p>`
         : ""
     }
@@ -1706,7 +1756,7 @@ function renderProfilePanel() {
       <div class="profile-panel-header">
         <div>
           <span>${translate("profile.title")}</span>
-          <h3>${escapeHtml(state.auth.user.name || translate("auth.telegram"))}</h3>
+          <h3>${escapeHtml(state.auth.user.name || translate(authProviderKey(state.auth.user)))}</h3>
           <p>${translate("profile.subtitle")}</p>
         </div>
         <button
@@ -2309,7 +2359,7 @@ function renderOnlineLobby() {
           <span>${translate("mode.online")}</span>
           <h2>${translate("online.title")}</h2>
           <p>${isOnlineAuthReady()
-            ? translate(isTelegramMiniApp ? "auth.miniAppAccountStatus" : "online.authReady")
+            ? translate(isEmbeddedMiniApp ? miniAppAccountStatusKey() : "online.authReady")
             : translate("online.authHint")}</p>
         </div>
         <p class="status-line">${translate(`preset.${state.presetId}.name`)}</p>
@@ -2345,7 +2395,7 @@ function renderOnlineAuthGate() {
   return `
     <div class="online-auth-gate">
       <p>${translate("online.authRequired")}</p>
-      <button class="secondary-button" data-action="toggle-settings">${translate("auth.telegram")}</button>
+      <button class="secondary-button" data-action="toggle-settings">${translate(authProviderKey())}</button>
     </div>
   `;
 }
@@ -2363,7 +2413,7 @@ function renderOnlineRoom(snapshot) {
         ${roomCode ? `<p class="room-code">${escapeHtml(roomCode)}</p>` : ""}
         <div class="button-row">
           <button data-action="copy-room-code">${translate("online.copyCode")}</button>
-          <button data-action="share-telegram">${translate("online.shareTelegram")}</button>
+          <button data-action="share-telegram">${translate(onlineShareLabelKey())}</button>
         </div>
         ${renderOnlineStatus(snapshot)}
         ${renderOnlineShareStatus()}
@@ -2733,7 +2783,7 @@ function renderResultModal({ winnerId, playerId = winnerId, log, newGameAction, 
           <button data-action="share-battle-summary">${translate("result.shareSummary")}</button>
           ${
             onlineActions
-              ? `<button data-action="share-telegram">${translate("online.shareTelegram")}</button>
+              ? `<button data-action="share-telegram">${translate(onlineShareLabelKey())}</button>
                 <button class="primary-button" data-action="online-rematch">${translate("online.rematch")}</button>`
               : `<button class="primary-button" data-action="${newGameAction}">${translate("game.restart")}</button>`
           }
@@ -3371,7 +3421,7 @@ root.addEventListener("click", async (event) => {
   if (action === "battle-tab") selectBattleTab(button.dataset.tab);
   if (action === "auth-telegram-oidc") await startTelegramOidc();
   if (action === "auth-telegram-retry") {
-    await (isTelegramMiniApp ? authenticateTelegramMiniApp() : loadTelegramAuthCapability());
+    await (isEmbeddedMiniApp ? authenticateTelegramMiniApp() : loadTelegramAuthCapability());
   }
   if (action === "auth-miniapp-open" || action === "auth-miniapp-reopen") {
     await openTelegramMainMiniApp();
@@ -3564,7 +3614,7 @@ function hasUnfinishedBattle() {
 }
 
 function syncClosingConfirmation(forceApply = false) {
-  if (!isTelegramMiniApp || typeof platform.setClosingConfirmation !== "function") return;
+  if (!isEmbeddedMiniApp || typeof platform.setClosingConfirmation !== "function") return;
   closingConfirmationDesired = hasUnfinishedBattle();
   if (
     closingConfirmationOperation
@@ -3599,7 +3649,7 @@ function syncClosingConfirmation(forceApply = false) {
 }
 
 function syncBackButtonVisibility() {
-  if (!isTelegramMiniApp || typeof platform.setBackButtonVisible !== "function") return;
+  if (!isEmbeddedMiniApp || typeof platform.setBackButtonVisible !== "function") return;
   const enabled = Boolean(
     state.screen !== "menu"
     || state.support.open
@@ -3850,10 +3900,12 @@ function selectArchivedReplayTab(tab) {
 
 async function copyArchivedReplayLink() {
   const replayId = state.replayArchive.requestedId;
-  if (isTelegramMiniApp) {
+  if (isEmbeddedMiniApp) {
     let url = "";
     try {
-      url = telegramReplayUrl(state.auth.telegramBotUsername, replayId);
+      url = isMaxMiniApp
+        ? maxReplayUrl(state.auth.maxBotUsername, replayId)
+        : telegramReplayUrl(state.auth.telegramBotUsername, replayId);
     } catch {
       // Invalid launch configuration falls through to the existing error status.
     }
@@ -4777,7 +4829,7 @@ function handleOnlineConnectionError(error, errorKey = "") {
 
 function handleOnlineJoinError(error) {
   const message = String(error?.message ?? "");
-  if (isTelegramMiniApp && telegramUnavailableRoomErrorPattern.test(message.trim())) {
+  if (isEmbeddedMiniApp && telegramUnavailableRoomErrorPattern.test(message.trim())) {
     handleOnlineConnectionError(error, "online.roomUnavailable");
     return;
   }
@@ -4875,9 +4927,11 @@ async function shareRoom() {
   const showingResult = Boolean(currentBattleResultContext());
   const text = translate("online.shareText", { code: roomCode });
   let url = canonicalReplayBaseUrl;
-  if (isTelegramMiniApp) {
+  if (isEmbeddedMiniApp) {
     try {
-      url = telegramRoomInviteUrl(state.auth.telegramBotUsername, roomCode);
+      url = isMaxMiniApp
+        ? maxRoomInviteUrl(state.auth.maxBotUsername, roomCode)
+        : telegramRoomInviteUrl(state.auth.telegramBotUsername, roomCode);
     } catch {
       url = "";
     }
@@ -4908,7 +4962,7 @@ async function shareWithTelegramFallback(text, url) {
     });
     if (result.shared) return { shared: true, copied: false };
     if (result.copied) return { shared: false, copied: true };
-    if (isTelegramMiniApp) return { shared: false, copied: false };
+    if (isEmbeddedMiniApp) return { shared: false, copied: false };
     const telegramUrl = new URL("https://t.me/share/url");
     telegramUrl.searchParams.set("url", url);
     telegramUrl.searchParams.set("text", text);
@@ -4957,7 +5011,7 @@ function remoteHandlers() {
 }
 
 function mountTelegramLoginWidget() {
-  if (isTelegramMiniApp || platform.isNative() || state.auth.method !== "legacy") {
+  if (isEmbeddedMiniApp || platform.isNative() || state.auth.method !== "legacy") {
     return;
   }
   const slot = document.querySelector("#telegram-login-slot");

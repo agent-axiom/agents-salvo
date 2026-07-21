@@ -8,6 +8,8 @@ Live build: https://agent-axiom.github.io/agents-salvo/
 
 Telegram Mini App: https://agent-axiom.github.io/agents-salvo/telegram/
 
+MAX Mini App: https://agent-axiom.github.io/agents-salvo/max/
+
 ![Salvo paper board artwork](src/assets/salvo-board-action.png)
 
 ## Features
@@ -22,7 +24,7 @@ Telegram Mini App: https://agent-axiom.github.io/agents-salvo/telegram/
 - English, Russian, and Chinese localizations.
 - Light and dark themes.
 - Synthetic Web Audio sound effects and menu music; no MP3 assets are required yet.
-- Telegram login for player identity.
+- Telegram login and signed Telegram/MAX Mini App identity.
 - Cloudflare Worker backend with Durable Objects for online rooms and D1 for player profiles.
 - GitHub Pages workflow in `.github/workflows/pages.yml`.
 
@@ -42,13 +44,26 @@ In [@BotFather](https://t.me/BotFather), select the Salvo bot, open the Main Min
 
 When opened inside Telegram, the Mini App automatically sends Telegram's signed `initData` to the Cloudflare Worker. The Worker verifies the signature and freshness before creating the existing Salvo session, so players do not complete a separate login flow.
 
-The browser, Telegram Mini App, iOS app, and Android app use one source tree and one `npm run build`. That build emits the regular and Telegram HTML shells with one shared hashed JavaScript bundle and stylesheet; only the Telegram shell loads the Telegram SDK.
+## MAX Mini App
 
-Pages and the Mini App update immediately when the Pages artifact is published. Native apps do not load Pages at startup: each APK or iOS app packages the build from a selected commit and changes only when that commit is packaged and released.
+Configure the Salvo bot's Mini App URL as `https://agent-axiom.github.io/agents-salvo/max/`. The public launch link is `https://max.ru/se13661945_bot?startapp`.
+
+When opened inside MAX, the Mini App sends signed MAX launch data to the Cloudflare Worker. The Worker validates its HMAC signature and freshness with the private `MAX_BOT_TOKEN`, then creates the same kind of opaque Salvo session used by other clients. The raw launch data and bot token are not persisted. Telegram and MAX identities remain separate profiles unless an explicit account-linking feature is added later.
+
+Store the MAX bot token only as a Worker secret, then redeploy the Worker:
+
+```bash
+npx wrangler secret put MAX_BOT_TOKEN
+npx wrangler deploy
+```
+
+The browser, Telegram Mini App, MAX Mini App, iOS app, and Android app use one source tree and one `npm run build`. The build emits three HTML shells with one shared hashed JavaScript bundle and stylesheet. Only the matching Mini App shell loads its provider SDK.
+
+Pages and both Mini Apps update immediately when the Pages artifact is published. Native apps do not load Pages at startup: each APK or iOS app packages the build from a selected commit and changes only when that commit is packaged and released.
 
 ## iOS And Android Development
 
-The mobile apps bundle the same `dist/` build as GitHub Pages; they do not load the public site at startup. Agent, training, and same-device battles therefore work offline. Online rooms, Telegram login, profiles, and leaderboards require access to the Cloudflare Worker.
+The mobile apps bundle the same `dist/` build as GitHub Pages; they do not load the public site at startup. Agent, training, and same-device battles therefore work offline. Online rooms, account login, profiles, and leaderboards require access to the Cloudflare Worker.
 
 Prerequisites:
 
@@ -102,11 +117,11 @@ API publishing is available after RuStore has one active version. Run `Check RuS
 2. In Settings -> Pages, select GitHub Actions.
 3. Run the `Deploy GitHub Pages` workflow or push to `main`.
 
-The workflow runs the test and coverage gates, builds `dist`, verifies both HTML shells and their shared hashed assets, and publishes the result as a Pages artifact.
+The workflow runs the test and coverage gates, builds `dist`, verifies all three HTML shells and their shared hashed assets, and publishes the result as a Pages artifact.
 
 ## Online Backend
 
-The backend is required for the “Online room” mode, Telegram auth, and saved player profiles.
+The backend is required for the “Online room” mode, Telegram/MAX auth, and saved player profiles.
 
 ```bash
 npx wrangler deploy
@@ -118,7 +133,7 @@ The current Worker URL is configured in the frontend:
 https://agents-salvo-room.if-ab6.workers.dev
 ```
 
-Players do not see this URL. To change the backend, update `window.SALVO_CONFIG.workerUrl` in `src/index.html` and redeploy Pages.
+Players do not see this URL. To change the backend, update `window.SALVO_CONFIG.workerUrl` in every source shell and redeploy Pages.
 
 `wrangler.toml` uses Durable Objects with SQLite storage for rooms and D1 for profile/history storage:
 
@@ -215,7 +230,7 @@ from the verified receipt for the remaining parameters.
 
 - `POST /rooms` creates a room and returns `roomCode`, `playerId`, and `playerToken`.
 - `POST /rooms/:roomCode/join` connects the second player.
-- If `Authorization: Bearer ...` is present on create/join, the room stores that Telegram identity for server-side history.
+- If `Authorization: Bearer ...` is present on create/join, the room stores that authenticated identity for server-side history.
 - `GET /rooms/:roomCode/socket?playerId=...&token=...` opens a WebSocket.
 - The client sends `placeFleet` and `fire`.
 - The Durable Object validates turn order, never exposes opponent ships in snapshots, and records completed authenticated online matches in D1.
@@ -223,6 +238,8 @@ from the verified receipt for the remaining parameters.
 ## Profile API
 
 - `POST /auth/telegram` verifies Telegram Login Widget payloads and returns a signed session token.
+- `POST /auth/telegram/miniapp` verifies signed Telegram Mini App launch data and creates an opaque D1-backed session.
+- `POST /auth/max/miniapp` verifies signed MAX Mini App launch data and creates an opaque D1-backed session.
 - `GET /profile/me` returns the authenticated player profile, summary stats, online rating, season stats, leaderboard, and recent battles.
 - `POST /profile/matches` saves completed agent battles for the authenticated player; online results are written by the room server.
 - `GET /leaderboard` returns the public online leaderboard derived from server-recorded online matches.

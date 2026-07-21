@@ -42,11 +42,15 @@ export function telegramJsonPost(body) {
 }
 
 export function validateTelegramPublicSession(value, validToken) {
+  return validatePublicSession(value, validToken, "telegram");
+}
+
+export function validatePublicSession(value, validToken, provider) {
   if (
     !hasExactKeys(value, ["token", "user"])
     || typeof value.token !== "string"
     || !validToken(value.token)
-    || !validPublicUser(value.user)
+    || !validPublicUser(value.user, provider)
   ) {
     return null;
   }
@@ -244,9 +248,9 @@ function cancelReader(reader) {
   } catch {}
 }
 
-function validPublicUser(user) {
+function validPublicUser(user, provider) {
   return hasExactKeys(user, ["provider", "id", "name", "username", "photoUrl"])
-    && user.provider === "telegram"
+    && user.provider === provider
     && typeof user.id === "string"
     && user.id.trim() !== ""
     && user.id.length <= 128
