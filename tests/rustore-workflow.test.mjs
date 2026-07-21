@@ -67,6 +67,7 @@ test("RuStore release workflow validates, signs, verifies, and uploads both form
     /npm run coverage/,
     /npm run mobile:sync/,
     /gradlew[^\n]*(test|lint)/,
+    /- name: Enable KVM access[\s\S]*?MODE="0666"[\s\S]*?udevadm control --reload-rules[\s\S]*?udevadm trigger --name-match=kvm[\s\S]*?- name: Run Android instrumentation smoke test/,
     /connectedDebugAndroidTest/,
     /RUSTORE_KEYSTORE_BASE64/,
     /RUSTORE_STORE_PASSWORD/,

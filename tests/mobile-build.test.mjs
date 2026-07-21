@@ -1165,6 +1165,10 @@ test("mobile CI tests, lints, and packages the Android debug app", () => {
   );
   assert.match(
     android,
+    /- name: Enable KVM access[\s\S]*?MODE="0666"[\s\S]*?udevadm control --reload-rules[\s\S]*?udevadm trigger --name-match=kvm[\s\S]*?- name: Run Android instrumentation smoke test/,
+  );
+  assert.match(
+    android,
     /uses: ReactiveCircus\/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2\n\s+with:\n\s+api-level: 35\n\s+target: aosp_atd\n\s+arch: x86_64\n\s+emulator-boot-timeout: 300[\s\S]*?emulator-options: .* -no-snapshot .*\n[\s\S]*?script: android\/gradlew -p android :app:connectedDebugAndroidTest/,
   );
   assert.match(
