@@ -2048,13 +2048,11 @@ html[data-runtime="max"] .shell {
   min-width: 0;
 }
 
-.battle-pulse {
+.battle-command-panel {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(120px, 0.55fr);
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 10px;
-  padding: 10px 12px;
+  gap: 0;
+  margin-top: 12px;
+  padding: 12px;
   color: var(--ink);
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%),
@@ -2063,14 +2061,36 @@ html[data-runtime="max"] .shell {
   border-radius: 8px;
 }
 
-.battle-pulse > div:first-child {
+.battle-command-panel.is-collapsed {
+  padding-block: 10px;
+}
+
+.battle-command-topline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.battle-command-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.battle-command-event {
   display: grid;
   gap: 3px;
   min-width: 0;
 }
 
-.battle-pulse span,
-.battle-pulse small {
+.battle-command-event span,
+.battle-command-metrics span,
+.battle-command-tactics-title span,
+.tactical-stats span {
   color: var(--muted);
   font-size: 11px;
   font-weight: 800;
@@ -2079,7 +2099,7 @@ html[data-runtime="max"] .shell {
   text-transform: uppercase;
 }
 
-.battle-pulse strong {
+.battle-command-event strong {
   min-width: 0;
   overflow: hidden;
   color: var(--accent-strong);
@@ -2088,7 +2108,7 @@ html[data-runtime="max"] .shell {
   white-space: nowrap;
 }
 
-.battle-pulse-result {
+.battle-command-result {
   display: inline-flex;
   gap: 7px;
   align-items: center;
@@ -2100,7 +2120,7 @@ html[data-runtime="max"] .shell {
   border-radius: 999px;
 }
 
-.battle-pulse-result i {
+.battle-command-result i {
   display: block;
   width: 9px;
   height: 9px;
@@ -2109,33 +2129,64 @@ html[data-runtime="max"] .shell {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--miss) 18%, transparent);
 }
 
-.battle-pulse-result.hit i,
-.battle-pulse-result.sunk i {
+.battle-command-result.hit i,
+.battle-command-result.sunk i {
   background: var(--hit);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--hit) 20%, transparent);
 }
 
-.battle-pulse-result.sunk {
+.battle-command-result.sunk {
   border-color: color-mix(in srgb, var(--sunk) 48%, var(--line));
 }
 
-.battle-pulse-result.sunk i {
+.battle-command-result.sunk i {
   background: var(--sunk);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--sunk) 18%, transparent);
 }
 
-.battle-pulse.is-empty {
-  grid-template-columns: minmax(0, 1fr) auto;
+.battle-command-toggle {
+  min-width: 112px;
+  min-height: 38px;
+  align-self: center;
+  padding: 0 14px;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 850;
+  background: color-mix(in srgb, var(--surface-strong) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: 999px;
 }
 
-.battle-pulse-metrics {
-  grid-column: 1 / -1;
+.battle-command-toggle:hover:not(:disabled),
+.battle-command-toggle:focus-visible {
+  color: var(--primary-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.battle-command-details {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.85fr) minmax(0, 1.15fr);
+  gap: 14px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+}
+
+.battle-command-intel {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  min-width: 0;
+}
+
+.battle-command-metrics {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.battle-pulse-metrics span {
+.battle-command-metrics span {
   display: inline-flex;
   min-height: 24px;
   align-items: center;
@@ -2283,93 +2334,36 @@ html[data-runtime="max"] .shell {
   color: var(--hit);
 }
 
-.tactical-advisor {
+.battle-command-tactics {
   display: grid;
-  grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1.2fr);
-  gap: 12px;
-  align-items: stretch;
-  margin-bottom: 12px;
-  padding: 12px;
-  color: var(--ink);
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 64%),
-    color-mix(in srgb, var(--surface) 88%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
-  border-radius: 8px;
+  grid-template-columns: minmax(150px, 0.72fr) minmax(0, 1.28fr);
+  gap: 14px;
+  align-items: start;
+  min-width: 0;
+  padding-left: 14px;
+  border-left: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
 }
 
-.tactical-advisor.is-paused {
+.battle-command-tactics.is-paused {
   opacity: 0.72;
 }
 
-.tactical-advisor-heading {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-content: center;
-  align-items: center;
-}
-
-.tactical-advisor-title {
+.battle-command-tactics-title {
   display: grid;
   gap: 5px;
   min-width: 0;
 }
 
-.tactical-advisor-title span,
-.tactical-stats span {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  line-height: 1.15;
-  text-transform: uppercase;
-}
-
-.tactical-advisor-title strong {
+.battle-command-tactics-title strong {
   color: var(--accent-strong);
   font-size: 18px;
   line-height: 1.18;
 }
 
-.tactical-advisor-toggle {
-  min-height: 34px;
-  padding: 0 12px;
-  color: var(--accent-strong);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 850;
-  background: color-mix(in srgb, var(--surface-strong) 82%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.tactical-advisor-toggle:hover,
-.tactical-advisor-toggle:focus-visible {
-  color: var(--paper);
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.tactical-advisor-compact-toggle {
-  width: fit-content;
-  min-height: 38px;
-  padding: 0 14px;
-  background: color-mix(in srgb, var(--surface-strong) 88%, transparent);
-}
-
-.tactical-advisor-body {
+.battle-command-tactics-body {
   display: grid;
   gap: 8px;
-}
-
-.tactical-advisor.is-collapsed {
-  grid-template-columns: 1fr;
-  justify-items: start;
-  padding: 0;
-  background: transparent;
-  border-color: transparent;
+  min-width: 0;
 }
 
 .tactical-quick-fire {
@@ -4702,8 +4696,16 @@ html[data-runtime="telegram"] .stars-support-dialog {
     display: block;
   }
 
-  .tactical-advisor {
+  .battle-command-details,
+  .battle-command-tactics {
     grid-template-columns: 1fr;
+  }
+
+  .battle-command-tactics {
+    padding-top: 12px;
+    padding-left: 0;
+    border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+    border-left: 0;
   }
 
   .preset-grid {
@@ -4759,8 +4761,7 @@ html[data-runtime="telegram"] .stars-support-dialog {
   .ghost-button,
   .orientation-button,
   .ship-choice,
-  .tactical-advisor-toggle,
-  .tactical-advisor-compact-toggle,
+  .battle-command-toggle,
   .tactical-quick-fire,
   .priority-target-chip,
   .battle-coaching .training-link,
@@ -4925,8 +4926,29 @@ html[data-runtime="telegram"] .stars-support-dialog {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .battle-pulse {
+  .battle-command-topline {
     grid-template-columns: 1fr;
+  }
+
+  .battle-command-toggle {
+    width: 100%;
+  }
+
+  .battle-command-summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .battle-live-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .battle-live-stats span {
+    justify-content: center;
+    min-width: 0;
+    padding-inline: 5px;
+    text-align: center;
+    white-space: normal;
   }
 
   .battle-report-grid,

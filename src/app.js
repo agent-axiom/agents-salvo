@@ -184,7 +184,7 @@ const state = {
   boards: { p1: null, p2: null },
   game: null,
   battleTab: "target",
-  tacticalAdvisorOpen: true,
+  battleCommandPanelOpen: false,
   agentDifficulty: "normal",
   passPlayerId: null,
   resultModalDismissed: null,
@@ -2524,13 +2524,20 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
         ${renderBattleTab("log", "log.title", activeTab)}
       </div>
       <div class="target-primary battle-tab-panel" data-panel="target">
-        ${renderBattlePulse(log, { targetDisabled, salvoRemaining, tacticalAnalysis, playerId, ownBoard, targetBoard })}
-        ${renderTacticalAdvisor(tacticalAnalysis, { disabled: targetDisabled, targetAction })}
         ${renderBoard(targetBoard, {
           kind: targetKind,
           title: translate("game.target"),
           disabled: targetDisabled,
           priorityTargets: tacticalAnalysis.priorityTargets,
+        })}
+        ${renderBattleCommandPanel(log, {
+          targetDisabled,
+          salvoRemaining,
+          tacticalAnalysis,
+          playerId,
+          ownBoard,
+          targetBoard,
+          targetAction,
         })}
       </div>
       <aside class="battle-side">
@@ -2545,7 +2552,7 @@ function renderBattlefield({ ownBoard, targetBoard, targetKind, targetDisabled, 
   `;
 }
 
-function renderBattlePulse(
+function renderBattleCommandPanel(
   log,
   {
     targetDisabled = false,
@@ -2554,58 +2561,75 @@ function renderBattlePulse(
     playerId = "p1",
     ownBoard = null,
     targetBoard = null,
+    targetAction = "shot",
   } = {},
 ) {
-  const lastEntry = visibleBattleLog(log)[0];
-  const metrics = renderBattlePulseMetrics({ targetDisabled, salvoRemaining, tacticalAnalysis });
-  const liveStats = renderBattleLiveStats(log, playerId);
-  const momentum = renderBattleMomentum(log, playerId);
-  const fleet = renderFleetIntel(log, playerId, ownBoard);
-  const target = renderTargetIntel(targetBoard);
-  if (!lastEntry) {
-    return `
-      <section class="battle-pulse is-empty" aria-live="polite">
-        <div>
-          <span>${translate("battle.awaitingShot")}</span>
-          <strong>${translate("battle.nextAction")}</strong>
-        </div>
-        ${metrics}
-        ${liveStats}
-        ${momentum}
-        ${fleet}
-        ${target}
-      </section>
-    `;
-  }
-
-  const nextAction =
-    targetDisabled || salvoRemaining <= 1
-      ? translate("battle.nextAction")
-      : translate("game.salvoShots", { count: salvoRemaining });
+  const expanded = state.battleCommandPanelOpen;
+  const detailsLabel = translate(expanded ? "battle.hideDetails" : "battle.details");
   return `
-    <section class="battle-pulse ${lastEntry.result}" aria-live="polite">
-      <div>
-        <span>${translate("battle.lastShot")}</span>
-        <strong>${playerName(lastEntry.playerId)} · ${formatCoordinate(lastEntry.coordinate)}</strong>
+    <section
+      class="battle-command-panel ${expanded ? "is-expanded" : "is-collapsed"}"
+      aria-label="${translate("battle.commandPanel")}"
+    >
+      <div class="battle-command-topline">
+        ${renderBattleCommandSummary(log, playerId)}
+        <button
+          class="battle-command-toggle"
+          data-action="toggle-battle-command-panel"
+          aria-expanded="${expanded}"
+          aria-controls="battle-command-details"
+        >
+          ${detailsLabel}
+        </button>
       </div>
-      <div class="battle-pulse-result ${lastEntry.result}">
-        <i aria-hidden="true"></i>
-        <strong>${translate(`shot.${lastEntry.result}`)}</strong>
-      </div>
-      <small>${nextAction}</small>
-      ${metrics}
-      ${liveStats}
-      ${momentum}
-      ${fleet}
-      ${target}
+      ${expanded
+        ? `
+          <div class="battle-command-details" id="battle-command-details">
+            <div class="battle-command-intel">
+              ${renderBattleCommandMetrics({ targetDisabled, salvoRemaining, tacticalAnalysis })}
+              ${renderBattleMomentum(log, playerId)}
+              ${renderFleetIntel(log, playerId, ownBoard, { showEnemySunk: false })}
+              ${renderTargetIntel(targetBoard)}
+            </div>
+            ${renderTacticalAdvisor(tacticalAnalysis, { disabled: targetDisabled, targetAction })}
+          </div>
+        `
+        : ""}
     </section>
   `;
 }
 
-function renderBattlePulseMetrics({ targetDisabled, salvoRemaining, tacticalAnalysis }) {
+function renderBattleCommandSummary(log, playerId) {
+  const lastEntry = visibleBattleLog(log)[0];
+  const event = lastEntry
+    ? `
+      <div class="battle-command-event">
+        <span>${translate("battle.lastShot")}</span>
+        <strong>${playerName(lastEntry.playerId)} · ${formatCoordinate(lastEntry.coordinate)}</strong>
+      </div>
+      <div class="battle-command-result ${lastEntry.result}">
+        <i aria-hidden="true"></i>
+        <strong>${translate(`shot.${lastEntry.result}`)}</strong>
+      </div>
+    `
+    : `
+      <div class="battle-command-event">
+        <span>${translate("battle.awaitingShot")}</span>
+        <strong>${translate("battle.nextAction")}</strong>
+      </div>
+    `;
+  return `
+    <div class="battle-command-summary" aria-live="polite">
+      ${event}
+      ${renderBattleLiveStats(log, playerId)}
+    </div>
+  `;
+}
+
+function renderBattleCommandMetrics({ targetDisabled, salvoRemaining, tacticalAnalysis }) {
   const priorityCount = tacticalAnalysis?.priorityTargets?.length ?? 0;
   return `
-    <div class="battle-pulse-metrics" aria-label="${translate("battle.nextAction")}">
+    <div class="battle-command-metrics" aria-label="${translate("battle.nextAction")}">
       <span>${translate(targetDisabled ? "battle.paused" : "battle.ready")}</span>
       <span>${translate("game.salvoShots", { count: salvoRemaining })}</span>
       <span>${translate("battle.priorityCount", { count: priorityCount })}</span>
@@ -2630,11 +2654,11 @@ function renderBattleLiveStats(log, playerId) {
   `;
 }
 
-function renderFleetIntel(log, playerId, ownBoard) {
+function renderFleetIntel(log, playerId, ownBoard, { showEnemySunk = true } = {}) {
   const intel = fleetIntel(log, playerId, ownBoard);
   return `
     <div class="battle-fleet-intel" aria-label="${translate("battle.fleetIntel")}">
-      <span>${translate("battle.enemySunk")}: <strong>${intel.enemySunk}</strong></span>
+      ${showEnemySunk ? `<span>${translate("battle.enemySunk")}: <strong>${intel.enemySunk}</strong></span>` : ""}
       <span>${translate("battle.ownAfloat")}: <strong>${intel.ownAfloat}/${intel.ownTotal}</strong></span>
     </div>
   `;
@@ -2667,43 +2691,16 @@ function renderBattleMomentum(log, playerId) {
 }
 
 function renderTacticalAdvisor(analysis, { disabled = false, targetAction = "shot" } = {}) {
-  const expanded = state.tacticalAdvisorOpen;
-  const toggleLabel = translate(expanded ? "tactics.collapse" : "tactics.expand");
-  if (!expanded) {
-    return `
-      <section class="tactical-advisor is-collapsed" aria-label="${translate("tactics.title")}">
-        <button
-          class="tactical-advisor-toggle tactical-advisor-compact-toggle"
-          data-action="toggle-tactical-advisor"
-          aria-expanded="false"
-          aria-label="${translate("tactics.expand")}"
-        >
-          ${translate("tactics.expand")}
-        </button>
-      </section>
-    `;
-  }
-
   const priority = analysis.priorityTargets.length
     ? analysis.priorityTargets.slice(0, 3).map(formatCoordinate).join(" · ")
     : translate("tactics.noPriority");
   return `
-    <section class="tactical-advisor ${disabled ? "is-paused" : ""} is-expanded" aria-label="${translate("tactics.title")}">
-      <div class="tactical-advisor-heading">
-        <div class="tactical-advisor-title">
-          <span>${translate("tactics.title")}</span>
-          <strong>${translate(`tactics.recommendation.${analysis.recommendationId}`)}</strong>
-        </div>
-        <button
-          class="tactical-advisor-toggle"
-          data-action="toggle-tactical-advisor"
-          aria-expanded="${expanded}"
-          aria-label="${toggleLabel}"
-        >
-          ${toggleLabel}
-        </button>
+    <section class="battle-command-tactics ${disabled ? "is-paused" : ""}" aria-label="${translate("tactics.title")}">
+      <div class="battle-command-tactics-title">
+        <span>${translate("tactics.title")}</span>
+        <strong>${translate(`tactics.recommendation.${analysis.recommendationId}`)}</strong>
       </div>
-      <div class="tactical-advisor-body">
+      <div class="battle-command-tactics-body">
         ${renderQuickFireButton(analysis.priorityTargets[0], { disabled, targetAction })}
         <div class="tactical-stats">
           ${renderTacticalStat("tactics.targets", analysis.availableTargets)}
@@ -3437,7 +3434,7 @@ root.addEventListener("click", async (event) => {
   if (action === "close-profile") closeProfilePopover();
   if (action === "toggle-leaderboard") await toggleLeaderboardPopover();
   if (action === "close-leaderboard") closeLeaderboardPopover();
-  if (action === "toggle-tactical-advisor") toggleTacticalAdvisor();
+  if (action === "toggle-battle-command-panel") toggleBattleCommandPanel();
   if (action === "menu") await requestLeaveBattle();
   if (action === "cancel-leave-battle") cancelLeaveBattle();
   if (action === "confirm-leave-battle") await confirmLeaveBattle();
@@ -3543,7 +3540,7 @@ function startSetup(mode) {
   state.boards = { p1: null, p2: null };
   state.game = null;
   state.battleTab = "target";
-  state.tacticalAdvisorOpen = true;
+  state.battleCommandPanelOpen = false;
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
   resetResultReplayPlayback();
@@ -3567,7 +3564,7 @@ function showOnline() {
   state.online.status = "";
   state.online.shareStatus = "";
   state.battleTab = "target";
-  state.tacticalAdvisorOpen = true;
+  state.battleCommandPanelOpen = false;
   state.resultModalDismissed = null;
   state.resultCopyStatus = "";
   resetResultReplayPlayback();
@@ -3618,8 +3615,8 @@ async function handlePlatformBack() {
     render();
     return true;
   }
-  if (isTacticalAdvisorVisible()) {
-    state.tacticalAdvisorOpen = false;
+  if (isBattleCommandPanelVisible()) {
+    state.battleCommandPanelOpen = false;
     render();
     return true;
   }
@@ -3642,9 +3639,9 @@ function isResultModalVisible() {
   return Boolean(resultKey && state.resultModalDismissed !== resultKey);
 }
 
-function isTacticalAdvisorVisible() {
+function isBattleCommandPanelVisible() {
   return Boolean(
-    state.tacticalAdvisorOpen
+    state.battleCommandPanelOpen
     && (
       state.screen === "playing"
       || (state.screen === "online" && state.online.snapshot)
@@ -3724,7 +3721,7 @@ function syncBackButtonVisibility() {
     || state.settingsOpen
     || state.profileOpen
     || state.leaderboardOpen
-    || isTacticalAdvisorVisible()
+    || isBattleCommandPanelVisible()
   );
   if (backButtonVisibility === enabled) return;
 
@@ -4328,8 +4325,8 @@ function supportLocale() {
   return "en";
 }
 
-function toggleTacticalAdvisor() {
-  state.tacticalAdvisorOpen = !state.tacticalAdvisorOpen;
+function toggleBattleCommandPanel() {
+  state.battleCommandPanelOpen = !state.battleCommandPanelOpen;
   render();
 }
 
@@ -4915,6 +4912,7 @@ async function onlineRematch() {
     state.presetId = preset.id;
     state.setupBoard = randomlyPlaceSetup(preset);
     state.setupSelectedShipId = firstUnplacedShipId(state.setupBoard);
+    state.battleCommandPanelOpen = false;
     state.resultModalDismissed = onlineResultKey(snapshot);
     state.resultCopyStatus = "";
     resetResultReplayPlayback();
@@ -5062,8 +5060,10 @@ function remoteHandlers() {
     onMessage(message) {
       if (message.type === "snapshot") {
         const finishedNow = state.online.snapshot?.phase !== "finished" && message.snapshot.phase === "finished";
+        const rematchStarted = state.online.snapshot?.phase === "finished" && message.snapshot.phase !== "finished";
         playOnlineSnapshotSounds(state.online.snapshot, message.snapshot);
         state.online.snapshot = message.snapshot;
+        if (rematchStarted) state.battleCommandPanelOpen = false;
         if (finishedNow && state.auth.user) {
           void refreshProfile();
         }

@@ -806,6 +806,13 @@ async function runOnlinePlayerNamesScenario() {
   assert.equal(app.getState().battleCommandPanelOpen, false);
   assert.match(targetPanelHtml(harness.root.innerHTML), /class="battle-command-panel is-collapsed"/);
   assert.match(targetPanelHtml(harness.root.innerHTML), /aria-expanded="false"/);
+  app.getState().battleCommandPanelOpen = true;
+  app.getState().online.snapshot = { ...app.getState().online.snapshot, phase: "finished" };
+  remoteHandlers.onMessage({
+    type: "snapshot",
+    snapshot: { ...app.getState().online.snapshot, phase: "lobby" },
+  });
+  assert.equal(app.getState().battleCommandPanelOpen, false, "remote rematches reset command details");
   await app.stop();
 }
 
@@ -847,6 +854,8 @@ async function runBattleCommandPanelScenario() {
   });
   assert.equal(app.getState().battleCommandPanelOpen, true);
   assert.match(targetPanelHtml(harness.root.innerHTML), /aria-expanded="true"/);
+  await harness.root.click("new-game");
+  assert.equal(app.getState().battleCommandPanelOpen, false, "new battles reset command details");
   await app.stop();
 }
 
@@ -1785,9 +1794,11 @@ async function runTelegramRuntimeScenario() {
   await harness.emitBack();
   assert.equal(app.getState().settingsOpen, false);
 
-  assert.equal(app.getState().tacticalAdvisorOpen, true);
+  assert.equal(app.getState().battleCommandPanelOpen, false);
+  await harness.root.click("toggle-battle-command-panel");
+  assert.equal(app.getState().battleCommandPanelOpen, true);
   await harness.emitBack();
-  assert.equal(app.getState().tacticalAdvisorOpen, false, "visible tactical coaching collapses");
+  assert.equal(app.getState().battleCommandPanelOpen, false, "visible battle command details collapse");
   assert.equal(app.getState().screen, "playing");
   await harness.emitBack();
   assert.equal(app.getState().screen, "menu");

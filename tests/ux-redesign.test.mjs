@@ -85,26 +85,28 @@ test("battlefield prioritizes the opponent board and keeps own fleet/log seconda
   assert.match(css, /\.own-minimap/);
 });
 
-test("battlefield shows a compact last-shot pulse above the target board", () => {
-  assert.match(app, /function renderBattlePulse/);
-  assert.match(app, /renderBattlePulse\(log, \{ targetDisabled, salvoRemaining, tacticalAnalysis, playerId, ownBoard, targetBoard \}\)/);
+test("battlefield places one compact battle command panel below the target board", () => {
+  assert.match(app, /function renderBattleCommandPanel/);
+  assert.match(app, /renderBoard\(targetBoard,[\s\S]*?renderBattleCommandPanel\(log,/);
   assert.match(app, /visibleBattleLog\(log\)\[0\]/);
-  assert.match(app, /class="battle-pulse/);
-  assert.match(app, /class="battle-pulse-result/);
-  assert.match(app, /class="battle-pulse-metrics"/);
+  assert.match(app, /class="battle-command-panel/);
+  assert.match(app, /class="battle-command-summary"/);
+  assert.match(app, /class="battle-command-result/);
+  assert.match(app, /class="battle-command-metrics"/);
   assert.match(app, /battle\.lastShot/);
   assert.match(app, /battle\.awaitingShot/);
   assert.match(app, /battle\.ready/);
   assert.match(app, /battle\.paused/);
   assert.match(app, /battle\.priorityCount/);
-  assert.match(css, /\.battle-pulse/);
-  assert.match(css, /\.battle-pulse-result/);
-  assert.match(css, /\.battle-pulse-metrics/);
+  assert.match(css, /\.battle-command-panel/);
+  assert.match(css, /\.battle-command-summary/);
+  assert.match(css, /\.battle-command-result/);
+  assert.match(css, /\.battle-command-metrics/);
   assert.match(i18n, /"battle\.lastShot"/);
   assert.match(i18n, /"battle\.awaitingShot"/);
 });
 
-test("battle pulse shows live player accuracy and hit progress", () => {
+test("battle command summary shows live player accuracy and hit progress", () => {
   assert.match(app, /function renderBattleLiveStats/);
   assert.match(app, /summarizeBattleLog\(log, playerId\)/);
   assert.match(app, /class="battle-live-stats"/);
@@ -119,7 +121,7 @@ test("battle pulse shows live player accuracy and hit progress", () => {
   assert.match(i18n, /"battle\.sunk"/);
 });
 
-test("battle pulse shows a live momentum strip from battle pressure", () => {
+test("battle command details show a live momentum strip from battle pressure", () => {
   assert.match(app, /battleMomentum\(log, playerId\)/);
   assert.match(app, /function renderBattleMomentum/);
   assert.match(app, /class="battle-momentum/);
@@ -135,8 +137,8 @@ test("battle pulse shows a live momentum strip from battle pressure", () => {
   assert.match(i18n, /"battle\.momentum\.behind"/);
 });
 
-test("battle pulse shows compact fleet intel for sunk and afloat ships", () => {
-  assert.match(app, /renderBattlePulse\(log, \{ targetDisabled, salvoRemaining, tacticalAnalysis, playerId, ownBoard, targetBoard \}\)/);
+test("battle command details show compact fleet intel for sunk and afloat ships", () => {
+  assert.match(app, /renderBattleCommandPanel\(log,/);
   assert.match(app, /function renderFleetIntel/);
   assert.match(app, /fleetIntel\(log, playerId, ownBoard\)/);
   assert.match(app, /class="battle-fleet-intel"/);
@@ -468,9 +470,10 @@ test("training mode exposes a daily chain, streak, and award shelf", () => {
 test("battlefield exposes a live tactical advisor during battle", () => {
   assert.match(app, /analyzeTargetBoard/);
   assert.match(app, /function renderTacticalAdvisor/);
-  assert.match(app, /class="[^"]*tactical-advisor/);
+  assert.match(app, /class="battle-command-tactics/);
+  assert.doesNotMatch(app, /class="tactical-advisor/);
   assert.match(app, /tactics\.recommendation/);
-  assert.match(css, /\.tactical-advisor/);
+  assert.match(css, /\.battle-command-tactics/);
   assert.match(css, /\.tactical-stats/);
   assert.match(i18n, /"tactics\.title"/);
   assert.match(i18n, /"tactics\.recommendation\.finishDamaged"/);
@@ -509,29 +512,26 @@ test("tactical advisor exposes a one-tap recommended shot", () => {
   assert.match(i18n, /"tactics\.quickFire"/);
 });
 
-test("tactical advisor can collapse into a compact battle control", () => {
-  assert.match(app, /tacticalAdvisorOpen:\s*true/);
-  assert.match(app, /data-action="toggle-tactical-advisor"/);
+test("battle command panel starts collapsed and exposes manual details", () => {
+  assert.match(app, /battleCommandPanelOpen:\s*false/);
+  assert.match(app, /data-action="toggle-battle-command-panel"/);
   assert.match(app, /aria-expanded="\$\{expanded\}"/);
-  assert.match(app, /function toggleTacticalAdvisor/);
-  assert.match(app, /state\.tacticalAdvisorOpen = !state\.tacticalAdvisorOpen/);
-  assert.match(app, /class="tactical-advisor \$\{disabled \? "is-paused" : ""\} is-expanded"/);
-  assert.match(app, /class="tactical-advisor-body"/);
-  assert.match(css, /\.tactical-advisor-toggle/);
-  assert.match(css, /\.tactical-advisor\.is-collapsed/);
-  assert.match(i18n, /"tactics\.collapse"/);
-  assert.match(i18n, /"tactics\.expand"/);
+  assert.match(app, /aria-controls="battle-command-details"/);
+  assert.match(app, /function toggleBattleCommandPanel/);
+  assert.match(app, /state\.battleCommandPanelOpen = !state\.battleCommandPanelOpen/);
+  assert.match(app, /class="battle-command-details" id="battle-command-details"/);
+  assert.match(css, /\.battle-command-toggle/);
+  assert.match(css, /\.battle-command-panel\.is-collapsed/);
+  assert.match(i18n, /"battle\.details"/);
+  assert.match(i18n, /"battle\.hideDetails"/);
 });
 
-test("collapsed tactical advisor renders as a single compact toggle", () => {
-  assert.match(app, /if \(!expanded\) \{/);
-  assert.match(app, /class="tactical-advisor is-collapsed"/);
-  assert.match(app, /class="tactical-advisor-toggle tactical-advisor-compact-toggle"/);
-  assert.match(app, /aria-expanded="false"/);
-  assert.match(app, /aria-label="\$\{translate\("tactics\.expand"\)\}"/);
-  assert.match(css, /\.tactical-advisor-compact-toggle/);
-  assert.match(cssRule(".tactical-advisor.is-collapsed"), /padding:\s*0/);
-  assert.match(cssRule(".tactical-advisor.is-collapsed"), /background:\s*transparent/);
+test("collapsed battle command panel keeps the summary and omits expanded tactics", () => {
+  assert.match(app, /class="battle-command-summary" aria-live="polite"/);
+  assert.match(app, /expanded[\s\S]*?class="battle-command-details"/);
+  assert.match(app, /renderTacticalAdvisor\(tacticalAnalysis/);
+  assert.match(css, /\.battle-command-panel\.is-collapsed/);
+  assert.match(css, /\.battle-command-details/);
 });
 
 test("tactical priority hints do not mimic sunk or miss markers", () => {
@@ -582,7 +582,7 @@ test("mobile setup controls use compact topbar and full-width actions", () => {
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.topbar-controls\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\) auto auto;/);
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.settings-button strong\s*\{[\s\S]*?display:\s*none;/);
   assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.setup-primary-actions\s*\{[\s\S]*?grid-template-columns:\s*1fr;/);
-  assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.battle-pulse\s*\{[\s\S]*?grid-template-columns:\s*1fr;/);
+  assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.battle-command-topline\s*\{[\s\S]*?grid-template-columns:\s*1fr;/);
   assert.match(css, /\.setup-action-ready:not\(:disabled\)/);
 });
 
@@ -787,7 +787,7 @@ test("platform back navigation uses ordered dialogs, overlays, and destructive l
   const settings = back.indexOf("state.settingsOpen");
   const profile = back.indexOf("state.profileOpen");
   const leaderboard = back.indexOf("state.leaderboardOpen");
-  const coaching = back.indexOf("isTacticalAdvisorVisible()");
+  const coaching = back.indexOf("isBattleCommandPanelVisible()");
   const replay = back.indexOf('state.screen === "replay"');
   const archive = back.indexOf('state.screen === "archive"');
   const battle = back.indexOf('["setup", "playing", "pass", "training", "online"]');
@@ -914,8 +914,7 @@ test("mobile layout applies safe areas, compact banners, and fluid battle boards
     ".ghost-button",
     ".orientation-button",
     ".ship-choice",
-    ".tactical-advisor-toggle",
-    ".tactical-advisor-compact-toggle",
+    ".battle-command-toggle",
     ".tactical-quick-fire",
     ".priority-target-chip",
     ".battle-coaching .training-link",
