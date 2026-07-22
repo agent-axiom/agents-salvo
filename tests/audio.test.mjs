@@ -8,6 +8,7 @@ import * as audioCore from "../src/core/audio.js";
 import { createAudioController } from "../src/audio.js";
 
 const { soundPresets, musicPreset, isKnownSound } = audioCore;
+const combatSoundNames = ["shot", "miss", "hit", "sunk"];
 
 test("soundPresets include all gameplay and interface events", () => {
   assert.deepEqual(
@@ -54,17 +55,60 @@ test("source tree keeps mp3 assets limited to the two menu loops", async () => {
   ]);
 });
 
-test("each synthetic sound preset has playable oscillator steps", () => {
+test("each synthetic sound preset has playable sources", () => {
   for (const [name, preset] of Object.entries(soundPresets)) {
     assert.equal(isKnownSound(name), true);
     assert.ok(preset.duration > 0, `${name} duration should be positive`);
-    assert.ok(preset.steps.length > 0, `${name} should have steps`);
-    for (const step of preset.steps) {
-      assert.ok(step.frequency > 0, `${name} step frequency should be positive`);
-      assert.ok(step.duration > 0, `${name} step duration should be positive`);
-      assert.match(step.type, /^(sine|square|sawtooth|triangle)$/);
+    const sources = preset.steps ?? preset.layers;
+    assert.ok(sources?.length > 0, `${name} should have sound sources`);
+    for (const source of sources) {
+      assert.ok(source.duration > 0, `${name} source duration should be positive`);
+      if (preset.steps || source.kind === "tone") {
+        assert.ok(source.frequency > 0, `${name} tone frequency should be positive`);
+        assert.match(source.type, /^(sine|square|sawtooth|triangle)$/);
+      }
     }
   }
+});
+
+test("combat presets use bounded cinematic layers", () => {
+  for (const name of combatSoundNames) {
+    const preset = soundPresets[name];
+    assert.ok(preset.duration > 0);
+    assert.ok(preset.duration <= 1.5);
+    assert.ok(preset.layers.length >= 2);
+
+    for (const layer of preset.layers) {
+      assert.match(layer.kind, /^(tone|noise)$/);
+      assert.ok(layer.delay >= 0);
+      assert.ok(layer.duration > 0);
+      assert.ok(layer.delay + layer.duration <= preset.duration + 1e-9);
+      assert.ok(layer.attack > 0 && layer.attack < layer.duration);
+      assert.ok(layer.release > 0 && layer.release <= layer.duration);
+      assert.ok(layer.gain > 0 && layer.gain <= 1);
+    }
+  }
+});
+
+test("combat presets encode a cannon, delayed outcomes, and staged destruction", () => {
+  const shot = soundPresets.shot;
+  const sunk = soundPresets.sunk;
+
+  assert.equal(shot.duration, 0.58);
+  assert.ok(shot.layers.some((layer) => layer.kind === "noise"));
+  assert.ok(
+    shot.layers.some(
+      (layer) => layer.kind === "tone" && Math.min(layer.frequency, layer.endFrequency) < 100,
+    ),
+  );
+
+  for (const name of ["miss", "hit", "sunk"]) {
+    assert.equal(Math.min(...soundPresets[name].layers.map((layer) => layer.delay)), 0.1);
+  }
+
+  assert.equal(sunk.duration, 1.4);
+  assert.ok(sunk.layers.some((layer) => layer.delay === 0.32));
+  assert.ok(sunk.layers.filter((layer) => layer.kind === "noise").length >= 3);
 });
 
 test("musicPreset is a looping menu melody", () => {
