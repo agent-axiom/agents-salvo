@@ -29,6 +29,7 @@ const scenarios = {
   "telegram-bootstrap": runTelegramBootstrapScenario,
   "max-bootstrap": runMaxBootstrapScenario,
   "online-player-names": runOnlinePlayerNamesScenario,
+  "battle-command-panel": runBattleCommandPanelScenario,
   "telegram-launch-routing": runTelegramLaunchRoutingScenario,
   "telegram-launch-retry": runTelegramLaunchRetryScenario,
   "telegram-launch-authority": runTelegramLaunchAuthorityScenario,
@@ -802,6 +803,50 @@ async function runOnlinePlayerNamesScenario() {
   assert.doesNotMatch(harness.root.innerHTML, /You are Player 2/);
   assert.match(harness.root.innerHTML, /Opponent: Host &lt;Captain&gt;/);
   assert.doesNotMatch(harness.root.innerHTML, /Host <Captain>/);
+  assert.equal(app.getState().battleCommandPanelOpen, false);
+  assert.match(targetPanelHtml(harness.root.innerHTML), /class="battle-command-panel is-collapsed"/);
+  assert.match(targetPanelHtml(harness.root.innerHTML), /aria-expanded="false"/);
+  await app.stop();
+}
+
+async function runBattleCommandPanelScenario() {
+  const { bootSalvoApp } = await import("../src/app.js");
+  const harness = createAppHarness();
+  const app = bootSalvoApp(harness.dependencies);
+  await app.startup.done;
+
+  await harness.root.click("start-agent");
+  await harness.root.click("ready");
+
+  let targetPanel = targetPanelHtml(harness.root.innerHTML);
+  assert.ok(targetPanel.indexOf("board-panel") < targetPanel.indexOf("battle-command-panel"));
+  assert.equal(app.getState().battleCommandPanelOpen, false);
+  assert.match(targetPanel, /class="battle-command-summary"/);
+  assert.match(targetPanel, /data-action="toggle-battle-command-panel"/);
+  assert.match(targetPanel, /aria-expanded="false"/);
+  assert.doesNotMatch(targetPanel, /class="battle-command-details"/);
+
+  const targetShip = app.getState().game.players.p2.board.ships[0];
+  await harness.root.click("shot", {
+    row: String(targetShip.cells[0].row),
+    col: String(targetShip.cells[0].col),
+  });
+  assert.equal(app.getState().battleCommandPanelOpen, false);
+
+  await harness.root.click("toggle-battle-command-panel");
+  targetPanel = targetPanelHtml(harness.root.innerHTML);
+  assert.equal(app.getState().battleCommandPanelOpen, true);
+  assert.match(targetPanel, /aria-expanded="true"/);
+  assert.match(targetPanel, /class="battle-command-details"/);
+  assert.match(targetPanel, /class="battle-command-tactics/);
+  assert.doesNotMatch(targetPanel, /class="tactical-advisor/);
+
+  await harness.root.click("shot", {
+    row: String(targetShip.cells[1].row),
+    col: String(targetShip.cells[1].col),
+  });
+  assert.equal(app.getState().battleCommandPanelOpen, true);
+  assert.match(targetPanelHtml(harness.root.innerHTML), /aria-expanded="true"/);
   await app.stop();
 }
 
@@ -2999,6 +3044,13 @@ function response(payload, { ok = true, status = 200 } = {}) {
       return payload;
     },
   };
+}
+
+function targetPanelHtml(html) {
+  const start = html.indexOf('class="target-primary');
+  const end = html.indexOf('<aside class="battle-side"', start);
+  assert.ok(start >= 0 && end > start);
+  return html.slice(start, end);
 }
 
 async function clientResult(result) {

@@ -56,6 +56,10 @@ test("actual app names online players from the viewer perspective", async () => 
   await runScenarioInChild("online-player-names");
 });
 
+test("actual battle UI keeps one command panel below the opponent board", async () => {
+  await runScenarioInChild("battle-command-panel");
+});
+
 test("actual app routes Telegram room and replay launches after authentication", async () => {
   await runScenarioInChild("telegram-launch-routing");
 });
