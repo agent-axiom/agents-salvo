@@ -157,6 +157,62 @@ test("play uses the webkit audio context fallback", async () => {
   });
 });
 
+test("combat sounds share one protected output bus and one noise buffer", async () => {
+  const audio = audioHarness();
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+    await controller.play("shot", true);
+    await controller.play("sunk", true);
+  });
+
+  assert.equal(audio.compressors.length, 1);
+  assert.equal(audio.buffers.length, 1);
+  assert.ok(audio.bufferSources.length >= 4);
+  assert.ok(audio.filters.length >= 4);
+  assert.ok(audio.oscillators.length >= 5);
+
+  const [compressor] = audio.compressors;
+  assert.deepEqual(compressor.parameterCalls.threshold, [
+    ["setValueAtTime", -18, 0],
+  ]);
+  assert.deepEqual(compressor.parameterCalls.knee, [["setValueAtTime", 12, 0]]);
+  assert.deepEqual(compressor.parameterCalls.ratio, [["setValueAtTime", 6, 0]]);
+  assert.deepEqual(compressor.parameterCalls.attack, [
+    ["setValueAtTime", 0.003, 0],
+  ]);
+  assert.deepEqual(compressor.parameterCalls.release, [
+    ["setValueAtTime", 0.25, 0],
+  ]);
+  assert.ok(
+    audio.gains.some(({ parameterCalls }) =>
+      parameterCalls.some(
+        ([method, value, time]) => method === "setValueAtTime" && value === 0.68 && time === 0,
+      ),
+    ),
+  );
+});
+
+test("combat renderer schedules sweeps, delayed impacts, and finite stops", async () => {
+  const audio = audioHarness();
+
+  await withAudioGlobals(audio.globals, async () => {
+    const controller = createAudioController();
+    await controller.play("sunk", true);
+  });
+
+  assert.ok(
+    audio.frequencyCalls.some(
+      ([method, value, time]) =>
+        method === "exponentialRampToValueAtTime" && value === 42 && time > 0,
+    ),
+  );
+  assert.ok(audio.sourceStarts.some((time) => time === 0.1));
+  assert.ok(audio.sourceStarts.some((time) => time === 0.32));
+  assert.ok(audio.sourceStops.length > 0);
+  assert.ok(audio.sourceStops.every((time) => Number.isFinite(time) && time <= 1.42));
+});
+
 test("menu music exits cleanly when no audio implementation is available", async () => {
   const audio = audioHarness();
   audio.globals.Audio = undefined;
@@ -477,38 +533,135 @@ function deferred() {
   return { promise, reject, resolve };
 }
 
+function fakeAudioParam(calls) {
+  return {
+    exponentialRampToValueAtTime(value, time) {
+      calls.push(["exponentialRampToValueAtTime", value, time]);
+    },
+    linearRampToValueAtTime(value, time) {
+      calls.push(["linearRampToValueAtTime", value, time]);
+    },
+    setValueAtTime(value, time) {
+      calls.push(["setValueAtTime", value, time]);
+    },
+  };
+}
+
 function audioHarness() {
+  const buffers = [];
+  const bufferSources = [];
+  const compressors = [];
   const contexts = [];
   const contextCalls = [];
   const elements = [];
   const elementCalls = [];
+  const filters = [];
+  const frequencyCalls = [];
+  const gains = [];
+  const oscillators = [];
+  const sourceStarts = [];
+  const sourceStops = [];
 
   class FakeAudioContext {
     constructor() {
       this.currentTime = 0;
       this.destination = {};
+      this.sampleRate = 48000;
       this.state = "running";
       contexts.push(this);
     }
 
     createOscillator() {
-      return {
+      const oscillator = {
         connect() {},
-        frequency: { setValueAtTime() {} },
-        start() {},
-        stop() {},
+        frequency: fakeAudioParam(frequencyCalls),
+        start(time) {
+          sourceStarts.push(time);
+        },
+        stop(time) {
+          sourceStops.push(time);
+        },
         type: "sine",
       };
+      oscillators.push(oscillator);
+      return oscillator;
     }
 
     createGain() {
-      return {
+      const parameterCalls = [];
+      const gain = {
         connect() {},
-        gain: {
-          exponentialRampToValueAtTime() {},
-          setValueAtTime() {},
+        gain: fakeAudioParam(parameterCalls),
+        parameterCalls,
+      };
+      gains.push(gain);
+      return gain;
+    }
+
+    createBuffer(channels, frameCount, sampleRate) {
+      const channelData = new Float32Array(frameCount);
+      const buffer = {
+        channels,
+        frameCount,
+        getChannelData(channel) {
+          assert.equal(channel, 0);
+          return channelData;
+        },
+        sampleRate,
+      };
+      buffers.push(buffer);
+      return buffer;
+    }
+
+    createBufferSource() {
+      const source = {
+        buffer: null,
+        connect() {},
+        start(time) {
+          sourceStarts.push(time);
+        },
+        stop(time) {
+          sourceStops.push(time);
         },
       };
+      bufferSources.push(source);
+      return source;
+    }
+
+    createBiquadFilter() {
+      const frequencyParameterCalls = [];
+      const qParameterCalls = [];
+      const filter = {
+        connect() {},
+        frequency: fakeAudioParam(frequencyParameterCalls),
+        frequencyParameterCalls,
+        Q: fakeAudioParam(qParameterCalls),
+        qParameterCalls,
+        type: "lowpass",
+      };
+      filters.push(filter);
+      return filter;
+    }
+
+    createDynamicsCompressor() {
+      const parameterCalls = {
+        attack: [],
+        knee: [],
+        ratio: [],
+        release: [],
+        threshold: [],
+      };
+      const compressor = {
+        attack: fakeAudioParam(parameterCalls.attack),
+        connect() {},
+        knee: fakeAudioParam(parameterCalls.knee),
+        parameterCalls,
+        ratio: fakeAudioParam(parameterCalls.ratio),
+        release: fakeAudioParam(parameterCalls.release),
+        threshold: fakeAudioParam(parameterCalls.threshold),
+      };
+      compressors.push(compressor);
+      return compressor;
     }
 
     async suspend() {
@@ -542,10 +695,16 @@ function audioHarness() {
   }
 
   return {
+    buffers,
+    bufferSources,
+    compressors,
     contexts,
     contextCalls,
     elements,
     elementCalls,
+    filters,
+    frequencyCalls,
+    gains,
     globals: {
       Audio: FakeAudio,
       window: {
@@ -556,6 +715,9 @@ function audioHarness() {
         },
       },
     },
+    oscillators,
+    sourceStarts,
+    sourceStops,
   };
 }
 
