@@ -580,6 +580,11 @@ html[data-runtime="max"] .shell {
   display: none;
 }
 
+.settings-build-id {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .settings-panel-header,
 .settings-row {
   display: flex;
@@ -5374,9 +5379,9 @@ html[data-runtime="telegram"] .stars-support-dialog {
   --chart-water: #f7f5ee;
   --chart-depth: #e9eeeb;
   --chart-ink: #254c77;
-  --chart-grid: rgba(37, 76, 119, 0.19);
+  --chart-grid: rgba(37, 76, 119, 0.66);
   --chart-frame: rgba(37, 76, 119, 0.32);
-  --chart-rail: #60788b;
+  --chart-rail: #536b79;
   --chart-miss: #527d96;
   --chart-hit: #bc4936;
   --chart-hit-wash: rgba(188, 73, 54, 0.09);
@@ -5387,7 +5392,7 @@ html[data-runtime="telegram"] .stars-support-dialog {
   --chart-water: #0b2833;
   --chart-depth: #123c46;
   --chart-ink: #c8e5ee;
-  --chart-grid: rgba(139, 195, 207, 0.16);
+  --chart-grid: rgba(139, 195, 207, 0.65);
   --chart-frame: rgba(139, 195, 207, 0.38);
   --chart-rail: #95b5c0;
   --chart-miss: #aad5e4;
