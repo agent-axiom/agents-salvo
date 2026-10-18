@@ -69,7 +69,7 @@ test("Android release identity is stable and production signed", () => {
   assert.match(gradle, /SALVO_VERSION_CODE/);
   assert.match(gradle, /def\s+defaultVersionCode\s*=\s*1\b/);
   assert.match(gradle, /versionCode\s+appVersionCode\b/);
-  assert.match(gradle, /versionName\s+["']1\.0\.0["']/);
+  assert.match(gradle, /versionName\s+["']1\.1\.0["']/);
 
   for (const variable of [
     "SALVO_RELEASE_KEYSTORE",
@@ -127,7 +127,7 @@ function validCommandRunner(overrides = {}) {
       return { status: 0, stdout: `${overrides.versionCode ?? "1"}\n`, stderr: "" };
     }
     if (invocation.includes("version-name")) {
-      return { status: 0, stdout: `${overrides.versionName ?? "1.0.0"}\n`, stderr: "" };
+      return { status: 0, stdout: `${overrides.versionName ?? "1.1.0"}\n`, stderr: "" };
     }
     if (command === "apksigner") {
       if (overrides.legacySigner && args.includes("--print-certs-pem")) {
@@ -329,7 +329,7 @@ test("release verifier writes a reproducible SHA-256 sidecar", () => {
 
   assert.equal(result.applicationId, "io.github.agentaxiom.salvo");
   assert.equal(result.versionCode, 1);
-  assert.equal(result.versionName, "1.0.0");
+  assert.equal(result.versionName, "1.1.0");
   assert.equal(result.certificateSha256, ANDROID_RELEASE_CERTIFICATE_SHA256);
   assert.match(result.sha256, /^[a-f0-9]{64}$/);
   assert.equal(
@@ -357,7 +357,7 @@ elif [ "$2" = application-id ]; then
 elif [ "$2" = version-code ]; then
   echo 1
 else
-  echo 1.0.0
+  echo 1.1.0
 fi
 `,
   );
@@ -393,7 +393,7 @@ echo 'Signer #1 certificate SHA-256 digest: ${ANDROID_RELEASE_CERTIFICATE_SHA256
     },
   );
   assert.equal(success.status, 0, success.stderr);
-  assert.match(success.stdout, /Verified app-release\.apk \(io\.github\.agentaxiom\.salvo 1\.0\.0, code 1\)/);
+  assert.match(success.stdout, /Verified app-release\.apk \(io\.github\.agentaxiom\.salvo 1\.1\.0, code 1\)/);
   assert.match(success.stdout, /SHA-256 [a-f0-9]{64}/);
 
   const failure = spawnSync(process.execPath, [resolve("scripts/verify-android-release.mjs")], { encoding: "utf8" });
@@ -420,7 +420,7 @@ elif [ "$2" = application-id ]; then
 elif [ "$2" = version-code ]; then
   echo 1
 else
-  echo 1.0.0
+  echo 1.1.0
 fi
 `,
   );

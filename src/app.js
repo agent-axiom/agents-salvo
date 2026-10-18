@@ -1443,6 +1443,7 @@ function renderScreen() {
 }
 
 function renderMenu() {
+  if (state.visualStyle === "render") return renderCommandMenu();
   return `
     <section class="game-hub">
       <div class="hub-primary">
@@ -1491,6 +1492,66 @@ function renderMenu() {
       </figure>
     </section>
   `;
+}
+
+function renderCommandMenu() {
+  return `
+    <section class="command-hub" aria-labelledby="command-title">
+      <div class="command-hero">
+        <img class="command-art" src="${assetUrl("./assets/images/backgrounds/command-ocean.webp")}" alt="" width="1600" height="900" fetchpriority="high" decoding="async">
+        <div class="command-hero-content">
+          <span class="command-eyebrow"><i aria-hidden="true"></i>${translate("hub.commandKicker")}</span>
+          <h2 id="command-title">${translate("hub.headline")}<br><span>${translate("hub.headlineAccent")}</span></h2>
+          <p>${translate("hub.commandDescription")}</p>
+          <button class="command-launch" data-action="start-agent">
+            ${commandIcon("play")}
+            <span><strong>${translate("hub.play")}</strong><small>${translate("hub.playDescription")}</small></span>
+            <span class="command-arrow" aria-hidden="true">↗</span>
+          </button>
+          <span class="command-hero-note">${translate("hub.commandNote")}</span>
+        </div>
+        <div class="command-art-signature" aria-hidden="true"><span>+ &nbsp; SALVO</span><i></i><span>01 / 04</span></div>
+      </div>
+      <div class="command-section-label"><span>${translate("mode.choose")}</span><i aria-hidden="true"></i><span>02 — 04</span></div>
+      <div class="command-modes">
+        ${[
+          ["show-online", "online", "signal", "02"],
+          ["start-training", "training", "target", "03"],
+          ["start-hotseat", "hotseat", "fleet", "04"],
+        ].map(([action, mode, icon, number]) => `
+          <button class="command-mode" data-action="${action}">
+            <span class="command-mode-icon">${commandIcon(icon)}</span>
+            <span class="command-mode-copy"><strong>${translate(`mode.${mode}`)}</strong><small>${translate(`hub.${mode}Description`)}</small></span>
+            <span class="command-mode-number" aria-hidden="true">${number}<i>↗</i></span>
+          </button>
+        `).join("")}
+      </div>
+      <div class="command-reference">
+        <details class="hub-rule-summary">
+          <summary><span>${translate("preset.title")}</span><strong>${translate(`preset.${state.presetId}.name`)}</strong></summary>
+          ${renderPresetSelector()}
+        </details>
+        <details class="rules-panel">
+          <summary>${translate("history.title")}<span aria-hidden="true">+</span></summary>
+          <div class="history-panel">
+            <span>${translate("history.kicker")}</span>
+            <p>${translate("history.body")}</p><p>${translate("history.body2")}</p>
+            <a href="${translate("history.sourceUrl")}" target="_blank" rel="noreferrer">${translate("history.source")}</a>
+          </div>
+        </details>
+      </div>
+    </section>
+  `;
+}
+
+function commandIcon(name) {
+  const paths = {
+    play: '<path d="m10 7 8 5-8 5Z"/>',
+    signal: '<circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4m8.4 0a6 6 0 0 0 0-8.4M5 5a10 10 0 0 0 0 14m14 0a10 10 0 0 0 0-14"/>',
+    target: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3"/>',
+    fleet: '<path d="m3 14 9-3 9 3-3 5H6Zm5-1V7h8v6M12 7V3m-8 18 2-1 3 1 3-1 3 1 3-1 2 1"/>',
+  };
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name]}</svg>`;
 }
 
 function renderReplayArchive() {

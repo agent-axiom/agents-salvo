@@ -131,7 +131,7 @@ jobs:
       - name: Upload signed RuStore package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: salvo-rustore-1.0.0-${{ github.run_number }}
+          name: salvo-rustore-1.1.0-${{ github.run_number }}
           path: |
             android/app/build/outputs/apk/release/app-release.apk
             android/app/build/outputs/apk/release/app-release.apk.sha256
