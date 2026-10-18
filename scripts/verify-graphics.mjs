@@ -91,6 +91,7 @@ async function verifyScenario({ name, viewport, theme, origin }) {
     await page.locator('[data-action="start-agent"]').click();
     await page.locator('[data-action="randomize"]').click();
     assert.equal(await page.locator('[data-action="ready"]').isEnabled(), true, "Random fleet should be playable");
+    await assertTextContrast(page, '[data-action="ready"]');
     await capture("setup");
 
     await page.locator('[data-action="ready"]').click();
@@ -105,6 +106,7 @@ async function verifyScenario({ name, viewport, theme, origin }) {
 
     await page.locator('.settings-button[data-action="toggle-settings"]').click();
     await page.locator(".settings-panel").waitFor({ state: "visible" });
+    await assertTextContrast(page, ".auth-privacy a");
     await capture("settings");
     await page.locator('[data-action="theme-toggle"]').click();
     assert.equal(await page.locator("html").getAttribute("data-theme"), theme === "light" ? "dark" : "light");
@@ -133,6 +135,10 @@ async function verifyScenario({ name, viewport, theme, origin }) {
     await page.screenshot({ path: resolve(output, `${name}-${screen}.png`), fullPage: true, animations: "disabled" });
     const dimensions = await page.evaluate(() => ({ viewport: innerWidth, content: document.documentElement.scrollWidth }));
     assert.ok(dimensions.content <= dimensions.viewport + 1, `${screen} overflows: ${JSON.stringify(dimensions)}`);
+    for (const tab of await page.locator('html[data-visual-style="render"] .battle-tabs button:visible').all()) {
+      const fits = await tab.evaluate((element) => element.scrollWidth <= element.clientWidth + 1);
+      assert.ok(fits, `${screen}: battle tab text should fit its button`);
+    }
     if (reducedMotion === "reduce") {
       const activeAnimations = await page.evaluate(() => document.getAnimations().filter((animation) => {
         const timing = animation.effect?.getComputedTiming();
@@ -142,4 +148,26 @@ async function verifyScenario({ name, viewport, theme, origin }) {
     }
     report.checks.push(`${screen}: screenshot and viewport fit`);
   }
+}
+
+async function assertTextContrast(page, selector) {
+  const ratio = await page.locator(selector).evaluate((element) => {
+    const rgb = (color) => color.match(/[\d.]+/g).map(Number);
+    const luminance = (channels) => channels.slice(0, 3).map((channel) => {
+      const value = channel / 255;
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+    const foreground = luminance(rgb(getComputedStyle(element).color));
+    let surface = element;
+    while (surface) {
+      const color = rgb(getComputedStyle(surface).backgroundColor);
+      if (color.length === 3 || color[3] === 1) {
+        const background = luminance(color);
+        return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+      }
+      surface = surface.parentElement;
+    }
+    return 0;
+  });
+  assert.ok(ratio >= 4.5, `${selector} text contrast ${ratio.toFixed(2)} should be at least 4.5:1`);
 }

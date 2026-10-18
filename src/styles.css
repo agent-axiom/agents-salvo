@@ -5249,7 +5249,7 @@ html[data-runtime="telegram"] .stars-support-dialog {
 }
 :root[data-visual-style="render"] button:hover:not(:disabled) { transform: none; }
 :root[data-visual-style="render"] button:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
-:root[data-visual-style="render"] :is(.primary-button, .ready-button) {
+:root[data-visual-style="render"] :is(.primary-button, .setup-action-ready:not(:disabled)) {
   --button-bg: var(--accent); --button-hover-bg: var(--accent-strong); --button-border: transparent;
   color: var(--primary-ink); box-shadow: none;
 }
@@ -5259,6 +5259,7 @@ html[data-runtime="telegram"] .stars-support-dialog {
 }
 :root[data-visual-style="render"] :is(.leaderboard-button, .settings-button) { border-color: var(--line); }
 :root[data-visual-style="render"] :is(.settings-panel, .profile-popover, .leaderboard-popover) { border-radius: 16px; box-shadow: 0 20px 60px rgba(3, 17, 26, 0.18); }
+:root[data-visual-style="render"] .auth-privacy a { color: var(--accent-strong); text-decoration: underline; }
 :root[data-visual-style="render"][data-theme] :is(.mode-panel, .pass-panel, .fleet-visual) { background: var(--surface); border: 1px solid var(--line); border-radius: var(--command-radius); box-shadow: var(--shadow); }
 
 .command-hub { display: grid; gap: 20px; }
@@ -5622,7 +5623,7 @@ html[data-runtime="telegram"] .stars-support-dialog {
 
 @media (max-width: 900px) {
   :root[data-visual-style="render"] .battle-tabs { gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; }
-  :root[data-visual-style="render"] .battle-tabs button { border: 0; box-shadow: none; background: transparent; }
+  :root[data-visual-style="render"] .battle-tabs button { min-height: 44px; padding: 8px 6px; border: 0; box-shadow: none; background: transparent; font-size: 14px; line-height: 1.25; }
   :root[data-visual-style="render"] .battle-tabs button.is-selected { color: var(--primary-ink); background: var(--accent); }
 }
 
