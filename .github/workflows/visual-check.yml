@@ -1,0 +1,51 @@
+name: Verify graphics
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "scripts/**"
+      - "package*.json"
+      - ".github/workflows/visual-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: graphics-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install project dependencies
+        run: npm ci
+      - name: Install browser verification tools
+        run: |
+          npm install --no-save --package-lock=false playwright@1.51.1
+          npx playwright install --with-deps chromium
+          node --input-type=module -e 'import { chromium } from "playwright"; console.log(`CHROME_BIN=${chromium.executablePath()}`)' >> "$GITHUB_ENV"
+      - name: Run existing tests
+        run: npm test
+      - name: Build production web app
+        env:
+          SALVO_BUILD_ID: ${{ github.sha }}
+        run: npm run build
+      - name: Verify desktop and mobile graphics
+        run: node scripts/verify-graphics.mjs
+      - name: Upload visual review evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: salvo-graphics-${{ github.event.pull_request.number }}
+          path: /tmp/salvo-graphics
+          if-no-files-found: warn
+          retention-days: 14
