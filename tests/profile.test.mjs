@@ -611,7 +611,8 @@ test("player profiles include competition rank, rating history, and best-of-thre
   );
 });
 
-test("leaderboard endpoint ranks online players by rating", async () => {
+test("leaderboard endpoint ranks online players by rating", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-07-06T12:00:00.000Z") });
   const db = new MemoryD1();
   await recordCompletedMatch(db, profileUser, {
     ...completedMatchPayload(),
