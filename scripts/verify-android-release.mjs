@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 export const ANDROID_RELEASE_APPLICATION_ID = "io.github.agentaxiom.salvo";
-export const ANDROID_RELEASE_VERSION_NAME = "1.0.0";
+export const ANDROID_RELEASE_VERSION_NAME = "1.1.0";
 export const ANDROID_MAXIMUM_VERSION_CODE = 2_100_000_000;
 export const ANDROID_RELEASE_CERTIFICATE_SHA256 = "ec4972020b0b437f83bd29315c5260e2c75c834ed5c4e3650121cd878cd71436";
 export const ANDROID_RELEASE_PERMISSIONS = Object.freeze([
