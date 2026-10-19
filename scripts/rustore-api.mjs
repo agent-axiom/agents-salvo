@@ -1,4 +1,5 @@
 import { pathToFileURL } from "node:url";
+import { resolveRuStoreReleaseNotes } from "./rustore-release-notes.mjs";
 
 import {
   checkRuStoreAccess,
@@ -62,7 +63,7 @@ export async function runRuStoreCli({
     const result = await operation({
       ...auth,
       developerEmail: requireValue(env.RUSTORE_DEVELOPER_EMAIL, "RuStore developer email"),
-      releaseNotes: requireValue(env.RUSTORE_RELEASE_NOTES, "RuStore release notes"),
+      releaseNotes: resolveRuStoreReleaseNotes({ override: env.RUSTORE_RELEASE_NOTES ?? "" }),
       apkPath: requireValue(env.RUSTORE_APK_PATH, "RuStore APK path"),
     });
     stdout.write(

@@ -9,7 +9,7 @@ on:
         type: boolean
         default: false
       release_notes:
-        description: Release notes for RuStore (required when submitting)
+        description: Optional release notes override (defaults to the store metadata)
         required: false
         type: string
 
@@ -38,6 +38,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+
+      - name: Validate release notes before building
+        if: ${{ inputs.submit_to_rustore }}
+        env:
+          RUSTORE_RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: node scripts/rustore-release-notes.mjs
 
       - name: Setup Java
         uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5

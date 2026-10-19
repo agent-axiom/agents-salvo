@@ -137,6 +137,17 @@ test("RuStore release submits the verified APK only after explicit confirmation"
   }
 });
 
+test("RuStore validates release notes before expensive build steps without credentials", () => {
+  const { workflow } = readWorkflow(workflowPath);
+  const steps = workflow.jobs.release.steps;
+  const index = steps.findIndex((step) => step.name === "Validate release notes before building");
+  assert.ok(index > steps.findIndex((step) => step.name === "Setup Node"));
+  assert.ok(index < steps.findIndex((step) => step.name === "Install dependencies"));
+  assert.equal(steps[index].if, "${{ inputs.submit_to_rustore }}");
+  assert.equal(steps[index].run, "node scripts/rustore-release-notes.mjs");
+  assert.deepEqual(steps[index].env, { RUSTORE_RELEASE_NOTES: "${{ inputs.release_notes }}" });
+});
+
 test("RuStore rollout is manual, protected, and limited to 25 or 100 percent", () => {
   const { source, workflow } = readWorkflow(rolloutWorkflowPath);
   const inputs = workflow.on.workflow_dispatch.inputs;
