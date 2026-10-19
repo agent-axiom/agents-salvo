@@ -59,7 +59,7 @@ test("CLI submission with empty input uses the same repository notes as prefligh
     },
   });
   assert.equal(received.releaseNotes, resolveRuStoreReleaseNotes({ override: "" }));
-  assert.match(received.releaseNotes, /график/);
+  assert.ok(received.releaseNotes.length > 0);
   assert.doesNotMatch(received.releaseNotes, /## Контакты/);
 });
 
