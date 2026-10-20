@@ -237,17 +237,20 @@ test("RuStore client sends exact list, draft, APK, moderation, and rollout reque
     (url, options) => {
       assert.equal(url, `${RUSTORE_API_BASE_URL}/public/v1/application/${RUSTORE_PACKAGE_NAME}/version`);
       assert.equal(options.method, "POST");
+      assert.equal(options.headers["Content-Type"], "application/json");
+      // Current official request example uses an object for developerContacts
+      // and does not include minAndroidVersion (the APK declares minSdkVersion):
+      // https://www.rustore.ru/help/work-with-rustore-api/api-upload-publication-app/create-draft-version
       assert.deepEqual(JSON.parse(options.body), {
         appName: "Залп",
         appType: "GAMES",
         whatsNew: "Исправлена авторизация и улучшено поле.",
         publishType: "INSTANTLY",
         partialValue: 5,
-        minAndroidVersion: 7,
-        developerContacts: [{
+        developerContacts: {
           email: "release@example.com",
           website: "https://agent-axiom.github.io/agents-salvo/",
-        }],
+        },
       });
       return ok(777);
     },
@@ -374,6 +377,61 @@ test("submitRuStoreUpdate refuses to create a draft before the first active vers
     /active version/i,
   );
   fetchImpl.assertDone();
+});
+
+test("submitRuStoreUpdate preserves an existing draft instead of implicitly replacing it", async () => {
+  const keys = createKeys();
+  const fetchImpl = queuedFetch([
+    tokenResponse(),
+    ok({ content: [{ packageName: RUSTORE_PACKAGE_NAME, appStatus: "ACTIVE" }] }),
+    ok({ content: [
+      { versionId: 5, versionStatus: "ACTIVE", versionCode: 5 },
+      { versionId: 900, versionStatus: "DRAFT", versionCode: 6 },
+    ] }),
+  ]);
+
+  await assert.rejects(
+    () => submitRuStoreUpdate({
+      keyId: TEST_KEY_ID,
+      privateKey: keys.privateKeyBase64,
+      developerEmail: "release@example.com",
+      releaseNotes: "Обновление",
+      apkPath: "/unused.apk",
+      fetchImpl,
+    }),
+    /draft 900 already exists.*inspect/i,
+  );
+  fetchImpl.assertDone();
+  assert.deepEqual(fetchImpl.calls.map(({ options }) => options.method), ["POST", "GET", "GET"]);
+});
+
+test("submitRuStoreUpdate stops after draft creation is rejected without uploading or deleting", async () => {
+  const keys = createKeys();
+  const fetchImpl = queuedFetch([
+    tokenResponse(),
+    ok({ content: [{ packageName: RUSTORE_PACKAGE_NAME, appStatus: "ACTIVE" }] }),
+    ok({ content: [{ versionId: 5, versionStatus: "ACTIVE", versionCode: 5 }] }),
+    jsonResponse({ code: "ERROR", message: "Invalid request format. Unexpected value", body: null }, 400),
+  ]);
+
+  await assert.rejects(
+    () => submitRuStoreUpdate({
+      keyId: TEST_KEY_ID,
+      privateKey: keys.privateKeyBase64,
+      developerEmail: "release@example.com",
+      releaseNotes: "Обновление",
+      apkPath: "/unused.apk",
+      fetchImpl,
+    }),
+    /Create RuStore draft failed: Invalid request format\. Unexpected value/,
+  );
+  fetchImpl.assertDone();
+  assert.equal(fetchImpl.calls.length, 4);
+  assert.equal(fetchImpl.calls.at(-1).options.method, "POST");
+  assert.equal(
+    fetchImpl.calls.at(-1).url,
+    `${RUSTORE_API_BASE_URL}/public/v1/application/${RUSTORE_PACKAGE_NAME}/version`,
+  );
 });
 
 test("submitRuStoreUpdate never deletes a version after moderation submission starts", async () => {
