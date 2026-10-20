@@ -200,8 +200,7 @@ export function createRuStoreClient({
           whatsNew,
           publishType: "INSTANTLY",
           partialValue: RUSTORE_INITIAL_ROLLOUT,
-          minAndroidVersion: 7,
-          developerContacts: [{ email, website: RUSTORE_WEBSITE }],
+          developerContacts: { email, website: RUSTORE_WEBSITE },
         },
       });
       const versionId = typeof payload.body === "object" ? payload.body?.versionId : payload.body;
@@ -292,6 +291,13 @@ export async function submitRuStoreUpdate(options) {
   const versions = await client.listVersions();
   if (!versions.some((version) => ["ACTIVE", "PARTIAL_ACTIVE"].includes(version?.versionStatus))) {
     throw new RuStoreApiError("RuStore API publishing requires an existing active version.");
+  }
+  const existingDraft = versions.find((version) => version?.versionStatus === "DRAFT");
+  if (existingDraft) {
+    // Creating a new draft implicitly deletes the previous one in RuStore.
+    throw new RuStoreApiError(
+      `RuStore draft ${existingDraft.versionId} already exists; inspect it before retrying to avoid replacing it.`,
+    );
   }
   let createdVersionId = null;
   try {
