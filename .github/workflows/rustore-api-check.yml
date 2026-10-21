@@ -1,7 +1,12 @@
-name: Check RuStore API Access
+name: Check RuStore API and Version Status
 
 on:
   workflow_dispatch:
+    inputs:
+      version_id:
+        description: Optional RuStore version ID to read its current status (no publication)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -12,7 +17,7 @@ concurrency:
 
 jobs:
   check:
-    name: Verify RuStore credentials and application access
+    name: Read RuStore application or version status
     if: github.ref == 'refs/heads/main'
     environment: rustore-production
     runs-on: ubuntu-latest
@@ -34,9 +39,20 @@ jobs:
         run: node --test tests/rustore-api-client.test.mjs
 
       - name: Check RuStore API access
+        if: ${{ inputs.version_id == '' }}
         env:
           RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
           RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           npm run rustore:api:check | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Read current RuStore version status
+        if: ${{ inputs.version_id != '' }}
+        env:
+          RUSTORE_KEY_ID: ${{ secrets.RUSTORE_KEY_ID }}
+          RUSTORE_PRIVATE_KEY: ${{ secrets.RUSTORE_PRIVATE_KEY }}
+          RUSTORE_VERSION_ID: ${{ inputs.version_id }}
+        run: |
+          set -euo pipefail
+          node scripts/rustore-api.mjs status | tee -a "$GITHUB_STEP_SUMMARY"
