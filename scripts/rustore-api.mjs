@@ -4,11 +4,13 @@ import { resolveRuStoreReleaseNotes } from "./rustore-release-notes.mjs";
 import {
   checkRuStoreAccess,
   expandRuStoreRollout,
+  getRuStoreVersionStatus,
   submitRuStoreUpdate,
 } from "./rustore-api-client.mjs";
 
 const DEFAULT_OPERATIONS = Object.freeze({
   check: checkRuStoreAccess,
+  status: getRuStoreVersionStatus,
   submit: submitRuStoreUpdate,
   rollout: expandRuStoreRollout,
 });
@@ -44,7 +46,7 @@ export async function runRuStoreCli({
 } = {}) {
   const command = argv[0];
   if (!Object.hasOwn(DEFAULT_OPERATIONS, command)) {
-    throw new Error("RuStore command must be check, submit, or rollout.");
+    throw new Error("RuStore command must be check, status, submit, or rollout.");
   }
 
   const operation = operations[command] ?? DEFAULT_OPERATIONS[command];
@@ -67,8 +69,24 @@ export async function runRuStoreCli({
       apkPath: requireValue(env.RUSTORE_APK_PATH, "RuStore APK path"),
     });
     stdout.write(
-      `Submitted ${result.packageName} version ${result.versionId} for moderation at ${result.rollout}%.\n`,
+      `RuStore accepted the moderation request for ${result.packageName} version ${result.versionId} at ${result.rollout}% rollout. Current version status has not been checked.\n`,
     );
+    return result;
+  }
+
+  if (command === "status") {
+    const result = await operation({
+      ...auth,
+      versionId: positiveInteger(env.RUSTORE_VERSION_ID, "RuStore version ID"),
+    });
+    const display = (value) => value == null ? "not reported" : JSON.stringify(value);
+    const rollout = result.partialValue == null ? "not reported" : `${display(result.partialValue)}%`;
+    stdout.write(`Application ID: ${display(result.appId)}.\n`);
+    stdout.write(
+      `RuStore version ${result.versionId} for ${result.packageName}: ${result.versionStatus}.\n`,
+    );
+    stdout.write(`Version name: ${display(result.versionName)}; code: ${display(result.versionCode)}.\n`);
+    stdout.write(`Sent for moderation: ${display(result.sendDateForModer)}; rollout: ${rollout}.\n`);
     return result;
   }
 

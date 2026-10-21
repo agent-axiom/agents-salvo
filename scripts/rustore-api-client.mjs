@@ -174,10 +174,10 @@ export function createRuStoreClient({
       return Array.isArray(payload?.body?.content) ? payload.body.content : [];
     },
 
-    async listVersions({ versionId } = {}) {
+    async listVersions({ versionId, allTestingTypes = false } = {}) {
       const query = versionId === undefined
-        ? "filterTestingType=RELEASE&page=0&size=100"
-        : `ids=${requirePositiveInteger(versionId, "RuStore version ID")}`;
+        ? `filterTestingType=${allTestingTypes ? "ALL" : "RELEASE"}&page=0&size=100`
+        : `ids=${requirePositiveInteger(versionId, "RuStore version ID")}${allTestingTypes ? "&filterTestingType=ALL" : ""}`;
       const payload = await request("List RuStore versions", `${versionPath}?${query}`);
       return Array.isArray(payload?.body?.content) ? payload.body.content : [];
     },
@@ -285,6 +285,33 @@ export async function checkRuStoreAccess(options) {
   };
 }
 
+export async function getRuStoreVersionStatus(options) {
+  const versionId = requirePositiveInteger(options.versionId, "RuStore version ID");
+  const client = await authenticatedClient(options);
+  const application = await requireScopedApplication(client, options.packageName);
+  // Include release and test versions, with no status filter or pagination for an exact ID.
+  // https://www.rustore.ru/help/work-with-rustore-api/api-upload-publication-app/get-version-status
+  const versions = await client.listVersions({ versionId, allTestingTypes: true });
+  const version = versions.find((candidate) => Number(candidate?.versionId) === versionId);
+  if (!version) {
+    throw new RuStoreApiError(`RuStore version ${versionId} was not found for ${application.packageName}.`);
+  }
+  if (typeof version.versionStatus !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(version.versionStatus)) {
+    throw new RuStoreApiError(`RuStore version ${versionId} returned an invalid version status.`);
+  }
+  const scalar = (value) => typeof value === "string" || typeof value === "number" ? value : null;
+  return {
+    appId: scalar(application.appId),
+    packageName: application.packageName,
+    versionId,
+    versionStatus: version.versionStatus,
+    versionName: scalar(version.versionName),
+    versionCode: scalar(version.versionCode),
+    sendDateForModer: scalar(version.sendDateForModer),
+    partialValue: scalar(version.partialValue),
+  };
+}
+
 export async function submitRuStoreUpdate(options) {
   const client = await authenticatedClient(options);
   await requireScopedApplication(client, options.packageName);
@@ -328,7 +355,7 @@ export async function submitRuStoreUpdate(options) {
     packageName: options.packageName ?? RUSTORE_PACKAGE_NAME,
     versionId: createdVersionId,
     rollout: RUSTORE_INITIAL_ROLLOUT,
-    status: "MODERATION",
+    status: "SUBMITTED",
   };
 }
 

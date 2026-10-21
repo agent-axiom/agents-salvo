@@ -12,6 +12,7 @@ import {
   createRuStoreClient,
   createRuStoreToken,
   expandRuStoreRollout,
+  getRuStoreVersionStatus,
   submitRuStoreUpdate,
 } from "../scripts/rustore-api-client.mjs";
 import { runRuStoreCli } from "../scripts/rustore-api.mjs";
@@ -318,6 +319,106 @@ test("checkRuStoreAccess authenticates and confirms the scoped application", asy
   fetchImpl.assertDone();
 });
 
+test("getRuStoreVersionStatus reads the exact version across testing types without changing it", async () => {
+  const keys = createKeys();
+  const fetchImpl = queuedFetch([
+    tokenResponse(),
+    ok({ content: [{ appId: 2063733095, packageName: RUSTORE_PACKAGE_NAME, appStatus: "ACTIVE", versionCode: 5 }] }),
+    (url, options) => {
+      assert.equal(
+        url,
+        `${RUSTORE_API_BASE_URL}/public/v1/application/${RUSTORE_PACKAGE_NAME}/version?ids=777&filterTestingType=ALL`,
+      );
+      assert.equal(options.method, "GET");
+      assert.equal(options.headers["Public-Token"], TEST_TOKEN);
+      assert.equal(options.body, undefined);
+      return ok({ content: [{
+        versionId: 777,
+        versionStatus: "PARTIAL_ACTIVE",
+        versionName: "1.1.0",
+        versionCode: 8,
+        sendDateForModer: "2026-10-20T12:45:32Z",
+        partialValue: 5,
+        developerContacts: { email: "private@example.com" },
+        internalData: TEST_TOKEN,
+      }] });
+    },
+  ]);
+
+  const result = await getRuStoreVersionStatus({
+    keyId: TEST_KEY_ID,
+    privateKey: keys.privateKeyBase64,
+    versionId: 777,
+    fetchImpl,
+  });
+
+  assert.deepEqual(result, {
+    appId: 2063733095,
+    packageName: RUSTORE_PACKAGE_NAME,
+    versionId: 777,
+    versionStatus: "PARTIAL_ACTIVE",
+    versionName: "1.1.0",
+    versionCode: 8,
+    sendDateForModer: "2026-10-20T12:45:32Z",
+    partialValue: 5,
+  });
+  assert.deepEqual(fetchImpl.calls.map(({ options }) => options.method), ["POST", "GET", "GET"]);
+  fetchImpl.assertDone();
+});
+
+test("getRuStoreVersionStatus distinguishes missing versions and invalid status from submission success", async () => {
+  const keys = createKeys();
+  const auth = { keyId: TEST_KEY_ID, privateKey: keys.privateKeyBase64 };
+  const invalidIdFetch = queuedFetch([]);
+  await assert.rejects(
+    () => getRuStoreVersionStatus({ ...auth, versionId: 0, fetchImpl: invalidIdFetch }),
+    /positive integer/i,
+  );
+  assert.equal(invalidIdFetch.calls.length, 0);
+
+  const inaccessibleFetch = queuedFetch([tokenResponse(), ok({ content: [] })]);
+  await assert.rejects(
+    () => getRuStoreVersionStatus({ ...auth, versionId: 777, fetchImpl: inaccessibleFetch }),
+    /cannot access/i,
+  );
+  assert.equal(inaccessibleFetch.calls.length, 2);
+
+  for (const [versions, pattern] of [
+    [[{ versionId: 778, versionStatus: "MODERATION" }], /777.*was not found/i],
+    [[{ versionId: 777 }], /invalid version status/i],
+    [[{ versionId: 777, versionStatus: "" }], /invalid version status/i],
+  ]) {
+    const fetchImpl = queuedFetch([
+      tokenResponse(),
+      ok({ content: [{ packageName: RUSTORE_PACKAGE_NAME }] }),
+      ok({ content: versions }),
+    ]);
+    await assert.rejects(
+      () => getRuStoreVersionStatus({ ...auth, versionId: 777, fetchImpl }),
+      pattern,
+    );
+    assert.equal(fetchImpl.calls.length, 3);
+    fetchImpl.assertDone();
+  }
+
+  const incompleteFetch = queuedFetch([
+    tokenResponse(),
+    ok({ content: [{ packageName: RUSTORE_PACKAGE_NAME }] }),
+    ok({ content: [{ versionId: 777, versionStatus: "AUTO_CHECK", versionName: { unexpected: true } }] }),
+  ]);
+  assert.deepEqual(await getRuStoreVersionStatus({ ...auth, versionId: 777, fetchImpl: incompleteFetch }), {
+    appId: null,
+    packageName: RUSTORE_PACKAGE_NAME,
+    versionId: 777,
+    versionStatus: "AUTO_CHECK",
+    versionName: null,
+    versionCode: null,
+    sendDateForModer: null,
+    partialValue: null,
+  });
+  incompleteFetch.assertDone();
+});
+
 test("submitRuStoreUpdate cleans up only the draft created by the failed operation", async () => {
   const directory = mkdtempSync(join(tmpdir(), "salvo-rustore-submit-"));
   const apkPath = join(directory, "app-release.apk");
@@ -492,7 +593,7 @@ test("submitRuStoreUpdate completes moderation and preserves the original error 
       packageName: RUSTORE_PACKAGE_NAME,
       versionId: 901,
       rollout: 5,
-      status: "MODERATION",
+      status: "SUBMITTED",
     });
     successFetch.assertDone();
 
@@ -639,7 +740,7 @@ test("RuStore CLI submit validates release inputs and prints only the created ve
     operations: {
       submit: async (options) => {
         received = options;
-        return { packageName: RUSTORE_PACKAGE_NAME, versionId: 777, rollout: 5, status: "MODERATION" };
+        return { packageName: RUSTORE_PACKAGE_NAME, versionId: 777, rollout: 5, status: "SUBMITTED" };
       },
     },
   });
@@ -649,6 +750,8 @@ test("RuStore CLI submit validates release inputs and prints only the created ve
   assert.equal(received.apkPath, "/tmp/app-release.apk");
   assert.match(stdout.value(), /777/);
   assert.match(stdout.value(), /5%/);
+  assert.match(stdout.value(), /accepted the moderation request/);
+  assert.match(stdout.value(), /Current version status has not been checked/);
   assert.doesNotMatch(stdout.value(), /private-key-value|release@example\.com/);
 
   await assert.rejects(
@@ -700,8 +803,57 @@ test("RuStore CLI rollout requires explicit version and a 25 or 100 target", asy
   }
 });
 
+test("RuStore CLI status prints the observed version status and validates an explicit version ID", async () => {
+  const stdout = captureStream();
+  const env = { RUSTORE_KEY_ID: TEST_KEY_ID, RUSTORE_PRIVATE_KEY: "private-key-value", RUSTORE_VERSION_ID: "777" };
+  let received;
+  const observed = {
+    appId: 2063733095,
+    packageName: RUSTORE_PACKAGE_NAME,
+    versionId: 777,
+    versionStatus: "PARTIAL_ACTIVE",
+    versionName: "1.1.0",
+    versionCode: 8,
+    sendDateForModer: "2026-10-20T12:45:32Z",
+    partialValue: 5,
+  };
+  const result = await runRuStoreCli({
+    argv: ["status"],
+    env,
+    stdout,
+    operations: { status: async (options) => { received = options; return observed; } },
+  });
+  assert.equal(result, observed);
+  assert.deepEqual(received, { keyId: TEST_KEY_ID, privateKey: "private-key-value", versionId: 777 });
+  assert.match(stdout.value(), /Application ID: 2063733095/);
+  assert.match(stdout.value(), /version 777.*PARTIAL_ACTIVE/);
+  assert.match(stdout.value(), /1\.1\.0.*code: 8/);
+  assert.match(stdout.value(), /2026-10-20T12:45:32Z.*5%/);
+  assert.doesNotMatch(stdout.value(), /private-key-value|key-123/);
+
+  const incompleteOutput = captureStream();
+  await runRuStoreCli({
+    argv: ["status"], env, stdout: incompleteOutput,
+    operations: { status: async () => ({ ...observed, appId: null, versionStatus: "AUTO_CHECK", versionCode: null, sendDateForModer: null, partialValue: null }) },
+  });
+  assert.match(incompleteOutput.value(), /Application ID: not reported/);
+  assert.match(incompleteOutput.value(), /AUTO_CHECK/);
+  assert.match(incompleteOutput.value(), /Sent for moderation: not reported; rollout: not reported/);
+  assert.doesNotMatch(incompleteOutput.value(), /null%|MODERATION/);
+
+  for (const versionId of ["", "abc", "0", "-1"]) {
+    await assert.rejects(
+      () => runRuStoreCli({
+        argv: ["status"], env: { ...env, RUSTORE_VERSION_ID: versionId },
+        operations: { status: async () => assert.fail("status must not run with an invalid ID") },
+      }),
+      /version id.*positive integer/i,
+    );
+  }
+});
+
 test("RuStore CLI rejects unknown commands and missing credentials", async () => {
-  await assert.rejects(() => runRuStoreCli({ argv: ["unknown"], env: {} }), /check, submit, or rollout/i);
+  await assert.rejects(() => runRuStoreCli({ argv: ["unknown"], env: {} }), /check, status, submit, or rollout/i);
   await assert.rejects(() => runRuStoreCli({ argv: ["check"], env: {} }), /key id/i);
   await assert.rejects(
     () => runRuStoreCli({ argv: ["check"], env: { RUSTORE_KEY_ID: TEST_KEY_ID } }),

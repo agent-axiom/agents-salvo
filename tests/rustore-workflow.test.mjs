@@ -108,6 +108,26 @@ test("RuStore API credential check is manual, protected, pinned, and non-mutatin
   assertPinnedActions(source);
 });
 
+test("RuStore status check passes the optional version ID as data and never publishes", () => {
+  const { workflow } = readWorkflow(apiCheckWorkflowPath);
+  const input = workflow.on.workflow_dispatch.inputs.version_id;
+  assert.equal(input.type, "string");
+  assert.equal(input.required, false);
+  const steps = workflow.jobs.check.steps;
+  const access = steps.find((step) => step.name === "Check RuStore API access");
+  const status = steps.find((step) => step.name === "Read current RuStore version status");
+  assert.equal(access.if, "${{ inputs.version_id == '' }}");
+  assert.equal(status.if, "${{ inputs.version_id != '' }}");
+  assert.deepEqual(status.env, {
+    RUSTORE_KEY_ID: "${{ secrets.RUSTORE_KEY_ID }}",
+    RUSTORE_PRIVATE_KEY: "${{ secrets.RUSTORE_PRIVATE_KEY }}",
+    RUSTORE_VERSION_ID: "${{ inputs.version_id }}",
+  });
+  assert.match(status.run, /node scripts\/rustore-api\.mjs status/);
+  assert.doesNotMatch(status.run, /\$\{\{|submit|rollout/);
+  assert.match(status.run, /set -euo pipefail/);
+});
+
 test("RuStore release submits the verified APK only after explicit confirmation", () => {
   const { source, workflow } = readWorkflow(workflowPath);
   const inputs = workflow.on.workflow_dispatch.inputs;
